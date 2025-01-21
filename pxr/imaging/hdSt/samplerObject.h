@@ -1,34 +1,17 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_ST_SAMPLER_OBJECT_H
 #define PXR_IMAGING_HD_ST_SAMPLER_OBJECT_H
 
 #include "pxr/pxr.h"
 #include "pxr/imaging/hdSt/api.h"
+#include "pxr/imaging/hdSt/enums.h"
 
 #include "pxr/imaging/hgi/handle.h"
-#include "pxr/imaging/hd/enums.h"
 #include "pxr/imaging/hd/types.h"
 
 #include <memory>
@@ -48,8 +31,7 @@ using HdStSamplerObjectSharedPtr =
 
 /// \class HdStSamplerObject
 ///
-/// A base class encapsulating a GPU sampler object and, optionally, a
-/// texture sampler handle (for bindless textures).
+/// A base class encapsulating a GPU sampler object.
 ///
 /// The subclasses of HdStSamplerObject mirror the subclasses of
 /// HdStTextureObject with the intention that they will be used in
@@ -86,7 +68,6 @@ public:
     HdStUvSamplerObject(
         HdStUvTextureObject const &uvTexture,
         HdSamplerParameters const &samplerParameters,
-        bool createBindlessHandle,
         HdSt_SamplerObjectRegistry * samplerObjectRegistry);
 
     HDST_API 
@@ -98,18 +79,8 @@ public:
         return _sampler;
     }
 
-    /// The GL sampler texture handle for bindless textures (as returned by
-    /// glGetTextureSamplerHandleARB).
-    ///
-    /// Only available when requested.
-    ///
-    uint64_t GetGLTextureSamplerHandle() const {
-        return _glTextureSamplerHandle;
-    }
-
 private:
     HgiSamplerHandle _sampler;
-    const uint64_t _glTextureSamplerHandle;
 };
 
 /// \class HdStFieldSamplerObject
@@ -121,7 +92,6 @@ public:
     HdStFieldSamplerObject(
         HdStFieldTextureObject const &uvTexture,
         HdSamplerParameters const &samplerParameters,
-        bool createBindlessHandle,
         HdSt_SamplerObjectRegistry * samplerObjectRegistry);
 
     ~HdStFieldSamplerObject() override;
@@ -132,24 +102,14 @@ public:
         return _sampler;
     }
 
-    /// The GL sampler texture handle for bindless textures (as returned by
-    /// glGetTextureSamplerHandleARB).
-    ///
-    /// Only available when requested.
-    ///
-    uint64_t GetGLTextureSamplerHandle() const {
-        return _glTextureSamplerHandle;
-    }
-
 private:
     HgiSamplerHandle _sampler;
-    const uint64_t _glTextureSamplerHandle;
 };
 
 /// \class HdStPtexSamplerObject
 ///
-/// Ptex doesn't bind samplers, so this class is just holding the
-/// texture handles for bindless textures.
+/// Ptex doesn't bind samplers, so this class is just holding a
+/// sampler to resolve handles for bindless textures.
 ///
 class HdStPtexSamplerObject final : public HdStSamplerObject {
 public:
@@ -157,7 +117,6 @@ public:
         HdStPtexTextureObject const &ptexTexture,
         // samplerParameters are ignored by ptex
         HdSamplerParameters const &samplerParameters,
-        bool createBindlessHandle,
         HdSt_SamplerObjectRegistry * samplerObjectRegistry);
 
     ~HdStPtexSamplerObject() override;
@@ -168,26 +127,15 @@ public:
         return _texelsSampler;
     }
 
-    /// The GL texture handle for bindless textures (as returned by
-    /// glGetTextureHandleARB). This is for texels.
+    /// The GPU sampler object for the layout texture.
     ///
-    /// Only available when requested.
-    ///
-    uint64_t GetTexelsGLTextureHandle() const {
-        return _texelsGLTextureHandle;
-    }
-
-    /// Similar to GetGLTexelsTextureHandle but for layout.
-    ///
-    uint64_t GetLayoutGLTextureHandle() const {
-        return _layoutGLTextureHandle;
+    const HgiSamplerHandle &GetLayoutSampler() const {
+        return _layoutSampler;
     }
 
 private:
     HgiSamplerHandle _texelsSampler;
-
-    const uint64_t _texelsGLTextureHandle;
-    const uint64_t _layoutGLTextureHandle;
+    HgiSamplerHandle _layoutSampler;
 };
 
 /// \class HdStUdimSamplerObject
@@ -201,7 +149,6 @@ public:
         HdStUdimTextureObject const &ptexTexture,
         // samplerParameters are ignored by udim (at least for now)
         HdSamplerParameters const &samplerParameters,
-        bool createBindlessHandle,
         HdSt_SamplerObjectRegistry * samplerObjectRegistry);
 
     ~HdStUdimSamplerObject() override;
@@ -212,57 +159,46 @@ public:
         return _texelsSampler;
     }
 
-    /// The GL texture handle for bindless textures (as returned by
-    /// glGetTextureHandleARB). This is for texels.
+    /// The GPU sampler object for the layout texture.
     ///
-    /// Only available when requested.
-    ///
-    uint64_t GetTexelsGLTextureHandle() const {
-        return _texelsGLTextureHandle;
-    }
-
-    /// Similar to GetGLTexelsTextureHandle but for layout.
-    ///
-    uint64_t GetLayoutGLTextureHandle() const {
-        return _layoutGLTextureHandle;
+    const HgiSamplerHandle &GetLayoutSampler() const {
+        return _layoutSampler;
     }
 
 private:
     HgiSamplerHandle _texelsSampler;
-
-    const uint64_t _texelsGLTextureHandle;
-    const uint64_t _layoutGLTextureHandle;
+    HgiSamplerHandle _layoutSampler;
 };
 
-template<HdTextureType textureType>
+template<HdStTextureType textureType>
 struct HdSt_TypedSamplerObjectHelper;
 
 /// \class HdStTypedSamplerObject
 ///
 /// A template alias such that, e.g., HdStUvSamplerObject can be
-/// accessed as HdStTypedSamplerObject<HdTextureType::Uv>.
+/// accessed as HdStTypedSamplerObject<HdStTextureType::Uv>.
 ///
-template<HdTextureType textureType>
+template<HdStTextureType textureType>
 using HdStTypedSamplerObject =
     typename HdSt_TypedSamplerObjectHelper<textureType>::type;
 
 template<>
-struct HdSt_TypedSamplerObjectHelper<HdTextureType::Uv> {
+struct HdSt_TypedSamplerObjectHelper<HdStTextureType::Uv> {
     using type = HdStUvSamplerObject;
 };
 
 template<>
-struct HdSt_TypedSamplerObjectHelper<HdTextureType::Field> {
+struct HdSt_TypedSamplerObjectHelper<HdStTextureType::Field> {
     using type = HdStFieldSamplerObject;
 };
 
 template<>
-struct HdSt_TypedSamplerObjectHelper<HdTextureType::Ptex> {
+struct HdSt_TypedSamplerObjectHelper<HdStTextureType::Ptex> {
     using type = HdStPtexSamplerObject;
 };
 
 template<>
-struct HdSt_TypedSamplerObjectHelper<HdTextureType::Udim> {
+struct HdSt_TypedSamplerObjectHelper<HdStTextureType::Udim> {
     using type = HdStUdimSamplerObject;
 };
 

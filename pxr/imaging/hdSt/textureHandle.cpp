@@ -1,32 +1,20 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdSt/textureHandle.h"
 
 #include "pxr/imaging/hdSt/textureHandleRegistry.h"
 
+#include "pxr/imaging/hdSt/resourceBinder.h"
 #include "pxr/imaging/hdSt/samplerObject.h"
 #include "pxr/imaging/hdSt/samplerObjectRegistry.h"
+#include "pxr/imaging/hdSt/textureObjectRegistry.h"
+#include "pxr/imaging/hdSt/resourceRegistry.h"
+
+#include "pxr/imaging/hgi/capabilities.h"
 
 #include "pxr/base/tf/diagnostic.h"
 
@@ -36,13 +24,11 @@ HdStTextureHandle::HdStTextureHandle(
     HdStTextureObjectSharedPtr const &textureObject,
     const HdSamplerParameters &samplerParams,
     const size_t memoryRequest,
-    const bool createBindlessHandle,
     HdStShaderCodePtr const & shaderCode,
     HdSt_TextureHandleRegistry *textureHandleRegistry)
   : _textureObject(textureObject)
   , _samplerParams(samplerParams)
   , _memoryRequest(memoryRequest)
-  , _createBindlessHandle(createBindlessHandle)
   , _shaderCode(shaderCode)
   , _textureHandleRegistry(textureHandleRegistry)
 {
@@ -65,7 +51,7 @@ void
 HdStTextureHandle::ReallocateSamplerIfNecessary()
 {
     if (_samplerObject) {
-        if (!_createBindlessHandle) {
+        if (!UseBindlessHandles()) {
             // There is no setter for sampler parameters,
             // so we only need to create a sampler once...
             return;
@@ -74,7 +60,7 @@ HdStTextureHandle::ReallocateSamplerIfNecessary()
         // ... except that the sampler object has a texture sampler
         // handle that needs to be re-created if the underlying texture
         // changes, so continue.
-     
+
         if (TF_VERIFY(_textureHandleRegistry)) {
             _textureHandleRegistry->MarkSamplerGarbageCollectionNeeded();
         }
@@ -88,7 +74,18 @@ HdStTextureHandle::ReallocateSamplerIfNecessary()
 
     _samplerObject =
         samplerObjectRegistry->AllocateSampler(
-            _textureObject, _samplerParams, _createBindlessHandle);
+            _textureObject, _samplerParams);
+}
+
+bool
+HdStTextureHandle::UseBindlessHandles() const
+{
+    if (TF_VERIFY(_textureHandleRegistry)) {
+        return _textureHandleRegistry->GetTextureObjectRegistry()->
+            GetResourceRegistry()->GetHgi()->GetCapabilities()->
+                IsSet(HgiDeviceCapabilitiesBitsBindlessTextures);
+    }
+    return false;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

@@ -2,6 +2,8 @@ set(PXR_PREFIX pxr/usd)
 set(PXR_PACKAGE usdLux)
 
 pxr_library(usdLux
+    INCLUDE_SCHEMA_FILES
+
     LIBRARIES
         tf
         vt
@@ -13,23 +15,6 @@ pxr_library(usdLux
 
     PUBLIC_CLASSES
         blackbody
-        cylinderLight
-        diskLight
-        distantLight
-        domeLight
-        geometryLight
-        light
-        lightFilter
-        lightPortal
-        listAPI
-        pluginLight
-        pluginLightFilter
-        portalLight
-        rectLight
-        shadowAPI
-        shapingAPI
-        sphereLight
-        tokens
 
     PUBLIC_HEADERS
         api.h
@@ -38,36 +23,8 @@ pxr_library(usdLux
         discoveryPlugin
         lightDefParser
 
-    PYTHON_CPPFILES
-        moduleDeps.cpp
-
-    PYMODULE_CPPFILES
-        module.cpp
-        wrapCylinderLight.cpp
-        wrapDiskLight.cpp
-        wrapDistantLight.cpp
-        wrapDomeLight.cpp
-        wrapGeometryLight.cpp
-        wrapLight.cpp
-        wrapLightFilter.cpp
-        wrapLightPortal.cpp
-        wrapListAPI.cpp
-        wrapPluginLight.cpp
-        wrapPluginLightFilter.cpp
-        wrapPortalLight.cpp
-        wrapRectLight.cpp
-        wrapShadowAPI.cpp
-        wrapShapingAPI.cpp
-        wrapSphereLight.cpp
-        wrapTokens.cpp
-
     PYMODULE_FILES 
         __init__.py
-
-    RESOURCE_FILES
-        plugInfo.json
-        generatedSchema.usda
-        schema.usda:usdLux/schema.usda
 
     DOXYGEN_FILES
         overview.dox
@@ -76,7 +33,7 @@ pxr_library(usdLux
 pxr_test_scripts(
     testenv/testUsdLuxLight.py
     testenv/testUsdLuxLinkingAPI.py
-    testenv/testUsdLuxListAPI.py
+    testenv/testUsdLuxLightListAPI.py
 )
 
 pxr_register_test(testUsdLuxLight
@@ -97,13 +54,13 @@ pxr_register_test(testUsdLuxLinkingAPI
 )
 
 pxr_install_test_dir(
-    DEST testUsdLuxListAPI
-    SRC testenv/testUsdLuxListAPI
+    DEST testUsdLuxLightListAPI
+    SRC testenv/testUsdLuxLightListAPI
 )
 
-pxr_register_test(testUsdLuxListAPI
+pxr_register_test(testUsdLuxLightListAPI
     PYTHON
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdLuxListAPI"
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdLuxLightListAPI"
     EXPECTED_RETURN_CODE 0
 )
 

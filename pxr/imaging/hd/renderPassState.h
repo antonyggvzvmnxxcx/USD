@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_RENDER_PASS_STATE_H
 #define PXR_IMAGING_HD_RENDER_PASS_STATE_H
@@ -42,6 +25,8 @@
 #include "pxr/base/gf/vec4f.h"
 
 #include <memory>
+
+#include <optional>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -78,21 +63,30 @@ public:
 
     using ClipPlanesVector = std::vector<GfVec4d>;
 
-    /// Camera setter API
-    ///
-    /// Sets the camera transform (aka view inverse matrix) and physical
-    /// parameters, the framing information and a possible overide value
-    /// for the window policy used to conform the camera frustum if its
-    /// aspect ratio is not matching the display window.
-    ///
-    /// Note: using std::pair<bool, ...> here instead of std::optional<...>
-    /// since the latter is only available in C++17 or later.
+    /// Sets the camera.
     HD_API
-    void SetCameraAndFraming(
-        HdCamera const *camera,
-        CameraUtilFraming const &framing,
-        const std::pair<bool, CameraUtilConformWindowPolicy> &
-                                            overrideWindowPolicy);
+    void SetCamera(const HdCamera *camera);
+
+    /// Sets whether to override the window policy used to conform the camera
+    /// if its aspect ratio is not matching the display window/viewport.
+    /// If first value is false, the HdCamera's window policy is used.
+    ///
+    HD_API
+    void SetOverrideWindowPolicy(
+        const std::optional<CameraUtilConformWindowPolicy> &
+            overrideWindowPolicy);
+
+    /// Sets the framing to show the camera. If a valid framing is set, a
+    /// viewport set earlier with SetViewport will be ignored.
+    HD_API
+    void SetFraming(const CameraUtilFraming &framing);
+
+    /// Sets the viewport to show the camera. If SetViewport is called,
+    /// any framing set earlier with SetFraming will be ignored.
+    ///
+    /// \deprecated Use the more expressive SetFraming instead.
+    HD_API
+    void SetViewport(const GfVec4d &viewport);
 
     /// Get camera
     HdCamera const *
@@ -105,7 +99,7 @@ public:
 
     /// The override value for the window policy to conform the camera 
     /// frustum that can be specified by the application.
-    const std::pair<bool, CameraUtilConformWindowPolicy> &
+    const std::optional<CameraUtilConformWindowPolicy> &
     GetOverrideWindowPolicy() const { return _overrideWindowPolicy; }
 
     /// The resolved window policy to conform the camera frustum.
@@ -115,49 +109,34 @@ public:
     CameraUtilConformWindowPolicy
     GetWindowPolicy() const;
 
-    /// Camera setter API
-    /// The view, projection and clipping plane info of the camera will be used.
-    ///
-    /// \deprecated Use the more expressive SetCameraAndFraming instead.
-    HD_API
-    void SetCameraAndViewport(HdCamera const *camera,
-                              GfVec4d const& viewport);
     /// Camera getter API
     ///
-    /// For backwards compatibility, use the worldToView matrix of the HdCamera
-    /// if given. Otherwise, use the HdCamera's transform.
-    ///
-    /// The HdRenderPassState also has a fallback value for the view
-    /// matrix that is used if no HdCamera was specified, that can be set with,
-    /// e.g.g, HdStRenderPassState::SetCameraFramingState.
+    /// Returns inverse of HdCamera's transform.
     ///
     HD_API
-    GfMatrix4d GetWorldToViewMatrix() const;
+    virtual GfMatrix4d GetWorldToViewMatrix() const;
 
-    /// It is expected that an HdCamera was specified that has physically based
-    /// attributes. The projection matrix is computed from those attributes and
-    /// the conform window policy is applied.
-    ///
-    /// For backwards compatibility with scene and render delegates:
-    /// if the HdCamera has no physically based attributes (more precisely,
-    /// the scene delegate provided a VtValue for focalLength that is either
-    /// empty or 1.0f), the HdCamera's projection matrix is used.
-    /// The HdRenderPassState also has a fallback value for the projection
-    /// matrix that is used if no HdCamera was specified, that can be set with,
-    /// e.g.g, HdStRenderPassState::SetCameraFramingState.
+    /// Compute projection matrix using physical attributes of an HdCamera.
     ///
     HD_API
-    GfMatrix4d GetProjectionMatrix() const;
+    virtual GfMatrix4d GetProjectionMatrix() const;
 
     /// Only use when clients did not specify a camera framing.
     ///
     /// \deprecated
     GfVec4f const & GetViewport() const { return _viewport; }
 
+    /// Compute a transform from window relative coordinates (x,y,z,1) to
+    /// homogeneous world coordinates (x,y,z,w), using the HdCamera's 
+    /// attributes, framing, and viewport dimensions.
+    /// 
     HD_API
-    ClipPlanesVector const & GetClipPlanes() const;
+    GfMatrix4d GetImageToWorldMatrix() const;
 
-    GfMatrix4d GetCullMatrix() const { return _cullMatrix; }
+    /// Returns HdCamera's clip planes.
+    ///
+    HD_API
+    virtual ClipPlanesVector const & GetClipPlanes() const;
 
     // ---------------------------------------------------------------------- //
     /// \name Application rendering state
@@ -165,26 +144,31 @@ public:
 
     /// Set an override color for rendering where the R, G and B components
     /// are the color and the alpha component is the blend value
+    /// The color is specified in the render color space
     HD_API
     void SetOverrideColor(GfVec4f const &color);
     const GfVec4f& GetOverrideColor() const { return _overrideColor; }
 
     /// Set a wireframe color for rendering where the R, G and B components
     /// are the color and the alpha component is the blend value
+    /// The color is specified in the render color space
     HD_API
     void SetWireframeColor(GfVec4f const &color);
     const GfVec4f& GetWireframeColor() const { return _wireframeColor; }
 
+    /// The color is specified in the render color space
     HD_API
     void SetMaskColor(GfVec4f const &color);
     const GfVec4f& GetMaskColor() const { return _maskColor; }
 
+    /// The color is specified in the render color space
     HD_API
     void SetIndicatorColor(GfVec4f const &color);
     const GfVec4f& GetIndicatorColor() const { return _indicatorColor; }
 
     /// Set a point color for rendering where the R, G and B components
     /// are the color and the alpha component is the blend value
+    /// The color is specified in the render color space
     HD_API
     void SetPointColor(GfVec4f const &color);
     const GfVec4f& GetPointColor() const { return _pointColor; }
@@ -204,6 +188,10 @@ public:
     void SetLightingEnabled(bool enabled);
     bool GetLightingEnabled() const { return _lightingEnabled; }
 
+    HD_API
+    void SetClippingEnabled(bool enabled);
+    bool GetClippingEnabled() const { return _clippingEnabled; }
+
     // ---------------------------------------------------------------------- //
     /// \name Render pipeline state
     // ---------------------------------------------------------------------- //
@@ -213,6 +201,12 @@ public:
     void SetAovBindings(HdRenderPassAovBindingVector const &aovBindings);
     HD_API
     HdRenderPassAovBindingVector const& GetAovBindings() const;
+
+    /// Set the AOVs that this renderpass needs to read from.
+    HD_API
+    void SetAovInputBindings(HdRenderPassAovBindingVector const &aovBindings);
+    HD_API
+    HdRenderPassAovBindingVector const& GetAovInputBindings() const;
 
     /// Returns true if the render pass wants to render into the multi-sample
     /// aovs. Returns false if the render wants to render into the resolve aovs.
@@ -237,10 +231,8 @@ public:
     HD_API
     void SetDrawingRange(GfVec2f const &drawRange);
     GfVec2f GetDrawingRange() const { return _drawRange; } // in pixel
-    GfVec2f GetDrawingRangeNDC() const { // in ndc
-        return GfVec2f(2*_drawRange[0]/_viewport[2],
-                       2*_drawRange[1]/_viewport[3]);
-    }
+    HD_API
+    GfVec2f GetDrawingRangeNDC() const; // in ndc
 
     HD_API
     void SetDepthBiasUseDefault(bool useDefault);
@@ -260,12 +252,22 @@ public:
     HD_API
     void SetEnableDepthMask(bool state);
     HD_API
-    bool GetEnableDepthMask();
+    bool GetEnableDepthMask() const;
 
     HD_API
     void SetEnableDepthTest(bool enabled);
     HD_API
     bool GetEnableDepthTest() const;
+
+    HD_API
+    void SetEnableDepthClamp(bool enabled);
+    HD_API
+    bool GetEnableDepthClamp() const;
+
+    HD_API
+    void SetDepthRange(GfVec2f const &depthRange);
+    HD_API
+    const GfVec2f& GetDepthRange() const;
 
     HD_API
     void SetStencil(HdCompareFunction func, int ref, int mask,
@@ -298,6 +300,8 @@ public:
     HdBlendOp GetBlendAlphaOp() { return _blendAlphaOp; }
     HdBlendFactor GetBlendAlphaSrcFactor() { return _blendAlphaSrcFactor; }
     HdBlendFactor GetBlendAlphaDstFactor() { return _blendAlphaDstFactor; }
+
+    // Blend constant color is specified in the render color space
     HD_API
     void SetBlendConstantColor(GfVec4f const & color);
     const GfVec4f& GetBlendConstantColor() const { return _blendConstantColor; }
@@ -312,6 +316,15 @@ public:
     void SetColorMaskUseDefault(bool useDefault);
     bool GetColorMaskUseDefault() const { return _colorMaskUseDefault;}
 
+    HD_API
+    void SetConservativeRasterizationEnabled(bool enabled);
+    bool GetConservativeRasterizationEnabled() const {
+        return _conservativeRasterizationEnabled;
+    }
+
+    HD_API
+    void SetVolumeRenderingConstants(float stepSize, float stepSizeLighting);
+
     enum ColorMask {
         ColorMaskNone,
         ColorMaskRGB,
@@ -322,6 +335,10 @@ public:
     void SetColorMasks(std::vector<ColorMask> const& masks);
     std::vector<ColorMask> const& GetColorMasks() const { return _colorMasks; }
 
+    HD_API
+    void SetMultiSampleEnabled(bool enabled);
+    bool GetMultiSampleEnabled() const { return _multiSampleEnabled; }
+
 protected:
     // ---------------------------------------------------------------------- //
     // Camera and framing state 
@@ -329,19 +346,7 @@ protected:
     HdCamera const *_camera;
     GfVec4f _viewport;
     CameraUtilFraming _framing;
-    std::pair<bool, CameraUtilConformWindowPolicy> _overrideWindowPolicy;
-    // TODO: This is only used for CPU culling, should compute it on the fly.
-    GfMatrix4d _cullMatrix; 
-
-    // Used by applications setting the view matrix directly instead of
-    // using an HdCamera. Will be removed eventually.
-    GfMatrix4d _worldToViewMatrix;
-    // Used by applications setting the projection matrix directly instead
-    // of using an HdCamera. Will be removed eventually.
-    GfMatrix4d _projectionMatrix;
-    // Used by applications setting the clip planes directly instead
-    // of using an HdCamera. Will be removed eventually.
-    ClipPlanesVector _clipPlanes;
+    std::optional<CameraUtilConformWindowPolicy> _overrideWindowPolicy;
 
     // ---------------------------------------------------------------------- //
     // Application rendering state
@@ -351,6 +356,7 @@ protected:
     GfVec4f _pointColor;
     float _pointSize;
     bool _lightingEnabled;
+    bool _clippingEnabled;
 
     GfVec4f _maskColor;
     GfVec4f _indicatorColor;
@@ -370,6 +376,8 @@ protected:
     HdCompareFunction _depthFunc;
     bool _depthMaskEnabled;
     bool _depthTestEnabled;
+    bool _depthClampEnabled;
+    GfVec2f _depthRange;
 
     HdCullStyle _cullStyle;
 
@@ -402,7 +410,15 @@ protected:
     std::vector<ColorMask> _colorMasks;
 
     HdRenderPassAovBindingVector _aovBindings;
+    HdRenderPassAovBindingVector _aovInputBindings;
     bool _useMultiSampleAov;
+
+    bool _conservativeRasterizationEnabled;
+
+    float _stepSize;
+    float _stepSizeLighting;
+
+    bool _multiSampleEnabled;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

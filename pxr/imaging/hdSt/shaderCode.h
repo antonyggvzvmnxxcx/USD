@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_ST_SHADER_CODE_H
 #define PXR_IMAGING_HD_ST_SHADER_CODE_H
@@ -27,8 +10,8 @@
 #include "pxr/pxr.h"
 #include "pxr/imaging/hdSt/api.h"
 #include "pxr/imaging/hdSt/resourceRegistry.h"
+#include "pxr/imaging/hdSt/enums.h"
 #include "pxr/imaging/hd/version.h"
-#include "pxr/imaging/hd/enums.h"
 
 #include "pxr/usd/sdf/path.h"
 
@@ -41,7 +24,7 @@
 PXR_NAMESPACE_OPEN_SCOPE
 
 
-using HdBindingRequestVector = std::vector<class HdBindingRequest>;
+using HdStBindingRequestVector = std::vector<class HdStBindingRequest>;
 
 using HdStShaderCodeSharedPtr =
     std::shared_ptr<class HdStShaderCode>;
@@ -58,10 +41,10 @@ using HdBufferArrayRangeSharedPtr =
     std::shared_ptr<class HdBufferArrayRange>;
 using HdStTextureHandleSharedPtr =
     std::shared_ptr<class HdStTextureHandle>;
-using HdComputationSharedPtr =
-    std::shared_ptr<class HdComputation>;
+using HdStComputationSharedPtr =
+    std::shared_ptr<class HdStComputation>;
 
-class HdRenderPassState;
+class HioGlslfx;
 class HdSt_ResourceBinder;
 class HdStResourceRegistry;
 
@@ -105,11 +88,18 @@ public:
     /// avoid re-computing the draw batches over time, we use the this
     /// hash when grouping the draw batches.
     ///
+    HDST_API
     virtual ID ComputeTextureSourceHash() const;
 
     /// Returns the shader source provided by this shader
     /// for \a shaderStageKey
     virtual std::string GetSource(TfToken const &shaderStageKey) const = 0;
+
+    /// Returns the resource layout for the shader stages specified by
+    /// \a shaderStageKeys. This is initialized using the shader's
+    /// HioGlslfx configuration.
+    HDST_API
+    VtDictionary GetLayout(TfTokenVector const &shaderStageKeys) const;
 
     // XXX: Should be pure-virtual
     /// Returns the shader parameters for this shader.
@@ -143,7 +133,7 @@ public:
         /// completely determine the creation of the texture accesor
         /// HdGet_name(...)).
         ///
-        HdTextureType type;
+        HdStTextureType type;
         /// The texture.
         HdStTextureHandleSharedPtr handle;
 
@@ -170,16 +160,14 @@ public:
     /// XXX: this interface is meant to be used for bridging
     /// the GlfSimpleLightingContext mechanism, and not for generic use-cases.
     virtual void BindResources(int program,
-                               HdSt_ResourceBinder const &binder,
-                               HdRenderPassState const &state) = 0;
+                               HdSt_ResourceBinder const &binder) = 0;
 
     /// Unbinds shader-specific resources.
     virtual void UnbindResources(int program,
-                                 HdSt_ResourceBinder const &binder,
-                                 HdRenderPassState const &state) = 0;
+                                 HdSt_ResourceBinder const &binder) = 0;
 
     /// Add custom bindings (used by codegen)
-    virtual void AddBindings(HdBindingRequestVector* customBindings) = 0;
+    virtual void AddBindings(HdStBindingRequestVector* customBindings) = 0;
 
     /// Material tags can be set in the meta-data of a glslfx file to control
     /// what rprim collection that prims using this shader should go into.
@@ -205,8 +193,12 @@ public:
 
         HDST_API
         void AddComputation(HdBufferArrayRangeSharedPtr const &range,
-                            HdComputationSharedPtr const &computation,
+                            HdStComputationSharedPtr const &computation,
                             HdStComputeQueue const queue);
+        
+        HdStResourceRegistry * GetResourceRegistry() const {
+            return _registry;
+        }
 
     private:
         friend class HdStResourceRegistry;
@@ -229,6 +221,10 @@ private:
     // No copying
     HdStShaderCode(const HdStShaderCode &)                      = delete;
     HdStShaderCode &operator =(const HdStShaderCode &)          = delete;
+
+    // Returns the HioGlslfx instance used to configure this shader.
+    // This can return nullptr for shaders without a GLSLFX instance.
+    virtual HioGlslfx const * _GetGlslfx() const;
 };
 
 

@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usd/usdShade/nodeGraph.h"
 #include "pxr/usd/usd/schemaRegistry.h"
@@ -75,13 +58,9 @@ UsdShadeNodeGraph::Define(
 }
 
 /* virtual */
-UsdSchemaKind UsdShadeNodeGraph::_GetSchemaKind() const {
+UsdSchemaKind UsdShadeNodeGraph::_GetSchemaKind() const
+{
     return UsdShadeNodeGraph::schemaKind;
-}
-
-/* virtual */
-UsdSchemaKind UsdShadeNodeGraph::_GetSchemaType() const {
-    return UsdShadeNodeGraph::schemaType;
 }
 
 /* static */
@@ -260,15 +239,14 @@ _ComputeNonTransitiveInputConsumersMap(
 
         std::vector<UsdShadeInput> internalInputs = connectable.GetInputs();
         for (const auto &internalInput: internalInputs) {
-            UsdShadeConnectableAPI source;
-            TfToken sourceName;
-            UsdShadeAttributeType sourceType;
-            if (UsdShadeConnectableAPI::GetConnectedSource(internalInput,
-                    &source, &sourceName, &sourceType)) {
-                if (source.GetPrim() == nodeGraph.GetPrim() && 
-                    _IsValidInput(source, sourceType))
+            UsdShadeSourceInfoVector sources = 
+                UsdShadeConnectableAPI::GetConnectedSources(internalInput);
+
+            for (const auto& sourceInfo : sources) {
+                if (sourceInfo.source.GetPrim() == nodeGraph.GetPrim() && 
+                    _IsValidInput(sourceInfo.source, sourceInfo.sourceType))
                 {
-                    result[nodeGraph.GetInput(sourceName)].push_back(
+                    result[nodeGraph.GetInput(sourceInfo.sourceName)].push_back(
                         internalInput);
                 }
             }
@@ -379,28 +357,32 @@ UsdShadeNodeGraph::ComputeInterfaceInputConsumersMap(
     return resolved;
 }
 
-bool
-UsdShadeNodeGraph::ConnectableAPIBehavior::CanConnectOutputToSource(
-    const UsdShadeOutput &output,
-    const UsdAttribute &source,
-    std::string *reason)
+class UsdShadeNodeGraph_ConnectableAPIBehavior : 
+    public UsdShadeConnectableAPIBehavior
 {
-    return UsdShadeConnectableAPIBehavior::_CanConnectOutputToSource(
-            output, source, reason);
-}
+public:
+    // By default all NodeGraph Connectable Behavior should be
+    // container (of nodes) and exhibit encapsulation behavior.
+    USDSHADE_API
+    UsdShadeNodeGraph_ConnectableAPIBehavior() 
+        : UsdShadeConnectableAPIBehavior(
+                true /*isContainer*/, true /*requiresEncapsulation*/) {}
 
-bool
-UsdShadeNodeGraph::ConnectableAPIBehavior::IsContainer() const
-{
-    // NodeGraph does act as a namespace container for connected nodes
-    return true;
-}
+    USDSHADE_API
+    bool
+    CanConnectOutputToSource(const UsdShadeOutput &output,
+                             const UsdAttribute &source,
+                             std::string *reason) const override
+    {
+        return _CanConnectOutputToSource(output, source, reason);
+    }
+};
 
 TF_REGISTRY_FUNCTION(UsdShadeConnectableAPI)
 {
     UsdShadeRegisterConnectableAPIBehavior<
         UsdShadeNodeGraph,
-        UsdShadeNodeGraph::ConnectableAPIBehavior>();
+        UsdShadeNodeGraph_ConnectableAPIBehavior>();
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

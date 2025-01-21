@@ -1,31 +1,15 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_TYPES_H
 #define PXR_IMAGING_HD_TYPES_H
 
 #include "pxr/pxr.h"
 #include "pxr/imaging/hd/api.h"
+#include "pxr/imaging/hd/enums.h"
 #include "pxr/imaging/hd/version.h"
 #include "pxr/base/vt/value.h"
 #include <algorithm>
@@ -102,6 +86,23 @@ enum HdMagFilter
     HdMagFilterLinear,
 };
 
+/// \enum HdBorderColor
+///
+/// Border color to use for clamped texture values.
+///
+/// <ul>
+///     <li>HdBorderColorTransparentBlack</li>
+///     <li>HdBorderColorOpaqueBlack</li>
+///     <li>HdBorderColorOpaqueWhite</li>
+/// </ul>
+///
+enum HdBorderColor 
+{
+    HdBorderColorTransparentBlack,
+    HdBorderColorOpaqueBlack,
+    HdBorderColorOpaqueWhite,
+};
+
 /// \class HdSamplerParameters
 ///
 /// Collection of standard parameters such as wrap modes to sample a texture.
@@ -113,6 +114,21 @@ public:
     HdWrap wrapR;
     HdMinFilter minFilter;
     HdMagFilter magFilter;
+    HdBorderColor borderColor;
+    bool enableCompare;
+    HdCompareFunction compareFunction;
+    uint32_t maxAnisotropy;
+
+    HD_API
+    HdSamplerParameters();   
+
+    HD_API
+    HdSamplerParameters(HdWrap wrapS, HdWrap wrapT, HdWrap wrapR, 
+        HdMinFilter minFilter, HdMagFilter magFilter,
+        HdBorderColor borderColor=HdBorderColorTransparentBlack,
+        bool enableCompare=false, 
+        HdCompareFunction compareFunction=HdCmpFuncNever,
+        uint32_t maxAnisotropy=16);
 
     HD_API 
     bool operator==(const HdSamplerParameters &other) const;
@@ -317,6 +333,8 @@ enum HdType
     /// Corresponds to GL_INT_2_10_10_10_REV.
     /// \see HdVec4f_2_10_10_10_REV
     HdTypeInt32_2_10_10_10_REV,
+
+    HdTypeCount
 };
 
 /// HdTupleType represents zero, one, or more values of the same HdType.
@@ -417,6 +435,12 @@ enum HdFormat
     HdFormatFloat32Vec3,
     HdFormatFloat32Vec4,
 
+    // Int16 - a 2-byte signed integer
+    HdFormatInt16,
+    HdFormatInt16Vec2,
+    HdFormatInt16Vec3,
+    HdFormatInt16Vec4,
+
     // UInt16 - a 2-byte unsigned integer
     HdFormatUInt16,
     HdFormatUInt16Vec2,
@@ -447,6 +471,11 @@ size_t HdGetComponentCount(HdFormat f);
 /// For block formats, this will return 0.
 HD_API
 size_t HdDataSizeOfFormat(HdFormat f);
+
+///
+/// Type representing a depth-stencil value.
+///
+using HdDepthStencilType = std::pair<float, uint32_t>;
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

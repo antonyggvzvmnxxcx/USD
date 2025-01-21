@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_MATERIAL_H
 #define PXR_IMAGING_HD_MATERIAL_H
@@ -27,14 +10,17 @@
 #include "pxr/pxr.h"
 #include "pxr/imaging/hd/api.h"
 #include "pxr/imaging/hd/sprim.h"
-#include "pxr/imaging/hd/sceneDelegate.h"
+#include "pxr/imaging/hd/types.h"
+#include "pxr/usd/sdr/declare.h"
+#include "pxr/base/vt/dictionary.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 ///
 /// Hydra Schema for a material object.
 ///
-class HdMaterial : public HdSprim {
+class HdMaterial : public HdSprim
+{
 public:
     // change tracking for HdMaterial prim
     enum DirtyBits : HdDirtyBits {
@@ -46,7 +32,7 @@ public:
     };
 
     HD_API
-    virtual ~HdMaterial();
+    ~HdMaterial() override;
 
 protected:
     HD_API
@@ -79,7 +65,8 @@ private:
 /// A guideline to remember this terminology is that inputs
 /// are always upstream of outputs in the dataflow.
 /// 
-struct HdMaterialRelationship {
+struct HdMaterialRelationship
+{
     SdfPath inputId;
     TfToken inputName;
     SdfPath outputId;
@@ -96,7 +83,8 @@ bool operator==(const HdMaterialRelationship& lhs,
 ///
 /// Describes a material node which is made of a path, an identifier and
 /// a list of parameters.
-struct HdMaterialNode {
+struct HdMaterialNode
+{
     SdfPath path;
     TfToken identifier;
     std::map<TfToken, VtValue> parameters;
@@ -111,7 +99,8 @@ bool operator==(const HdMaterialNode& lhs, const HdMaterialNode& rhs);
 ///
 /// Describes a material network composed of nodes, primvars, and relationships
 /// between the nodes and terminals of those nodes.
-struct HdMaterialNetwork {
+struct HdMaterialNetwork
+{
     std::vector<HdMaterialRelationship> relationships;
     std::vector<HdMaterialNode> nodes;
     TfTokenVector primvars;
@@ -120,9 +109,11 @@ struct HdMaterialNetwork {
 /// \struct HdMaterialNetworkMap
 ///
 /// Describes a map from network type to network.
-struct HdMaterialNetworkMap {
+struct HdMaterialNetworkMap
+{
     std::map<TfToken, HdMaterialNetwork> map;
     std::vector<SdfPath> terminals;
+    VtDictionary config;
 };
 
 
@@ -138,8 +129,9 @@ struct HdMaterialNetworkMap {
 /// \struct HdMaterialConnection2
 ///
 /// Describes a single connection to an upsream node and output port 
-/// Replacement for HdRelationship.
-struct HdMaterialConnection2 {
+/// Replacement for HdMaterialRelationship.
+struct HdMaterialConnection2
+{
     SdfPath upstreamNode;
     TfToken upstreamOutputName;
 
@@ -155,16 +147,11 @@ struct HdMaterialConnection2 {
 /// A node contains a (shader) type identifier, parameter values, and 
 /// connections to upstream nodes. A single input (mapped by TfToken) may have
 /// multiple upstream connections to describe connected array elements.
-struct HdMaterialNode2 {
+struct HdMaterialNode2
+{
     TfToken nodeTypeId;
     std::map<TfToken, VtValue> parameters;
     std::map<TfToken, std::vector<HdMaterialConnection2>> inputConnections;
-
-    bool operator==(const HdMaterialNode2 & rhs) const {
-        return nodeTypeId == rhs.nodeTypeId
-            && parameters == rhs.parameters
-            && inputConnections == rhs.inputConnections;
-    }
 };
 
 /// \struct HdMaterialNetwork2
@@ -172,25 +159,45 @@ struct HdMaterialNode2 {
 /// Container of nodes and top-level terminal connections. This is the mutable
 /// representation of a shading network sent to filtering functions by a
 /// MatfiltFilterChain.
-struct HdMaterialNetwork2 {
+struct HdMaterialNetwork2
+{
     std::map<SdfPath, HdMaterialNode2> nodes;
     std::map<TfToken, HdMaterialConnection2> terminals;
     TfTokenVector primvars;
+    VtDictionary config;
 
     bool operator==(const HdMaterialNetwork2 & rhs) const {
         return nodes == rhs.nodes 
             && terminals == rhs.terminals
-            && primvars == rhs.primvars;
+            && primvars == rhs.primvars
+            && config == rhs.config;
     }
 };
 
 /// Converts a HdMaterialNetworkMap to a HdMaterialNetwork2
 HD_API
-void HdMaterialNetwork2ConvertFromHdMaterialNetworkMap(
+HdMaterialNetwork2 HdConvertToHdMaterialNetwork2(
     const HdMaterialNetworkMap & hdNetworkMap,
-    HdMaterialNetwork2 *result, 
     bool *isVolume = nullptr);
 
+/// Extracts HdSamplerParameters from the parameters on the HdMaterialNode2 if
+/// present.  Otherwise extracts the sampler parameters from the SdrNode.
+HD_API
+HdSamplerParameters HdGetSamplerParameters(
+    const HdMaterialNode2& node,
+    const SdrShaderNodeConstPtr& sdrNode,
+    const SdfPath& nodePath = SdfPath::EmptyPath());
+
+/// Extract HdSamplerParameters from the given parameter map for the given node
+/// type id.  Functionally this works essentially the same as the other
+/// HdGetSamplerParameters that operates on an HdMaterialNode2, but this allows
+/// extracting sampler parameters from the map without requiring an
+/// HdMaterialNode2.
+HD_API
+HdSamplerParameters HdGetSamplerParameters(
+    const TfToken& nodeTypeId,
+    const std::map<TfToken, VtValue>& parameters,
+    const SdfPath& nodePath = SdfPath::EmptyPath());
 
 // VtValue requirements
 HD_API
@@ -209,6 +216,14 @@ bool operator==(const HdMaterialNetworkMap& lhs,
 HD_API
 bool operator!=(const HdMaterialNetworkMap& lhs,
                 const HdMaterialNetworkMap& rhs);
+
+// VtValue requirements
+HD_API
+std::ostream& operator<<(std::ostream& out, const HdMaterialNode2& pv);
+HD_API
+bool operator==(const HdMaterialNode2& lhs, const HdMaterialNode2& rhs);
+HD_API
+bool operator!=(const HdMaterialNode2& lhs, const HdMaterialNode2& rhs);
 
 
 PXR_NAMESPACE_CLOSE_SCOPE

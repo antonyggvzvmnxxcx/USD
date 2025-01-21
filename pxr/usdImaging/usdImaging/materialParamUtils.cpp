@@ -1,45 +1,28 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usdImaging/usdImaging/materialParamUtils.h"
 
 #include "pxr/base/tf/pathUtils.h"
 #include "pxr/imaging/hd/material.h"
-#include "pxr/usd/ar/resolver.h"
-#include "pxr/usd/sdf/layerUtils.h"
+#include "pxr/usd/sdf/schema.h"
 #include "pxr/usd/sdr/registry.h"
-#include "pxr/usd/sdr/shaderNode.h"
 #include "pxr/usd/sdr/shaderProperty.h"
-#include "pxr/usd/usd/attribute.h"
 #include "pxr/usd/usdShade/connectableAPI.h"
 #include "pxr/usd/usdShade/nodeDefAPI.h"
+#include "pxr/usd/usdShade/udimUtils.h"
+#include "pxr/usd/usdLux/lightAPI.h"
+#include "pxr/usd/usdLux/lightFilter.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-static const char UDIM_PATTERN[] = "<UDIM>";
-static const int UDIM_START_TILE = 1001;
-static const int UDIM_END_TILE = 1100;
-static const std::string::size_type UDIM_TILE_NUMBER_LENGTH = 4;
+TF_DEFINE_PRIVATE_TOKENS(
+    _tokens,
+    (typeName)
+);
 
 // We need to find the first layer that changes the value
 // of the parameter so that we anchor relative paths to that.
@@ -92,63 +75,6 @@ _ResolveAssetSymlinks(const SdfAssetPath& assetPath)
     }
 }
 
-// Given the prefix (e.g., //SHOW/myImage.) and suffix (e.g., .exr),
-// add integer between them and try to resolve. Iterate until
-// resolution succeeded.
-static
-std::string
-_ResolvedPathForFirstTile(
-    const std::pair<std::string, std::string> &splitPath,
-    SdfLayerHandle const &layer)
-{
-    TRACE_FUNCTION();
-
-    ArResolver& resolver = ArGetResolver();
-    
-    for (int i = UDIM_START_TILE; i < UDIM_END_TILE; i++) {
-        // Fill in integer
-        std::string path =
-            splitPath.first + std::to_string(i) + splitPath.second;
-        if (layer) {
-            // Deal with layer-relative paths.
-            path = SdfComputeAssetPathRelativeToLayer(layer, path);
-        }
-        // Resolve
-        path = resolver.Resolve(path);
-        if (!path.empty()) {
-            // Attempt to resolve symlinks
-            std::string realPath;
-            if (_ResolveSymlinks(path, &realPath)) {
-                return realPath;
-            } else {
-                return path;
-            }
-        }
-    }
-    return std::string();
-}
-
-// Split a udim file path such as /someDir/myFile.<UDIM>.exr into a
-// prefix (/someDir/myFile.) and suffix (.exr).
-//
-// We might support other patterns such as /someDir/myFile._MAPID_.exr
-// in the future.
-static
-std::pair<std::string, std::string>
-_SplitUdimPattern(const std::string &path)
-{
-    static const std::vector<std::string> patterns = { UDIM_PATTERN };
-
-    for (const std::string &pattern : patterns) {
-        const std::string::size_type pos = path.find(pattern);
-        if (pos != std::string::npos) {
-            return { path.substr(0, pos), path.substr(pos + pattern.size()) };
-        }
-    }
-
-    return { std::string(), std::string() };
-}
-
 // If given assetPath contains UDIM pattern, resolve the UDIM pattern.
 // Otherwise, leave assetPath untouched.
 static
@@ -160,50 +86,32 @@ _ResolveAssetAttribute(
 {
     TRACE_FUNCTION();
 
-    // See whether the asset path contains UDIM pattern.
-    const std::pair<std::string, std::string>
-        splitPath = _SplitUdimPattern(assetPath.GetAssetPath());
-
-    if (splitPath.first.empty() && splitPath.second.empty()) {
-        // Not a UDIM, resolve symlinks and exit.
+    // Not a UDIM, resolve symlinks and exit.
+    if (!UsdShadeUdimUtils::IsUdimIdentifier(assetPath.GetAssetPath())) {
         return _ResolveAssetSymlinks(assetPath);
     }
 
-    // Find first tile.
-    const std::string firstTilePath =
-        _ResolvedPathForFirstTile(splitPath, _FindLayerHandle(attr, time));
-
-    if (firstTilePath.empty()) {
+    const std::string resolvedPath = 
+        UsdShadeUdimUtils::ResolveUdimPath(
+            assetPath.GetAssetPath(), _FindLayerHandle(attr, time));
+    // If the path doesn't resolve, return the input path
+    if (resolvedPath.empty()) {
         return assetPath;
     }
-
-    // Construct the file path /filePath/myImage.<UDIM>.exr by using
-    // the first part from the first resolved tile, "<UDIM>" and the
-    // suffix.
-
-    const std::string &suffix = splitPath.second;
-
-    // Sanity check that the part after <UDIM> did not change.
-    if (!TfStringEndsWith(firstTilePath, suffix)) {
-        TF_WARN(
-            "Resolution of first udim tile gave ambigious result. "
-            "First tile for '%s' is '%s'.",
-            assetPath.GetAssetPath().c_str(), firstTilePath.c_str());
-        return assetPath;
-    }
-
-    // Length of the part /filePath/myImage.<UDIM>.exr.
-    const std::string::size_type prefixLength =
-        firstTilePath.size() - suffix.size() - UDIM_TILE_NUMBER_LENGTH;
-
-    return
-        SdfAssetPath( 
-            assetPath.GetAssetPath(),
-            firstTilePath.substr(0, prefixLength) + UDIM_PATTERN + suffix);
+    return SdfAssetPath(assetPath.GetAssetPath(), resolvedPath);
 }
 
-VtValue
-UsdImaging_ResolveMaterialParamValue(
+// Get the value from the usd attribute at given time. If it is an
+// SdfAssetPath containing a UDIM pattern, e.g., //SHOW/myImage.<UDIM>.exr,
+// the resolved path of the SdfAssetPath will be updated to a file path
+// with a UDIM pattern, e.g., /filePath/myImage.<UDIM>.exr.
+// There might be support for different patterns, e.g., myImage._MAPID_.exr,
+// but this function always normalizes it to myImage.<UDIM>.exr.
+//
+// The function assumes that the correct ArResolverContext is bound.
+//
+static VtValue
+_ResolveMaterialParamValue(
     const UsdAttribute& attr,
     const UsdTimeCode& time)
 {
@@ -284,7 +192,8 @@ _ExtractPrimvarsFromNode(
 
 static
 TfToken _GetNodeId(UsdShadeConnectableAPI const &shadeNode,
-                   TfTokenVector const & shaderSourceTypes)
+                   TfTokenVector const & shaderSourceTypes,
+                   TfTokenVector const& renderContexts)
 {
     UsdShadeNodeDefAPI nodeDef(shadeNode.GetPrim());
     if (nodeDef) {
@@ -303,9 +212,32 @@ TfToken _GetNodeId(UsdShadeConnectableAPI const &shadeNode,
         return id;
     }
 
-    // Otherwise for connectable nodes that don't implement NodeDefAPI (such
-    // UsdLux lights and light filters) the type name of the prim is used as
-    // the node's identifier.
+    // If the node is a light filter that doesn't have a NodeDefAPI, then we 
+    // try to get the light shader ID from the light filter for the given 
+    // render contexts.
+    UsdLuxLightFilter lightFilter(shadeNode);
+    if (lightFilter) {
+        TfToken id = lightFilter.GetShaderId(renderContexts);
+        if (!id.IsEmpty()) {
+            return id;
+        }
+    } else {
+        // Otherwise, if the node is a light that doesn't have a NodeDefAPI, 
+        // then we try to get the light shader ID from the light for the given 
+        // render contexts.
+        UsdLuxLightAPI light(shadeNode);
+        if (light) {
+            TfToken id = light.GetShaderId(renderContexts);
+            if (!id.IsEmpty()) {
+                return id;
+            }
+        }
+    }
+
+    // Otherwise for connectable nodes that don't implement NodeDefAPI and we
+    // fail to get a light shader ID for, the type name of the prim is used as
+    // the node's identifier. This will currently always be the case for prims
+    // like light filters.
     return shadeNode.GetPrim().GetTypeName();
 }
 
@@ -324,6 +256,7 @@ void _WalkGraph(
     HdMaterialNetwork* materialNetwork,
     _PathSet* visitedNodes,
     TfTokenVector const & shaderSourceTypes,
+    TfTokenVector const & renderContexts,
     UsdTimeCode time)
 {
     // Store the path of the node
@@ -345,38 +278,62 @@ void _WalkGraph(
 
         TfToken inputName = input.GetBaseName();
 
-        // Find the attribute this input is getting its value from, which might
+        // Find the attributes this input is getting its value from, which might
         // be an output or an input, including possibly itself if not connected
-        UsdShadeAttributeType attrType;
-        UsdAttribute attr = input.GetValueProducingAttribute(&attrType);
+        
+        const UsdShadeAttributeVector attrs = 
+            input.GetValueProducingAttributes(/*shaderOutputsOnly*/ false);
 
-        if (attrType == UsdShadeAttributeType::Output) {
-            // If it is an output on a shading node we visit the node and also
-            // create a relationship in the network
-            _WalkGraph(UsdShadeConnectableAPI(
-                attr.GetPrim()),
-                materialNetwork,
-                visitedNodes,
-                shaderSourceTypes,
-                time);
+        for (const UsdAttribute& attr : attrs) {
 
-            HdMaterialRelationship relationship;
-            relationship.outputId = node.path;
-            relationship.outputName = inputName;
-            relationship.inputId = attr.GetPrim().GetPath();
-            relationship.inputName = UsdShadeOutput(attr).GetBaseName();
-            materialNetwork->relationships.push_back(relationship);
-        } else if (attrType == UsdShadeAttributeType::Input) {
-            // If it is an input attribute we get the authored value.
-            //
-            // If its type is asset and contains <UDIM>,
-            // we resolve the asset path with the udim pattern to a file
-            // path with a udim pattern, e.g.,
-            // //SHOW/myImage.<UDIM>.exr to /filePath/myImage.<UDIM>.exr.
-            const VtValue value =
-                UsdImaging_ResolveMaterialParamValue(attr, time);
-            if (!value.IsEmpty()) {
-                node.parameters[inputName] = value;
+            UsdShadeAttributeType attrType = 
+                UsdShadeUtils::GetType(attr.GetName());
+
+            if (attrType == UsdShadeAttributeType::Output) {
+                // If it is an output on a shading node we visit the node and also
+                // create a relationship in the network
+                _WalkGraph(UsdShadeConnectableAPI(
+                    attr.GetPrim()),
+                    materialNetwork,
+                    visitedNodes,
+                    shaderSourceTypes,
+                    renderContexts,
+                    time);
+
+                HdMaterialRelationship relationship;
+                relationship.outputId = node.path;
+                relationship.outputName = inputName;
+                relationship.inputId = attr.GetPrim().GetPath();
+                relationship.inputName = UsdShadeOutput(attr).GetBaseName();
+                materialNetwork->relationships.push_back(relationship);
+            } else if (attrType == UsdShadeAttributeType::Input) {
+                // If it is an input attribute we get the authored value.
+                //
+                // If its type is asset and contains <UDIM>,
+                // we resolve the asset path with the udim pattern to a file
+                // path with a udim pattern, e.g.,
+                // /someDir/myImage.<UDIM>.exr to /filePath/myImage.<UDIM>.exr.
+                const VtValue value = _ResolveMaterialParamValue(attr, time);
+                if (!value.IsEmpty()) {
+                    node.parameters[inputName] = value;
+                }
+                // If the attribute has a colorspace add an additional parameter
+                // of the form 'colorSpace:inputName'
+                if (attr.HasColorSpace()) {
+                    TfToken colorSpaceInputName(SdfPath::JoinIdentifier(
+                        SdfFieldKeys->ColorSpace, inputName));
+                    node.parameters[colorSpaceInputName] =
+                        VtValue(attr.GetColorSpace());
+                }
+
+                // Store the usdtype as an additional parameter of the form 
+                // 'typeName:inputName'
+                // We are using the GetAsToken() here since we do not expect an 
+                // alias other than the "official" type name.
+                const TfToken typeNameInputName(SdfPath::JoinIdentifier(
+                    _tokens->typeName, inputName));
+                node.parameters[typeNameInputName] = 
+                    VtValue(attr.GetTypeName().GetAsToken());
             }
         }
     }
@@ -384,7 +341,7 @@ void _WalkGraph(
     // Extract the identifier of the node.
     // GetShaderNodeForSourceType will try to find/create an Sdr node for all
     // three info cases: info:id, info:sourceAsset and info:sourceCode.
-    TfToken id = _GetNodeId(shadeNode, shaderSourceTypes);
+    TfToken id = _GetNodeId(shadeNode, shaderSourceTypes, renderContexts);
 
     if (!id.IsEmpty()) {
         node.identifier = id;
@@ -400,10 +357,11 @@ void _WalkGraph(
 }
 
 void
-UsdImaging_BuildHdMaterialNetworkFromTerminal(
+UsdImagingBuildHdMaterialNetworkFromTerminal(
     UsdPrim const& usdTerminal,
     TfToken const& terminalIdentifier,
     TfTokenVector const& shaderSourceTypes,
+    TfTokenVector const& renderContexts,
     HdMaterialNetworkMap *materialNetworkMap,
     UsdTimeCode time)
 {
@@ -416,6 +374,7 @@ UsdImaging_BuildHdMaterialNetworkFromTerminal(
         &network,
         &visitedNodes, 
         shaderSourceTypes,
+        renderContexts,
         time);
 
     if (!TF_VERIFY(!nodes.empty())) return;
@@ -458,20 +417,25 @@ bool _IsGraphTimeVarying(UsdShadeConnectableAPI const & shadeNode,
 
         // Find the attribute this input is getting its value from, which might
         // be an output or an input, including possibly itself if not connected
-        UsdShadeAttributeType attrType;
-        UsdAttribute attr = input.GetValueProducingAttribute(&attrType);
+        
+        const UsdShadeAttributeVector attrs = 
+            input.GetValueProducingAttributes(/*shaderOutputsOnly*/ false);
 
-        if (attrType == UsdShadeAttributeType::Output) {
-            // If it is an output on a shading node we visit the node and also
-            // create a relationship in the network
-            if (_IsGraphTimeVarying(
-                    UsdShadeConnectableAPI(attr.GetPrim()), visitedNodes)) {
-                return true;
-            }
-        } else if (attrType == UsdShadeAttributeType::Input) {
-            // If it is an input attribute we get the authored value.
-            if (attr.ValueMightBeTimeVarying()) {
-                return true;
+        for (const UsdAttribute& attr : attrs) {
+            UsdShadeAttributeType attrType = 
+                UsdShadeUtils::GetType(attr.GetName());
+            if (attrType == UsdShadeAttributeType::Output) {
+                // If it is an output on a shading node we visit the node and 
+                // also create a relationship in the network
+                if (_IsGraphTimeVarying(
+                        UsdShadeConnectableAPI(attr.GetPrim()), visitedNodes)) {
+                    return true;
+                }
+            } else if (attrType == UsdShadeAttributeType::Input) {
+                // If it is an input attribute we get the authored value.
+                if (attr.ValueMightBeTimeVarying()) {
+                    return true;
+                }
             }
         }
     }
@@ -480,7 +444,7 @@ bool _IsGraphTimeVarying(UsdShadeConnectableAPI const & shadeNode,
 }
 
 bool
-UsdImaging_IsHdMaterialNetworkTimeVarying(
+UsdImagingIsHdMaterialNetworkTimeVarying(
     UsdPrim const& usdTerminal)
 {
     _PathSet visitedNodes;

@@ -1,25 +1,8 @@
 //
 // Copyright 2018 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usd/usdShade/shaderDefParser.h"
 
@@ -27,6 +10,8 @@
 #include "pxr/usd/usdShade/shaderDefUtils.h"
 
 #include "pxr/usd/usd/stageCache.h"
+
+#include "pxr/base/tf/staticData.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -39,7 +24,7 @@ TF_DEFINE_PRIVATE_TOKENS(
     (usd)
 );
 
-UsdStageCache UsdShadeShaderDefParserPlugin::_cache;
+static TfStaticData<UsdStageCache> _StageCache;
 
 static
 NdrTokenMap
@@ -69,11 +54,10 @@ UsdShadeShaderDefParserPlugin::Parse(
     const std::string &rootLayerPath = discoveryResult.resolvedUri;
 
     SdfLayerRefPtr rootLayer = SdfLayer::FindOrOpen(rootLayerPath);
-    UsdStageRefPtr stage = 
-        UsdShadeShaderDefParserPlugin::_cache.FindOneMatching(rootLayer);
+    UsdStageRefPtr stage = _StageCache->FindOneMatching(rootLayer);
     if (!stage) {
         stage = UsdStage::Open(rootLayer);
-        UsdShadeShaderDefParserPlugin::_cache.Insert(stage);
+        _StageCache->Insert(stage);
     }
 
     if (!stage) {
@@ -125,7 +109,7 @@ UsdShadeShaderDefParserPlugin::Parse(
         discoveryResult.family,
         discoveryResult.discoveryType, /* discoveryType */
         discoveryResult.sourceType, /* sourceType */
-        nodeUriAssetPath.GetResolvedPath(),
+        rootLayerPath,
         resolvedImplementationUri,
         UsdShadeShaderDefUtils::GetShaderProperties(
             shaderDef.ConnectableAPI()),

@@ -1,25 +1,8 @@
 //
 // Copyright 2017 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -28,6 +11,8 @@
 #include "pxr/usd/usd/references.h"
 #include "pxr/usd/usd/relationship.h"
 #include "pxr/usd/usd/stage.h"
+
+#include "pxr/usd/sdf/pathExpression.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -39,7 +24,7 @@ namespace
 // type.
 void TestTargetSpecs()
 {
-    for (const std::string& fmt : {"usda", "usdc"}) {
+    for (const std::string fmt : {"usda", "usdc"}) {
         UsdStageRefPtr stage = 
             UsdStage::CreateInMemory("TestTargetSpecs." + fmt);
         
@@ -67,7 +52,7 @@ void TestTargetSpecs()
 // values are not part of the python API so we test them for the C++ API.
 void TestGetTargetsAndConnections()
 {
-    for (const std::string& fmt : {"usda", "usdc"}) {
+    for (const std::string fmt : {"usda", "usdc"}) {
         UsdStageRefPtr stage = 
             UsdStage::CreateInMemory("TestGetTargets." + fmt);
         
@@ -206,6 +191,74 @@ void TestGetTargetsAndConnections()
     }
 }
 
+static void
+_CheckNoSpecForOpaqueValues(const std::string &formatExtension)
+{
+    printf("%s %s\n", TF_FUNC_NAME().c_str(), formatExtension.c_str());
+
+    const UsdStageRefPtr stage =
+        UsdStage::CreateNew("test_opaque_values." + formatExtension);
+    const SdfLayerHandle layer = stage->GetRootLayer();
+
+    const UsdPrim prim = stage->DefinePrim(SdfPath("/Prim"));
+    const UsdAttribute attr = prim.CreateAttribute(
+        TfToken("attr"), SdfValueTypeNames->Opaque);
+
+    TF_AXIOM(!attr.HasAuthoredValue());
+
+    layer->SetField(
+        SdfPath("/Prim.attr"),
+        SdfFieldKeys->Default,
+        SdfOpaqueValue());
+    // We've set a default value, so this should return true.
+    TF_AXIOM(attr.HasAuthoredValue());
+
+    {
+        TfErrorMark mark;
+        mark.SetMark();
+        layer->Save();
+        // Should have emitted an error about trying to author an opaque value.
+        TF_AXIOM(!mark.IsClean());
+    }
+
+    // Once we reload the layer from disk, that authored opinion should be gone.
+    layer->Reload(/* force = */ true);
+    TF_AXIOM(!attr.HasAuthoredValue());
+}
+
+void
+TestOpaqueValueFileIO()
+{
+    _CheckNoSpecForOpaqueValues("usda");
+    _CheckNoSpecForOpaqueValues("usdc");
+}
+
+void
+TestOutParamterIgnoredForComposingValues()
+{
+    const UsdStageRefPtr stage = UsdStage::CreateInMemory();
+    const SdfLayerHandle layer = stage->GetRootLayer();
+
+    const UsdPrim prim = stage->DefinePrim(SdfPath {"/Prim"});
+
+    // Test that a PathExpression out-paramter's value is ignored, and not
+    // composed over authored opinions.
+    const UsdAttribute pathExprAttr = prim.CreateAttribute(
+        TfToken("pathExpr"), SdfValueTypeNames->PathExpression);
+    
+    SdfPathExpression outPathExpr { "/out %_" };
+    
+    // Calling Get() with no authored value should leave the out parameter
+    // untouched.
+    TF_AXIOM(!pathExprAttr.Get(&outPathExpr));
+    TF_AXIOM(outPathExpr == SdfPathExpression { "/out %_" });
+    
+    // Calling Get() should ignore the value in the out parameter.
+    pathExprAttr.Set(SdfPathExpression {"/authored"});
+    TF_AXIOM(pathExprAttr.Get(&outPathExpr));
+    TF_AXIOM(outPathExpr == SdfPathExpression { "/authored" });
+}
+
 }
 
 int 
@@ -213,5 +266,7 @@ main(int argc, char** argv)
 {
     TestTargetSpecs();
     TestGetTargetsAndConnections();
+    TestOpaqueValueFileIO();
+    TestOutParamterIgnoredForComposingValues();
     return 0;
 }

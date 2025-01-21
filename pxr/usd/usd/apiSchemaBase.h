@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef USD_GENERATED_APISCHEMABASE_H
 #define USD_GENERATED_APISCHEMABASE_H
@@ -88,8 +71,7 @@ class SdfAssetPath;
 /// explicit bool conversion operator. Examples of applied API schemas include
 /// UsdCollectionAPI, UsdGeomModelAPI and UsdGeomMotionAPI
 /// 
-/// \anchor UsdAPISchemaBase_SingleVsMultipleApply
-/// \name Single vs. Multiple Apply API Schemas
+/// \subsection usd_apischemabase_single_vs_multiple_apply Single vs. Multiple Apply API Schemas
 /// 
 /// Applied API schemas can further be classified into single-apply and 
 /// multiple-apply API schemas. As the name suggests, a single-apply API schema 
@@ -102,7 +84,7 @@ class SdfAssetPath;
 /// schema or directly from APISchemaBase. Similarly, a non-applied API schema 
 /// can only inherit from a non-applied API Schema or directly from 
 /// APISchemaBase. 'usdGenSchema' attempts to issue a warning if it detects 
-/// an incompability.
+/// an incompatibility.
 /// 
 /// \note A multiple-apply API schema may not inherit from a single-apply API 
 /// schema and vice versa. 
@@ -120,11 +102,6 @@ public:
     ///
     /// \sa UsdSchemaKind
     static const UsdSchemaKind schemaKind = UsdSchemaKind::AbstractBase;
-
-    /// \deprecated
-    /// Same as schemaKind, provided to maintain temporary backward 
-    /// compatibility with older generated schemas.
-    static const UsdSchemaKind schemaType = UsdSchemaKind::AbstractBase;
 
     /// Construct a UsdAPISchemaBase on UsdPrim \p prim .
     /// Equivalent to UsdAPISchemaBase::Get(prim.GetStage(), prim.GetPath())
@@ -161,12 +138,6 @@ protected:
     /// \sa UsdSchemaKind
     USD_API
     UsdSchemaKind _GetSchemaKind() const override;
-
-    /// \deprecated
-    /// Same as _GetSchemaKind, provided to maintain temporary backward 
-    /// compatibility with older generated schemas.
-    USD_API
-    UsdSchemaKind _GetSchemaType() const override;
 
 private:
     // needs to invoke _GetStaticTfType.
@@ -220,74 +191,13 @@ protected:
         return _instanceName;
     }
 
+    /// Returns a vector of names of API schema objects belonging to a
+    /// multiple-apply API schema applied to a given prim.
+    USD_API
+    static TfTokenVector _GetMultipleApplyInstanceNames(const UsdPrim &prim,
+                                                        const TfType &schemaType);
+
 protected:        
-    /// Helper method to apply a <b>single-apply</b> API schema with the given 
-    /// schema name \p apiSchemaName' and C++ type 'APISchemaType'. The schema 
-    /// is applied on the given \p prim in the current edit target. 
-    /// 
-    /// This information is stored by adding \p apiSchemaName value to the 
-    /// token-valued, listOp metadata \em apiSchemas on the prim.
-    /// 
-    /// A valid schema object of type \em APISchemaType is returned upon 
-    /// success. 
-    /// 
-    /// A coding error is issued and an invalid schema object is returned if 
-    /// <li>if \p prim is invalid or is an instance proxy prim or is contained 
-    /// within an instance prototype OR</li>
-    /// <li>\p apiSchemaName cannot be added to the apiSchemas listOp 
-    /// metadata.</li></ul>
-    /// 
-    /// A run-time error is issued and an invalid schema object is returned 
-    /// if the given prim is valid, but cannot be reached or overridden in the 
-    /// current edit target. 
-    /// 
-    template <typename APISchemaType>
-    static APISchemaType _ApplyAPISchema(
-        const UsdPrim &prim, 
-        const TfToken &apiSchemaName) 
-    {
-        if (prim.ApplyAPI<APISchemaType>()) {
-            return APISchemaType(prim);
-        }
-        return APISchemaType();
-    }
-
-    /// Helper method to apply a </b>multiple-apply</b> API schema with the 
-    /// given schema name \p apiSchemaName', C++ type 'APISchemaType' and 
-    /// instance name \p instanceName. The schema is applied on the given 
-    /// \p prim in the current edit target. 
-    /// 
-    /// This information is stored in the token-valued, listOp metadata
-    /// \em apiSchemas on the prim. For example, if \p apiSchemaName is
-    /// 'CollectionAPI' and \p instanceName is 'plasticStuff', the name 
-    /// 'CollectionAPI:plasticStuff' is added to 'apiSchemas' listOp metadata. 
-    /// 
-    /// A valid schema object of type \em APISchemaType is returned upon 
-    /// success. 
-    /// 
-    /// A coding error is issued and an invalid schema object is returned if 
-    /// <li>the \p prim is invalid or is an instance proxy prim or is contained 
-    /// within an instance prototype OR</li>
-    /// <li>\p instanceName is empty OR</li>
-    /// <li><i>apiSchemaName:instanceName</i> cannot be added to the apiSchemas 
-    /// listOp metadata.</li></ul>
-    /// 
-    /// A run-time error is issued and an invalid schema object is returned 
-    /// if the given prim is valid, but cannot be reached or overridden in the 
-    /// current edit target. 
-    /// 
-    template <typename APISchemaType>
-    static APISchemaType _MultipleApplyAPISchema(
-        const UsdPrim &prim, 
-        const TfToken &apiSchemaName,
-        const TfToken &instanceName) 
-    {
-        if (prim.ApplyAPI<APISchemaType>(instanceName)) {
-            return APISchemaType(prim, instanceName);
-        }
-        return APISchemaType();
-    }
-
     /// Check whether this APISchema object is valid for the currently held  
     /// prim. 
     /// 

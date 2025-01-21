@@ -1,144 +1,69 @@
 set(PXR_PREFIX pxr/usd)
 set(PXR_PACKAGE ar)
 
-if(PXR_USE_AR_2)
-    set(AR_VERSION 2)
-else()
-    set(AR_VERSION 1)
-endif()
-
-configure_file(
-    ar.h.in 
-    ${CMAKE_BINARY_DIR}/include/pxr/usd/ar/ar.h)
-install(
-    FILES ${CMAKE_BINARY_DIR}/include/pxr/usd/ar/ar.h
-    DESTINATION include/pxr/usd/ar
-)
-
-set(versionedHeaders "")
-set(versionedCPPFiles "")
-set(versionedPrivateHeaders "")
-set(versionedPythonHeaders "")
-set(versionedPythonCPPFiles "")
-set(versionedPymoduleCPPFiles "")
-
-if (AR_VERSION EQUAL 1)
-    list(APPEND versionedHeaders 
-         defaultResolver_v1.h
-         resolver_v1.h
-         resolverContext_v1.h
-    )
-    list(APPEND versionedCPPFiles
-         defaultResolver_v1.cpp
-         resolver_v1.cpp
-         resolverContext_v1.cpp
-    )
-    list(APPEND versionedPythonHeaders
-         pyResolverContext_v1.h
-    )
-    list(APPEND versionedPythonCPPFiles
-         pyResolverContext_v1.cpp
-    )
-    list(APPEND versionedPymoduleCPPFiles
-         wrapDefaultResolver_v1.cpp
-         wrapResolver_v1.cpp
-         wrapResolverContext_v1.cpp
-    )
-elseif (AR_VERSION EQUAL 2)
-    list(APPEND versionedHeaders 
-         defaultResolver_v2.h
-         filesystemWritableAsset.h
-         resolver_v2.h
-         resolverContext_v2.h
-         writableAsset.h
-    )
-    list(APPEND versionedCPPFiles
-         defaultResolver_v2.cpp
-         filesystemWritableAsset.cpp
-         resolver_v2.cpp
-         resolverContext_v2.cpp
-         writableAsset.cpp
-    )
-    list(APPEND versionedPrivateHeaders
-         testenv/TestArURIResolver_plugin.h
-    )
-    list(APPEND versionedPythonHeaders
-         pyResolverContext_v2.h
-    )
-    list(APPEND versionedPythonCPPFiles
-         pyResolverContext_v2.cpp
-    )
-    list(APPEND versionedPymoduleCPPFiles
-         wrapDefaultResolver_v2.cpp
-         wrapResolver_v2.cpp
-         wrapResolverContext_v2.cpp
-    )
-endif()
-
 pxr_library(ar
     LIBRARIES
         arch
+        js
         tf
         plug
         vt
-        ${Boost_PYTHON_LIBRARY}
+        ${TBB_tbb_LIBRARY}
 
     INCLUDE_DIRS
-        ${Boost_INCLUDE_DIRS}
+        ${TBB_INCLUDE_DIRS}
+
+    PUBLIC_CLASSES
+        asset
+        assetInfo
+        defaultResolver
+        defaultResolverContext
+        definePackageResolver
+        defineResolver
+        filesystemAsset
+        filesystemWritableAsset
+        inMemoryAsset
+        notice
+        packageResolver
+        packageUtils
+        resolvedPath
+        resolver
+        resolverContext
+        resolverContextBinder
+        resolverScopedCache
+        timestamp
+        writableAsset
 
     PUBLIC_HEADERS
         api.h
-        asset.h
-        assetInfo.h
-        defaultResolver.h
-        defaultResolverContext.h
-        filesystemAsset.h
-        definePackageResolver.h
-        defineResolver.h
+        ar.h
         defineResolverContext.h
-        packageResolver.h
-        packageUtils.h
-        resolvedPath.h
-        resolver.h
-        resolverContext.h
-        resolverContextBinder.h
-        resolverScopedCache.h
         threadLocalScopedCache.h
-        ${versionedHeaders}
-
-    PYTHON_PUBLIC_HEADERS
-        pyResolverContext.h
-        ${versionedPythonHeaders}
 
     PRIVATE_HEADERS
         debugCodes.h
-        ${versionedPrivateHeaders}
+        testenv/TestArURIResolver_plugin.h
 
     CPPFILES
-        asset.cpp
-        assetInfo.cpp
-        filesystemAsset.cpp
-        packageResolver.cpp
-        packageUtils.cpp
-        resolvedPath.cpp
-        resolverContextBinder.cpp
-        resolverScopedCache.cpp
         debugCodes.cpp
-        defaultResolverContext.cpp
-        ${versionedCPPFiles}
 
-    PYTHON_CPPFILES
-        moduleDeps.cpp
-        ${versionedPythonCPPFiles}
+    PYTHON_PUBLIC_CLASSES
+        pyResolverContext
 
     PYMODULE_CPPFILES
         module.cpp
+        wrapAsset.cpp
+        wrapAssetInfo.cpp
         wrapDefaultResolverContext.cpp
+        wrapDefaultResolver.cpp
+        wrapNotice.cpp
         wrapPackageUtils.cpp
         wrapResolvedPath.cpp
         wrapResolverContextBinder.cpp
+        wrapResolverContext.cpp
         wrapResolverScopedCache.cpp
-        ${versionedPymoduleCPPFiles}
+        wrapResolver.cpp
+        wrapTimestamp.cpp
 
     PYMODULE_FILES
         __init__.py
@@ -151,15 +76,17 @@ pxr_library(ar
 )
 
 pxr_test_scripts(
+    testenv/testArAssetInfo.py
     testenv/testArAdvancedAPI.py
     testenv/testArDefaultResolver.py
+    testenv/testArOpenAsset.py
     testenv/testArPackageUtils.py
     testenv/testArResolvedPath.py
     testenv/testArResolverContext.py
+    testenv/testArTimestamp.py
 )
 
 pxr_build_test_shared_lib(TestArAdvancedAPI
-    CREATE_FRAMEWORK
     INSTALL_PREFIX ArPlugins
     LIBRARIES
         tf
@@ -169,7 +96,6 @@ pxr_build_test_shared_lib(TestArAdvancedAPI
 ) 
 
 pxr_build_test_shared_lib(TestArPackageResolver
-    CREATE_FRAMEWORK
     INSTALL_PREFIX ArPlugins
     LIBRARIES
         tf
@@ -178,9 +104,84 @@ pxr_build_test_shared_lib(TestArPackageResolver
         testenv/TestArPackageResolver_plugin.cpp
 ) 
 
-if (AR_VERSION EQUAL 2)
+pxr_build_test_shared_lib(TestArOptionalImplementation
+    INSTALL_PREFIX ArPlugins
+    LIBRARIES
+        tf
+        ar
+    CPPFILES
+        testenv/TestArOptionalImplementation_plugin.cpp
+) 
+
+pxr_test_scripts(
+    testenv/testArOptionalImplementation.py
+)
+
+pxr_install_test_dir(
+    SRC testenv/testArOptionalImplementation
+    DEST testArOptionalImplementation_1
+)
+
+pxr_install_test_dir(
+    SRC testenv/testArOptionalImplementation
+    DEST testArOptionalImplementation_2
+)
+
+pxr_install_test_dir(
+    SRC testenv/testArOptionalImplementation
+    DEST testArOptionalImplementation_3
+)
+
+pxr_install_test_dir(
+    SRC testenv/testArOptionalImplementation
+    DEST testArOptionalImplementation_4
+)
+
+pxr_install_test_dir(
+    SRC testenv/testArOptionalImplementation
+    DEST testArOptionalImplementation_5
+)
+
+pxr_register_test(testArOptionalImplementation_1
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArOptionalImplementation _TestResolver"
+    STDOUT_REDIRECT base.txt
+    DIFF_COMPARE base.txt
+)
+
+pxr_register_test(testArOptionalImplementation_2
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArOptionalImplementation _TestResolverWithContextMethods"
+    STDOUT_REDIRECT resolver_with_context.txt
+    DIFF_COMPARE resolver_with_context.txt
+)
+
+pxr_register_test(testArOptionalImplementation_3
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArOptionalImplementation _TestDerivedResolverWithContextMethods"
+    STDOUT_REDIRECT derived_resolver_with_context.txt
+    DIFF_COMPARE derived_resolver_with_context.txt
+)
+
+pxr_register_test(testArOptionalImplementation_4
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArOptionalImplementation _TestResolverWithCacheMethods"
+    STDOUT_REDIRECT resolver_with_cache.txt
+    DIFF_COMPARE resolver_with_cache.txt
+)
+
+pxr_register_test(testArOptionalImplementation_5
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArOptionalImplementation _TestDerivedResolverWithCacheMethods"
+    STDOUT_REDIRECT derived_resolver_with_cache.txt
+    DIFF_COMPARE derived_resolver_with_cache.txt
+)
+
+# This test relies on a plugin built specifically for this test.
+# The build system currently doesn't support this for static library
+# builds, so we only enable this test on shared library builds.
+if (BUILD_SHARED_LIBS)
     pxr_build_test_shared_lib(TestArURIResolver
-        CREATE_FRAMEWORK
         INSTALL_PREFIX ArPlugins
         LIBRARIES
             tf
@@ -198,6 +199,15 @@ if (AR_VERSION EQUAL 2)
             testenv/testArURIResolver.cpp
     )
 
+    pxr_test_scripts(
+        testenv/testArURIResolver.py
+    )
+
+    pxr_register_test(testArURIResolver
+        PYTHON
+        COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArURIResolver"
+    )
+
     pxr_register_test(testArURIResolver_CPP
         COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArURIResolver_CPP"
     )
@@ -212,6 +222,19 @@ pxr_build_test(testArDefaultResolver_CPP
         testenv/testArDefaultResolver.cpp
 ) 
 
+pxr_build_test(testArNotice_CPP
+    LIBRARIES
+        arch
+        tf
+        ar
+    CPPFILES
+        testenv/testArNotice.cpp
+) 
+
+pxr_register_test(testArNotice_CPP
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArNotice_CPP"
+)
+
 pxr_build_test(testArResolverContext_CPP
     LIBRARIES
         arch
@@ -220,6 +243,20 @@ pxr_build_test(testArResolverContext_CPP
     CPPFILES
         testenv/testArResolverContext.cpp
 ) 
+
+pxr_build_test(testArThreadedAssetCreation
+    LIBRARIES
+        arch
+        tf
+        ar
+    CPPFILES
+        testenv/testArThreadedAssetCreation.cpp
+) 
+
+pxr_register_test(testArAssetInfo
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArAssetInfo"
+)
 
 pxr_register_test(testArAdvancedAPI
     PYTHON
@@ -235,6 +272,11 @@ pxr_register_test(testArDefaultResolver_CPP
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArDefaultResolver_CPP"
 )
 
+pxr_register_test(testArOpenAsset
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArOpenAsset"
+)
+
 pxr_register_test(testArPackageUtils
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArPackageUtils"
@@ -245,6 +287,11 @@ pxr_register_test(testArResolvedPath
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArResolvedPath"
 )
 
+pxr_register_test(testArTimestamp
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArTimestamp"
+)
+
 pxr_register_test(testArResolverContext
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArResolverContext"
@@ -252,4 +299,8 @@ pxr_register_test(testArResolverContext
 
 pxr_register_test(testArResolverContext_CPP
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArResolverContext_CPP"
+)
+
+pxr_register_test(testArThreadedAssetCreation
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testArThreadedAssetCreation"
 )

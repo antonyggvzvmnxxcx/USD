@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef USDLUX_GENERATED_LIGHTFILTER_H
 #define USDLUX_GENERATED_LIGHTFILTER_H
@@ -70,6 +53,11 @@ class SdfAssetPath;
 /// be accessed via GetFilterLinkCollection().
 /// 
 ///
+/// For any described attribute \em Fallback \em Value or \em Allowed \em Values below
+/// that are text/tokens, the actual token is published and defined in \ref UsdLuxTokens.
+/// So to set an attribute to the value "rightHanded", use UsdLuxTokens->rightHanded
+/// as the value.
+///
 class UsdLuxLightFilter : public UsdGeomXformable
 {
 public:
@@ -77,11 +65,6 @@ public:
     ///
     /// \sa UsdSchemaKind
     static const UsdSchemaKind schemaKind = UsdSchemaKind::ConcreteTyped;
-
-    /// \deprecated
-    /// Same as schemaKind, provided to maintain temporary backward 
-    /// compatibility with older generated schemas.
-    static const UsdSchemaKind schemaType = UsdSchemaKind::ConcreteTyped;
 
     /// Construct a UsdLuxLightFilter on UsdPrim \p prim .
     /// Equivalent to UsdLuxLightFilter::Get(prim.GetStage(), prim.GetPath())
@@ -157,12 +140,6 @@ protected:
     USDLUX_API
     UsdSchemaKind _GetSchemaKind() const override;
 
-    /// \deprecated
-    /// Same as _GetSchemaKind, provided to maintain temporary backward 
-    /// compatibility with older generated schemas.
-    USDLUX_API
-    UsdSchemaKind _GetSchemaType() const override;
-
 private:
     // needs to invoke _GetStaticTfType.
     friend class UsdSchemaRegistry;
@@ -174,6 +151,37 @@ private:
     // override SchemaBase virtuals.
     USDLUX_API
     const TfType &_GetTfType() const override;
+
+public:
+    // --------------------------------------------------------------------- //
+    // SHADERID 
+    // --------------------------------------------------------------------- //
+    /// Default ID for the light filter's shader. 
+    /// This defines the shader ID for this light filter when a render context 
+    /// specific shader ID is not available. 
+    /// 
+    /// \see GetShaderId
+    /// \see GetShaderIdAttrForRenderContext
+    /// \see SdrRegistry::GetShaderNodeByIdentifier
+    /// \see SdrRegistry::GetShaderNodeByIdentifierAndType
+    /// 
+    ///
+    /// | ||
+    /// | -- | -- |
+    /// | Declaration | `uniform token lightFilter:shaderId = ""` |
+    /// | C++ Type | TfToken |
+    /// | \ref Usd_Datatypes "Usd Type" | SdfValueTypeNames->Token |
+    /// | \ref SdfVariability "Variability" | SdfVariabilityUniform |
+    USDLUX_API
+    UsdAttribute GetShaderIdAttr() const;
+
+    /// See GetShaderIdAttr(), and also 
+    /// \ref Usd_Create_Or_Get_Property for when to use Get vs Create.
+    /// If specified, author \p defaultValue as the attribute's default,
+    /// sparsely (when it makes sense to do so) if \p writeSparsely is \c true -
+    /// the default for \p writeSparsely is \c false.
+    USDLUX_API
+    UsdAttribute CreateShaderIdAttr(VtValue const &defaultValue = VtValue(), bool writeSparsely=false) const;
 
 public:
     // ===================================================================== //
@@ -280,6 +288,56 @@ public:
     /// controls which geometry this light filter affects.
     USDLUX_API
     UsdCollectionAPI GetFilterLinkCollectionAPI() const;
+
+    /// Returns the shader ID attribute for the given \p renderContext.
+    ///
+    /// If \p renderContext is non-empty, this will try to return an attribute
+    /// named _lightFilter:shaderId_ with the namespace prefix \p renderContext.
+    /// For example, if the passed in render context is "ri" then the attribute 
+    /// returned by this function would have the following signature:
+    /// | ||
+    /// | -- | -- |
+    /// | Declaration | `token ri:lightFilter:shaderId` |
+    /// | C++ Type | TfToken |
+    /// | \ref Usd_Datatypes "Usd Type" | SdfValueTypeNames->Token |
+    /// 
+    /// If the render context is empty, this will return the default shader ID 
+    /// attribute as returned by GetShaderIdAttr().
+    USDLUX_API
+    UsdAttribute GetShaderIdAttrForRenderContext(
+        const TfToken &renderContext) const;
+
+    /// Creates the shader ID attribute for the given \p renderContext.
+    ///
+    /// See GetShaderIdAttrForRenderContext(), and also 
+    /// \ref Usd_Create_Or_Get_Property for when to use Get vs Create.
+    /// If specified, author \p defaultValue as the attribute's default,
+    /// sparsely (when it makes sense to do so) if \p writeSparsely is \c true -
+    /// the default for \p writeSparsely is \c false.
+    USDLUX_API
+    UsdAttribute CreateShaderIdAttrForRenderContext(
+        const TfToken &renderContext,
+        VtValue const &defaultValue = VtValue(), 
+        bool writeSparsely=false) const;
+
+    /// Return the light filter's shader ID for the given list of available 
+    /// \p renderContexts.
+    ///
+    /// The shader ID returned by this function is the identifier to use when 
+    /// looking up the shader definition for this light filter in the 
+    /// \ref SdrRegistry "shader registry".
+    /// 
+    /// The render contexts are expected to be listed in priority order, so
+    /// for each render context provided, this will try to find the shader ID 
+    /// attribute specific to that render context (see 
+    /// GetShaderIdAttrForRenderContext()) and will return the 
+    /// value of the first one found that has a non-empty value. If no shader ID
+    /// value can be found for any of the given render contexts or 
+    /// \p renderContexts is empty, then this will return the value of the 
+    /// default shader ID attribute (see GetShaderIdAttr()).
+    USDLUX_API
+    TfToken GetShaderId(const TfTokenVector &renderContexts) const;
+
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

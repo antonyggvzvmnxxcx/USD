@@ -1,32 +1,15 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/envSetting.h"
 #include "pxr/base/tf/iterator.h"
 
 #include "pxr/imaging/hdSt/bufferResource.h"
-#include "pxr/imaging/hdSt/glUtils.h"
+#include "pxr/imaging/hdSt/bufferUtils.h"
 #include "pxr/imaging/hdSt/tokens.h"
 #include "pxr/imaging/hdSt/vboSimpleMemoryManager.h"
 
@@ -39,12 +22,11 @@
 #include "pxr/imaging/hgi/blitCmds.h"
 #include "pxr/imaging/hgi/blitCmdsOps.h"
 #include "pxr/imaging/hgi/buffer.h"
+#include "pxr/imaging/hgi/capabilities.h"
 
 #include "pxr/imaging/hf/perfLog.h"
 
 #include <atomic>
-
-#include <boost/functional/hash.hpp>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -72,7 +54,7 @@ HdStVBOSimpleMemoryManager::CreateBufferArrayRange()
                 (_resourceRegistry);
 }
 
-HdAggregationStrategy::AggregationId
+HdStAggregationStrategy::AggregationId
 HdStVBOSimpleMemoryManager::ComputeAggregationId(
     HdBufferSpecVector const &bufferSpecs,
     HdBufferArrayUsageHint usageHint) const
@@ -147,6 +129,7 @@ HdStVBOSimpleMemoryManager::_SimpleBufferArray::_SimpleBufferArray(
  , _resourceRegistry(resourceRegistry)
  , _capacity(0)
  , _maxBytesPerElement(0)
+ , _bufferUsage(0)
 {
     HD_TRACE_FUNCTION();
     HF_MALLOC_TAG_FUNCTION();
@@ -166,6 +149,19 @@ HdStVBOSimpleMemoryManager::_SimpleBufferArray::_SimpleBufferArray(
             _maxBytesPerElement,
             HdDataSizeOfTupleType(bres->GetTupleType()));
     }
+
+    if (usageHint & HdBufferArrayUsageHintBitsUniform) {
+        _bufferUsage |= HgiBufferUsageUniform;
+    }
+    if (usageHint & HdBufferArrayUsageHintBitsStorage) {
+        _bufferUsage |= HgiBufferUsageStorage;
+    }
+    if (usageHint & HdBufferArrayUsageHintBitsVertex) {
+        _bufferUsage |= HgiBufferUsageVertex;
+    }
+    if (_bufferUsage == 0) {
+        TF_CODING_ERROR("Buffer usage was not specified!");
+    }
 }
 
 HdStBufferResourceSharedPtr
@@ -184,8 +180,9 @@ HdStVBOSimpleMemoryManager::_SimpleBufferArray::_AddResource(
         }
     }
 
-    HdStBufferResourceSharedPtr bufferRes = HdStBufferResourceSharedPtr(
-        new HdStBufferResource(GetRole(), tupleType, offset, stride));
+    HdStBufferResourceSharedPtr bufferRes = 
+        std::make_shared<HdStBufferResource>(
+            GetRole(), tupleType, offset, stride);
     _resourceList.emplace_back(name, bufferRes);
     return bufferRes;
 }
@@ -282,20 +279,21 @@ HdStVBOSimpleMemoryManager::_SimpleBufferArray::Reallocate(
     TF_FOR_ALL (bresIt, GetResources()) {
         HdStBufferResourceSharedPtr const &bres = bresIt->second;
 
-        // XXX:Arrays: We should use HdDataSizeOfTupleType() here, to
-        // add support for array types.
-        int bytesPerElement = HdDataSizeOfType(bres->GetTupleType().type);
+        size_t bytesPerElement = HdDataSizeOfTupleType(bres->GetTupleType());
         size_t bufferSize = bytesPerElement * numElements;
+
+        // Clamp for 0-sized buffers, Metal doesn't support them.
+        bufferSize = std::max(bufferSize, static_cast<size_t>(256));
 
         HgiBufferHandle oldBuf = bres->GetHandle();
         HgiBufferHandle newBuf;
 
-        if(bufferSize > 0) {
-            HgiBufferDesc bufDesc;
-            bufDesc.byteSize = bufferSize;
-            bufDesc.usage = HgiBufferUsageUniform;
-            newBuf = hgi->CreateBuffer(bufDesc);
-        }
+        HgiBufferDesc bufDesc;
+        bufDesc.byteSize = bufferSize;
+        bufDesc.usage = _bufferUsage;
+        bufDesc.vertexStride = bytesPerElement;
+        bufDesc.debugName = bresIt->first.GetText();
+        newBuf = hgi->CreateBuffer(bufDesc);
 
         // copy the range. There are three cases:
         //
@@ -345,7 +343,10 @@ size_t
 HdStVBOSimpleMemoryManager::_SimpleBufferArray::GetMaxNumElements() const
 {
     static size_t vboMaxSize = TfGetEnvSetting(HD_MAX_VBO_SIZE);
-    return vboMaxSize / _maxBytesPerElement;
+    Hgi* hgi = _resourceRegistry->GetHgi();
+    const size_t storageMaxSize = hgi->GetCapabilities()->
+        GetMaxShaderStorageBlockSize();
+    return std::min(storageMaxSize, vboMaxSize) / _maxBytesPerElement;
 }
 
 void
@@ -421,6 +422,12 @@ HdStVBOSimpleMemoryManager::_SimpleBufferArrayRange::IsImmutable() const
          && _bufferArray->IsImmutable();
 }
 
+bool
+HdStVBOSimpleMemoryManager::_SimpleBufferArrayRange::RequiresStaging() const
+{
+    return false;
+}
+
 void
 HdStVBOSimpleMemoryManager::_SimpleBufferArrayRange::CopyData(
     HdBufferSourceSharedPtr const &bufferSource)
@@ -429,8 +436,6 @@ HdStVBOSimpleMemoryManager::_SimpleBufferArrayRange::CopyData(
     HF_MALLOC_TAG_FUNCTION();
 
     if (!TF_VERIFY(_bufferArray)) return;
-
-    int offset = 0;
 
     HdStBufferResourceSharedPtr VBO =
         _bufferArray->GetResource(bufferSource->GetName());
@@ -441,7 +446,7 @@ HdStVBOSimpleMemoryManager::_SimpleBufferArrayRange::CopyData(
         return;
     }
 
-    int bytesPerElement = HdDataSizeOfTupleType(VBO->GetTupleType());
+    size_t bytesPerElement = HdDataSizeOfTupleType(VBO->GetTupleType());
     // overrun check. for graceful handling of erroneous assets,
     // issue warning here and continue to copy for the valid range.
     size_t dstSize = _numElements * bytesPerElement;
@@ -454,8 +459,6 @@ HdStVBOSimpleMemoryManager::_SimpleBufferArrayRange::CopyData(
         srcSize = dstSize;
     }
 
-    size_t vboOffset = bytesPerElement * offset;
-
     HD_PERF_COUNTER_INCR(HdStPerfTokens->copyBufferCpuToGpu);
 
     HgiBufferCpuToGpuOp blitOp;
@@ -464,14 +467,15 @@ HdStVBOSimpleMemoryManager::_SimpleBufferArrayRange::CopyData(
     
     blitOp.sourceByteOffset = 0;
     blitOp.byteSize = srcSize;
-    blitOp.destinationByteOffset = vboOffset;
+    blitOp.destinationByteOffset = 0;
 
     HgiBlitCmds* blitCmds = GetResourceRegistry()->GetGlobalBlitCmds();
     blitCmds->CopyBufferCpuToGpu(blitOp);
 }
 
 VtValue
-HdStVBOSimpleMemoryManager::_SimpleBufferArrayRange::ReadData(TfToken const &name) const
+HdStVBOSimpleMemoryManager::_SimpleBufferArrayRange::ReadData(
+    TfToken const &name) const
 {
     HD_TRACE_FUNCTION();
     HF_MALLOC_TAG_FUNCTION();
@@ -485,11 +489,13 @@ HdStVBOSimpleMemoryManager::_SimpleBufferArrayRange::ReadData(TfToken const &nam
         return VtValue();
     }
 
-    return HdStGLUtils::ReadBuffer(VBO->GetHandle()->GetRawResource(),
-                                   VBO->GetTupleType(),
-                                 /*offset=*/0,
-                                 /*stride=*/0,  // not interleaved.
-                                 _numElements);
+    return HdStReadBuffer(VBO->GetHandle(),
+                          VBO->GetTupleType(),
+                          /*offset=*/0,
+                          /*stride=*/0,  // not interleaved.
+                          _numElements,
+                          /*elementStride=*/0,
+                          GetResourceRegistry());
 }
 
 size_t

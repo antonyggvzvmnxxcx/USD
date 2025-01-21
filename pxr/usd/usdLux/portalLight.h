@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef USDLUX_GENERATED_PORTALLIGHT_H
 #define USDLUX_GENERATED_PORTALLIGHT_H
@@ -28,9 +11,10 @@
 
 #include "pxr/pxr.h"
 #include "pxr/usd/usdLux/api.h"
-#include "pxr/usd/usdLux/light.h"
+#include "pxr/usd/usdLux/boundableLightBase.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usdLux/tokens.h"
 
 #include "pxr/base/vt/value.h"
 
@@ -55,7 +39,7 @@ class SdfAssetPath;
 /// of a dome light.  Transmits light in the -Z direction.
 /// The rectangle is 1 unit in length.
 ///
-class UsdLuxPortalLight : public UsdLuxLight
+class UsdLuxPortalLight : public UsdLuxBoundableLightBase
 {
 public:
     /// Compile time constant representing what kind of schema this class is.
@@ -63,17 +47,12 @@ public:
     /// \sa UsdSchemaKind
     static const UsdSchemaKind schemaKind = UsdSchemaKind::ConcreteTyped;
 
-    /// \deprecated
-    /// Same as schemaKind, provided to maintain temporary backward 
-    /// compatibility with older generated schemas.
-    static const UsdSchemaKind schemaType = UsdSchemaKind::ConcreteTyped;
-
     /// Construct a UsdLuxPortalLight on UsdPrim \p prim .
     /// Equivalent to UsdLuxPortalLight::Get(prim.GetStage(), prim.GetPath())
     /// for a \em valid \p prim, but will not immediately throw an error for
     /// an invalid \p prim
     explicit UsdLuxPortalLight(const UsdPrim& prim=UsdPrim())
-        : UsdLuxLight(prim)
+        : UsdLuxBoundableLightBase(prim)
     {
     }
 
@@ -81,7 +60,7 @@ public:
     /// Should be preferred over UsdLuxPortalLight(schemaObj.GetPrim()),
     /// as it preserves SchemaBase state.
     explicit UsdLuxPortalLight(const UsdSchemaBase& schemaObj)
-        : UsdLuxLight(schemaObj)
+        : UsdLuxBoundableLightBase(schemaObj)
     {
     }
 
@@ -142,12 +121,6 @@ protected:
     USDLUX_API
     UsdSchemaKind _GetSchemaKind() const override;
 
-    /// \deprecated
-    /// Same as _GetSchemaKind, provided to maintain temporary backward 
-    /// compatibility with older generated schemas.
-    USDLUX_API
-    UsdSchemaKind _GetSchemaType() const override;
-
 private:
     // needs to invoke _GetStaticTfType.
     friend class UsdSchemaRegistry;
@@ -159,6 +132,50 @@ private:
     // override SchemaBase virtuals.
     USDLUX_API
     const TfType &_GetTfType() const override;
+
+public:
+    // --------------------------------------------------------------------- //
+    // WIDTH 
+    // --------------------------------------------------------------------- //
+    /// Width of the portal rectangle in the local X axis.
+    ///
+    /// | ||
+    /// | -- | -- |
+    /// | Declaration | `float inputs:width = 1` |
+    /// | C++ Type | float |
+    /// | \ref Usd_Datatypes "Usd Type" | SdfValueTypeNames->Float |
+    USDLUX_API
+    UsdAttribute GetWidthAttr() const;
+
+    /// See GetWidthAttr(), and also 
+    /// \ref Usd_Create_Or_Get_Property for when to use Get vs Create.
+    /// If specified, author \p defaultValue as the attribute's default,
+    /// sparsely (when it makes sense to do so) if \p writeSparsely is \c true -
+    /// the default for \p writeSparsely is \c false.
+    USDLUX_API
+    UsdAttribute CreateWidthAttr(VtValue const &defaultValue = VtValue(), bool writeSparsely=false) const;
+
+public:
+    // --------------------------------------------------------------------- //
+    // HEIGHT 
+    // --------------------------------------------------------------------- //
+    /// Height of the portal rectangle in the local Y axis.
+    ///
+    /// | ||
+    /// | -- | -- |
+    /// | Declaration | `float inputs:height = 1` |
+    /// | C++ Type | float |
+    /// | \ref Usd_Datatypes "Usd Type" | SdfValueTypeNames->Float |
+    USDLUX_API
+    UsdAttribute GetHeightAttr() const;
+
+    /// See GetHeightAttr(), and also 
+    /// \ref Usd_Create_Or_Get_Property for when to use Get vs Create.
+    /// If specified, author \p defaultValue as the attribute's default,
+    /// sparsely (when it makes sense to do so) if \p writeSparsely is \c true -
+    /// the default for \p writeSparsely is \c false.
+    USDLUX_API
+    UsdAttribute CreateHeightAttr(VtValue const &defaultValue = VtValue(), bool writeSparsely=false) const;
 
 public:
     // ===================================================================== //

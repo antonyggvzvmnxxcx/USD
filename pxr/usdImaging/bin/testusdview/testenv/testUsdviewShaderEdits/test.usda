@@ -75,7 +75,10 @@ def Scope "Scene" (
 
     def Xform "Geom"
     {
-        def Mesh "Plane" {
+        def Mesh "Plane" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
             rel material:binding = </Scene/Looks/MainMaterial_1>
             uniform bool doubleSided = 0
             float2[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (interpolation = "vertex")
@@ -83,6 +86,13 @@ def Scope "Scene" (
             int[] faceVertexCounts = [4]
             int[] faceVertexIndices = [0, 1, 2, 3]
             point3f[] points = [(-2,-2,-2), (2, -2,-2), (2, 2, -2), (-2, 2, -2)]
+        }
+    }
+
+    def Xform "Lights"
+    {
+        def DomeLight "DomeLight"
+        {
         }
     }
 }

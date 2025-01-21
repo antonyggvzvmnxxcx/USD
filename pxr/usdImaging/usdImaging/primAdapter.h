@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_IMAGING_USD_IMAGING_PRIM_ADAPTER_H
 #define PXR_USD_IMAGING_USD_IMAGING_PRIM_ADAPTER_H
@@ -32,9 +15,11 @@
 #include "pxr/usdImaging/usdImaging/collectionCache.h"
 #include "pxr/usdImaging/usdImaging/primvarDescCache.h"
 #include "pxr/usdImaging/usdImaging/resolvedAttributeCache.h"
+#include "pxr/usdImaging/usdImaging/types.h"
 
 #include "pxr/imaging/hd/changeTracker.h"
 #include "pxr/imaging/hd/selection.h"
+#include "pxr/usd/sdf/path.h"
 #include "pxr/usd/usd/attribute.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/timeCode.h"
@@ -55,6 +40,8 @@ class UsdImagingIndexProxy;
 class UsdImagingInstancerContext;
 class HdExtComputationContext;
 
+class UsdImagingDataSourceStageGlobals;
+
 using UsdImagingPrimAdapterSharedPtr = 
     std::shared_ptr<class UsdImagingPrimAdapter>;
 
@@ -63,20 +50,84 @@ using UsdImagingPrimAdapterSharedPtr =
 /// Base class for all PrimAdapters.
 ///
 class UsdImagingPrimAdapter 
-            : public std::enable_shared_from_this<UsdImagingPrimAdapter>
+  : public std::enable_shared_from_this<UsdImagingPrimAdapter>
 {
 public:
-    
+    USDIMAGING_API
+    virtual ~UsdImagingPrimAdapter() = default;
+
+    // ---------------------------------------------------------------------- //
+    /// \name Scene Index Support
+    // ---------------------------------------------------------------------- //
+
+    USDIMAGING_API
+    virtual TfTokenVector GetImagingSubprims(UsdPrim const& prim);
+
+    USDIMAGING_API
+    virtual TfToken GetImagingSubprimType(
+        UsdPrim const& prim, TfToken const& subprim);
+
+    USDIMAGING_API
+    virtual HdContainerDataSourceHandle GetImagingSubprimData(
+            UsdPrim const& prim,
+            TfToken const& subprim,
+            const UsdImagingDataSourceStageGlobals &stageGlobals);
+
+    USDIMAGING_API
+    virtual HdDataSourceLocatorSet InvalidateImagingSubprim(
+            UsdPrim const& prim,
+            TfToken const& subprim,
+            TfTokenVector const& properties,
+            UsdImagingPropertyInvalidationType invalidationType);
+
+    /// \enum Scope
+    ///
+    /// Determines what USD prims an adapter type is responsible for from a
+    /// population and invalidation standpoint.
+    ///
+    enum PopulationMode
+    {
+        /// The adapter is responsible only for USD prims of its registered
+        /// type. Any descendent USD prims are managed independently.
+        RepresentsSelf,
+
+        /// The adapter is responsible for USD prims of its registered type as
+        /// well as any descendents of those prims. No population occurs for
+        /// descendent prims. USD changes to descendent prims whose own PopulationMode
+        /// is set to RepresentedByAncestor will be send to this adapter.
+        RepresentsSelfAndDescendents,
+
+        /// Changes to prims of this adapter's registered type are sent to the
+        /// first ancestor prim whose adapter's PopulationMode value is 
+        /// RepresentsSelfAndDescendents.
+        ///
+        /// This value alone does not prevent population as it is expected that
+        /// such prims appear beneath another prim whose own PopulationMode value
+        /// prevents descendents from being populated.
+        RepresentedByAncestor,
+    };
+
+    /// Returns the prim's behavior with regard to population and invalidation.
+    /// See PopulationMode for possible values.
+    USDIMAGING_API
+    virtual PopulationMode GetPopulationMode();
+
+    /// This is called (for each result of GetImagingSubprims) when this
+    /// adapter's GetScope() result is RepresentsSelfAndDescendents and
+    /// USD properties have changed on a descendent prim whose adapter's
+    /// GetScope() result is RepresentedByAncestor.
+    USDIMAGING_API
+    virtual HdDataSourceLocatorSet InvalidateImagingSubprimFromDescendent(
+            UsdPrim const& prim,
+            UsdPrim const& descendentPrim,
+            TfToken const& subprim,
+            TfTokenVector const& properties,
+            UsdImagingPropertyInvalidationType invalidationType);
+
     // ---------------------------------------------------------------------- //
     /// \name Initialization
     // ---------------------------------------------------------------------- //
  
-    UsdImagingPrimAdapter()
-    {}
-
-    USDIMAGING_API
-    virtual ~UsdImagingPrimAdapter();
-
     /// Called to populate the RenderIndex for this UsdPrim. The adapter is
     /// expected to create one or more prims in the render index using the
     /// given proxy.
@@ -253,6 +304,11 @@ public:
                                        SdfPath const& cachePath,
                                        UsdImagingIndexProxy* index);
 
+    USDIMAGING_API
+    virtual void MarkCollectionsDirty(UsdPrim const& prim,
+                                      SdfPath const& cachePath,
+                                      UsdImagingIndexProxy* index);
+
     // ---------------------------------------------------------------------- //
     /// \name Computations 
     // ---------------------------------------------------------------------- //
@@ -342,10 +398,16 @@ public:
     /// \name Selection
     // ---------------------------------------------------------------------- //
 
+    /// \deprecated Call and implement GetScenePrimPaths instead.
     USDIMAGING_API
     virtual SdfPath GetScenePrimPath(SdfPath const& cachePath,
-                                     int instanceIndex,
-                                     HdInstancerContext *instancerCtx) const;
+        int instanceIndex,
+        HdInstancerContext *instancerCtx) const;
+
+    USDIMAGING_API
+    virtual SdfPathVector GetScenePrimPaths(SdfPath const& cachePath,
+        std::vector<int> const& instanceIndices,
+        std::vector<HdInstancerContext> *instancerCtxs) const;
 
     // Add the given usdPrim to the HdSelection object, to mark it for
     // selection highlighting. cachePath is the path of the object referencing
@@ -391,6 +453,18 @@ public:
                               UsdTimeCode time) const;
 
     // ---------------------------------------------------------------------- //
+    /// \name Light Params
+    // ---------------------------------------------------------------------- //
+
+    USDIMAGING_API
+    virtual VtValue
+    GetLightParamValue(
+        const UsdPrim& prim,
+        const SdfPath& cachePath,
+        const TfToken& paramName,
+        UsdTimeCode time) const;
+
+    // ---------------------------------------------------------------------- //
     /// \name Utilities 
     // ---------------------------------------------------------------------- //
 
@@ -403,7 +477,7 @@ public:
     void SetDelegate(UsdImagingDelegate* delegate);
 
     USDIMAGING_API
-    bool IsChildPath(SdfPath const& path) const;
+    virtual bool IsChildPath(const SdfPath& path) const;
     
     /// Returns true if the given prim is visible, taking into account inherited
     /// visibility values. Inherited values are strongest, Usd has no notion of
@@ -475,6 +549,11 @@ public:
     /// the namespace if necessary.
     USDIMAGING_API
     TfToken GetModelDrawMode(UsdPrim const& prim);
+
+    /// Gets the model draw mode object for the given prim, walking up the 
+    /// namespace if necessary.
+    USDIMAGING_API
+    HdModelDrawMode GetFullModelDrawMode(UsdPrim const& prim);
 
     /// Computes the per-prototype instance indices for a UsdGeomPointInstancer.
     /// XXX: This needs to be defined on the base class, to have access to the
@@ -586,11 +665,36 @@ public:
     // ---------------------------------------------------------------------- //
 
     /// Returns true if the adapter can be populated into the target index.
-    virtual bool IsSupported(UsdImagingIndexProxy const* index) const {
+    virtual bool IsSupported(UsdImagingIndexProxy const* index) const
+    {
         return true;
     }
 
+    // ---------------------------------------------------------------------- //
+    /// \name Utilties
+    // ---------------------------------------------------------------------- //
+
+    /// Provides to paramName->UsdAttribute value mappings
+    USDIMAGING_API
+    static UsdAttribute LookupLightParamAttribute(
+            UsdPrim const& prim,
+            TfToken const& paramName);
+
 protected:
+    friend class UsdImagingInstanceAdapter;
+    friend class UsdImagingPointInstancerAdapter;
+    // ---------------------------------------------------------------------- //
+    /// \name Utility
+    // ---------------------------------------------------------------------- //
+    
+    // Given the USD path for a prim of this adapter's type, returns
+    // the prim's Hydra cache path.
+    USDIMAGING_API
+    virtual SdfPath
+    ResolveCachePath(
+        const SdfPath& usdPath,
+        const UsdImagingInstancerContext* instancerContext = nullptr) const;
+
     using Keys = UsdImagingPrimvarDescCache::Key;
 
     template <typename T>
@@ -609,6 +713,14 @@ protected:
 
     USDIMAGING_API
     UsdImagingPrimvarDescCache* _GetPrimvarDescCache() const;
+
+    USDIMAGING_API
+    UsdImaging_NonlinearSampleCountCache*
+        _GetNonlinearSampleCountCache() const;
+
+    USDIMAGING_API
+    UsdImaging_BlurScaleCache*
+        _GetBlurScaleCache() const;
 
     USDIMAGING_API
     UsdPrim _GetPrim(SdfPath const& usdPath) const;
@@ -653,6 +765,19 @@ protected:
     // Returns the material contexts from the renderer delegate.
     USDIMAGING_API
     TfTokenVector _GetMaterialRenderContexts() const;
+
+    // Returns the namespace prefixes for render settings attributes relevant 
+    // to a renderer delegate.
+    USDIMAGING_API
+    TfTokenVector _GetRenderSettingsNamespaces() const;
+
+    /// Returns whether custom shading of prims is enabled.
+    USDIMAGING_API
+    bool _GetSceneMaterialsEnabled() const;
+
+    /// Returns whether lights found in the usdscene are enabled.
+    USDIMAGING_API
+    bool _GetSceneLightsEnabled() const;
 
     // Returns true if render delegate wants primvars to be filtered based.
     // This will filter the primvars based on the bound material primvar needs.
@@ -758,8 +883,18 @@ protected:
     virtual void _RemovePrim(SdfPath const& cachePath,
                              UsdImagingIndexProxy* index) = 0;
 
+    // Utility to resync bound dependencies of a particular usd path.
+    // This is necessary for the resync processing of certain prim types
+    // (e.g. materials).
+    USDIMAGING_API
+    void _ResyncDependents(SdfPath const& usdPath,
+                           UsdImagingIndexProxy *index);
+
     USDIMAGING_API
     UsdImaging_CollectionCache& _GetCollectionCache() const;
+
+    USDIMAGING_API
+    UsdStageRefPtr _GetStage() const;
 
     USDIMAGING_API
     UsdImaging_CoordSysBindingStrategy::value_type
@@ -769,6 +904,11 @@ protected:
     UsdImaging_InheritedPrimvarStrategy::value_type
     _GetInheritedPrimvars(UsdPrim const& prim) const;
 
+    // Utility for derived classes to try to find an inherited primvar.
+    USDIMAGING_API
+    UsdGeomPrimvar _GetInheritedPrimvar(UsdPrim const& prim,
+                                        TfToken const& primvarName) const;
+
     USDIMAGING_API
     GfInterval _GetCurrentTimeSamplingInterval();
 
@@ -776,13 +916,10 @@ protected:
     Usd_PrimFlagsConjunction _GetDisplayPredicate() const;
 
     USDIMAGING_API
-    bool _DoesDelegateSupportCoordSys() const;
+    Usd_PrimFlagsConjunction _GetDisplayPredicateForPrototypes() const;
 
-    // Conversion functions between usd and hydra enums.
     USDIMAGING_API
-    static HdInterpolation _UsdToHdInterpolation(TfToken const& usdInterp);
-    USDIMAGING_API
-    static TfToken _UsdToHdRole(TfToken const& usdRole);
+    bool _DoesDelegateSupportCoordSys() const;
 
 private:
     UsdImagingDelegate* _delegate;
@@ -801,7 +938,6 @@ public:
         return std::make_shared<T>();
     }
 };
-
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

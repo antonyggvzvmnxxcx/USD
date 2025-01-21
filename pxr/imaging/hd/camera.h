@@ -1,25 +1,8 @@
 //
 // Copyright 2017 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_CAMERA_H
 #define PXR_IMAGING_HD_CAMERA_H
@@ -31,10 +14,10 @@
 
 #include "pxr/imaging/cameraUtil/conformWindow.h"
 
-#include "pxr/usd/sdf/path.h"
 #include "pxr/base/tf/staticTokens.h"
 #include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/gf/range1f.h"
+#include "pxr/base/gf/vec2f.h"
 
 #include <vector>
 
@@ -45,32 +28,50 @@ PXR_NAMESPACE_OPEN_SCOPE
 /// USD camera schema and GfCamera (with the exception of window
 /// policy). All spatial units are in world units though and
 /// projection is HdCamera::Projection rather than a token.
-#define HD_CAMERA_TOKENS                            \
-    /* frustum */                                   \
-    (projection)                                    \
-    (horizontalAperture)                            \
-    (verticalAperture)                              \
-    (horizontalApertureOffset)                      \
-    (verticalApertureOffset)                        \
-    (focalLength)                                   \
-    (clippingRange)                                 \
-    (clipPlanes)                                    \
-                                                    \
-    /* depth of field */                            \
-    (fStop)                                         \
-    (focusDistance)                                 \
-                                                    \
-    /* shutter/lighting */                          \
-    (shutterOpen)                                   \
-    (shutterClose)                                  \
-    (exposure)                                      \
-                                                    \
-    /* how to match window with different aspect */ \
-    (windowPolicy)                                  \
-                                                    \
-    /* OpenGL-style matrices, deprecated */         \
-    (worldToViewMatrix)                             \
-    (projectionMatrix)
+#define HD_CAMERA_TOKENS                                          \
+    /* frustum */                                                 \
+    (projection)                                                  \
+    (horizontalAperture)                                          \
+    (verticalAperture)                                            \
+    (horizontalApertureOffset)                                    \
+    (verticalApertureOffset)                                      \
+    (focalLength)                                                 \
+    (clippingRange)                                               \
+    (clipPlanes)                                                  \
+                                                                  \
+    /* depth of field */                                          \
+    (fStop)                                                       \
+    (focusDistance)                                               \
+    (focusOn)                                                     \
+    (dofAspect)                                                   \
+    ((splitDiopterCount,          "splitDiopter:count"))          \
+    ((splitDiopterAngle,          "splitDiopter:angle"))          \
+    ((splitDiopterOffset1,        "splitDiopter:offset1"))        \
+    ((splitDiopterWidth1,         "splitDiopter:width1"))         \
+    ((splitDiopterFocusDistance1, "splitDiopter:focusDistance1")) \
+    ((splitDiopterOffset2,        "splitDiopter:offset2"))        \
+    ((splitDiopterWidth2,         "splitDiopter:width2"))         \
+    ((splitDiopterFocusDistance2, "splitDiopter:focusDistance2")) \
+                                                                  \
+    /* shutter/lighting */                                        \
+    (shutterOpen)                                                 \
+    (shutterClose)                                                \
+    (exposure)                                                    \
+                                                                  \
+    /* how to match window with different aspect */               \
+    (windowPolicy)                                                \
+                                                                  \
+    /* lens distortion */                                         \
+    (standard)                                                    \
+    (fisheye)                                                     \
+    ((lensDistortionType,   "lensDistortion:type"))               \
+    ((lensDistortionK1,     "lensDistortion:k1"))                 \
+    ((lensDistortionK2,     "lensDistortion:k2"))                 \
+    ((lensDistortionCenter, "lensDistortion:center"))             \
+    ((lensDistortionAnaSq,  "lensDistortion:anaSq"))              \
+    ((lensDistortionAsym,   "lensDistortion:asym"))               \
+    ((lensDistortionScale,  "lensDistortion:scale"))              \
+    ((lensDistortionIor,    "lensDistortion:ior"))
 
 
 TF_DECLARE_PUBLIC_TOKENS(HdCameraTokens, HD_API, HD_CAMERA_TOKENS);
@@ -97,16 +98,13 @@ public:
     {
         Clean                 = 0,
         DirtyTransform        = 1 << 0,
-        DirtyViewMatrix       = DirtyTransform, // deprecated
-        DirtyProjMatrix       = 1 << 1,         // deprecated
-        DirtyWindowPolicy     = 1 << 2,
-        DirtyClipPlanes       = 1 << 3,
-        DirtyParams           = 1 << 4,
+        DirtyParams           = 1 << 1,
+        DirtyClipPlanes       = 1 << 2,
+        DirtyWindowPolicy     = 1 << 3,
         AllDirty              = (DirtyTransform
-                                |DirtyProjMatrix
-                                |DirtyWindowPolicy
+                                |DirtyParams
                                 |DirtyClipPlanes
-                                |DirtyParams)
+                                |DirtyWindowPolicy)
     };
 
     enum Projection {
@@ -190,6 +188,46 @@ public:
         return _focusDistance;
     }
 
+    bool GetFocusOn() const {
+        return _focusOn;
+    }
+
+    float GetDofAspect() const {
+        return _dofAspect;
+    }
+
+    int GetSplitDiopterCount() const {
+        return _splitDiopterCount;
+    }
+
+    float GetSplitDiopterAngle() const {
+        return _splitDiopterAngle;
+    }
+
+    float GetSplitDiopterOffset1() const {
+        return _splitDiopterOffset1;
+    }
+
+    float GetSplitDiopterWidth1() const {
+        return _splitDiopterWidth1;
+    }
+
+    float GetSplitDiopterFocusDistance1() const {
+        return _splitDiopterFocusDistance1;
+    }
+
+    float GetSplitDiopterOffset2() const {
+        return _splitDiopterOffset2;
+    }
+
+    float GetSplitDiopterWidth2() const {
+        return _splitDiopterWidth2;
+    }
+
+    float GetSplitDiopterFocusDistance2() const {
+        return _splitDiopterFocusDistance2;
+    }
+
     double GetShutterOpen() const {
         return _shutterOpen;
     }
@@ -202,30 +240,52 @@ public:
         return _exposure;
     }
 
+    TfToken GetLensDistortionType() const {
+        return _lensDistortionType;
+    }
+
+    float GetLensDistortionK1() const {
+        return _lensDistortionK1;
+    }
+
+    float GetLensDistortionK2() const {
+        return _lensDistortionK2;
+    }
+
+    const GfVec2f& GetLensDistortionCenter() const {
+        return _lensDistortionCenter;
+    }
+
+    float GetLensDistortionAnaSq() const {
+        return _lensDistortionAnaSq;
+    }
+
+    const GfVec2f& GetLensDistortionAsym() const {
+        return _lensDistortionAsym;
+    }
+
+    float GetLensDistortionScale() const {
+        return _lensDistortionScale;
+    }
+
+    float GetLensDistortionIor() const {
+        return _lensDistortionIor;
+    }
+
     /// Returns the window policy of the camera. If no opinion is authored, we
     /// default to "CameraUtilFit"
-    CameraUtilConformWindowPolicy const& GetWindowPolicy() const {
+    const CameraUtilConformWindowPolicy& GetWindowPolicy() const {
         return _windowPolicy;
     }
 
     // ---------------------------------------------------------------------- //
-    /// Legacy camera parameters accessor API
+    /// Convenience API for rasterizers
     // ---------------------------------------------------------------------- //
 
-    /// Returns the matrix transformation from world to camera space.
-    /// \deprecated Use GetTransform instead
+    /// Computes the projection matrix for a camera from its physical
+    /// properties.
     HD_API
-    GfMatrix4d GetViewMatrix() const;
-
-    /// Returns the matrix transformation from camera to world space.
-    /// \deprecated Use GetTransform and invert instead
-    HD_API
-    GfMatrix4d GetViewInverseMatrix() const;
-
-    /// Returns the projection matrix for the camera.
-    /// \deprecated Compute from above physically based attributes
-    HD_API
-    GfMatrix4d GetProjectionMatrix() const;
+    GfMatrix4d ComputeProjectionMatrix() const;
 
 protected:
     // frustum
@@ -242,20 +302,35 @@ protected:
     // focus
     float                   _fStop;
     float                   _focusDistance;
+    bool                    _focusOn;
+    float                   _dofAspect;
+    int                     _splitDiopterCount;
+    float                   _splitDiopterAngle;
+    float                   _splitDiopterOffset1;
+    float                   _splitDiopterWidth1;
+    float                   _splitDiopterFocusDistance1;
+    float                   _splitDiopterOffset2;
+    float                   _splitDiopterWidth2;
+    float                   _splitDiopterFocusDistance2;
 
     // shutter/lighting
     double                  _shutterOpen;
     double                  _shutterClose;
     float                   _exposure;
 
+    // lens distortion
+    TfToken                 _lensDistortionType;
+    float                   _lensDistortionK1;
+    float                   _lensDistortionK2;
+    GfVec2f                 _lensDistortionCenter;
+    float                   _lensDistortionAnaSq;
+    GfVec2f                 _lensDistortionAsym;
+    float                   _lensDistortionScale;
+    float                   _lensDistortionIor;
+
     // Camera's opinion how it display in a window with
     // a different aspect ratio
     CameraUtilConformWindowPolicy _windowPolicy;
-
-    // OpenGL-style matrices
-    GfMatrix4d _worldToViewMatrix;
-    GfMatrix4d _worldToViewInverseMatrix;
-    GfMatrix4d _projectionMatrix;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

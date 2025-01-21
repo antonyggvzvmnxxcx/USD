@@ -1,25 +1,8 @@
 //
 // Copyright 2019 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_ST_PRIM_UTILS_H
 #define PXR_IMAGING_HD_ST_PRIM_UTILS_H
@@ -28,6 +11,7 @@
 #include "pxr/imaging/hdSt/api.h"
 #include "pxr/imaging/hdSt/resourceRegistry.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
+#include "pxr/imaging/hd/rprim.h"
 
 #include <memory>
 #include <string>
@@ -48,9 +32,10 @@ using HdBufferArrayRangeSharedPtr = std::shared_ptr<class HdBufferArrayRange>;
 
 using HdBufferSourceSharedPtrVector = std::vector<HdBufferSourceSharedPtr>;
 using HdBufferSpecVector = std::vector<struct HdBufferSpec>;
-using HdStShaderCodeSharedPtr = std::shared_ptr<class HdStShaderCode>;
+using HdSt_MaterialNetworkShaderSharedPtr =
+        std::shared_ptr<class HdSt_MaterialNetworkShader>;
 
-using HdComputationSharedPtr = std::shared_ptr<class HdComputation>;
+using HdStComputationSharedPtr = std::shared_ptr<class HdStComputation>;
 
 using HdStResourceRegistrySharedPtr = 
     std::shared_ptr<HdStResourceRegistry>;
@@ -65,6 +50,9 @@ HDST_API
 void HdStMarkMaterialTagsDirty(HdRenderParam *renderParam);
 
 HDST_API
+void HdStMarkGeomSubsetDrawItemsDirty(HdRenderParam *renderParam);
+
+HDST_API
 void HdStMarkGarbageCollectionNeeded(HdRenderParam *renderParam);
 
 // -----------------------------------------------------------------------------
@@ -77,7 +65,11 @@ HdStGetPrimvarDescriptors(
     HdRprim const * prim,
     HdStDrawItem const * drawItem,
     HdSceneDelegate * delegate,
-    HdInterpolation interpolation);
+    HdInterpolation interpolation,
+    const HdReprSharedPtr &repr = nullptr,
+    HdMeshGeomStyle descGeomStyle = HdMeshGeomStyleInvalid,
+    int geomSubsetDescIndex = 0,
+    size_t numGeomSubsets = 0);
 
 // Get filtered instancer primvar descriptors for drawItem
 HDST_API
@@ -85,6 +77,15 @@ HdPrimvarDescriptorVector
 HdStGetInstancerPrimvarDescriptors(
     HdStInstancer const * instancer,
     HdSceneDelegate * delegate);
+
+// -----------------------------------------------------------------------------
+// Tracking render tag changes
+// -----------------------------------------------------------------------------
+
+HDST_API
+void HdStUpdateRenderTag(HdSceneDelegate *delegate,
+                         HdRenderParam *renderParam,
+                         HdRprim *rprim);
 
 // -----------------------------------------------------------------------------
 // Material processing utilities
@@ -95,19 +96,31 @@ void HdStSetMaterialId(HdSceneDelegate *delegate,
                        HdRprim *rprim);
 
 HDST_API
+void HdStSetMaterialTag(HdRenderParam *renderParam,
+                        HdDrawItem *drawItem,
+                        const TfToken &materialTag);
+
+HDST_API
 void HdStSetMaterialTag(HdSceneDelegate *delegate,
                         HdRenderParam *renderParam,
-                        HdRprim *rprim,
+                        HdDrawItem *drawItem,
+                        SdfPath const & materialId,
                         bool hasDisplayOpacityPrimvar,
                         bool occludedSelectionShowsThrough);
-// Resolves the material shader for the given prim (using a fallback
-// material as necessary), including optional mixin shader source code.
+// Resolves the material network shader for the given prim (using a fallback
+// material as necessary).
 HDST_API
-HdStShaderCodeSharedPtr
-HdStGetMaterialShader(
+HdSt_MaterialNetworkShaderSharedPtr
+HdStGetMaterialNetworkShader(
+    HdRprim const * prim,
+    HdSceneDelegate * delegate);
+
+HDST_API
+HdSt_MaterialNetworkShaderSharedPtr
+HdStGetMaterialNetworkShader(
     HdRprim const * prim,
     HdSceneDelegate * delegate,
-    std::string const & mixinSource = std::string());
+    SdfPath const & materialId);
 
 // -----------------------------------------------------------------------------
 // Primvar processing and BAR allocation utilities
@@ -121,7 +134,7 @@ bool HdStIsValidBAR(HdBufferArrayRangeSharedPtr const& range);
 HDST_API
 bool HdStCanSkipBARAllocationOrUpdate(
     HdBufferSourceSharedPtrVector const& sources,
-    HdStComputationSharedPtrVector const& computations,
+    HdStComputationComputeQueuePairVector const& computations,
     HdBufferArrayRangeSharedPtr const& curRange,
     HdDirtyBits dirtyBits);
 
@@ -150,6 +163,21 @@ HdStGetRemovedPrimvarBufferSpecs(
     HdBufferArrayRangeSharedPtr const& curRange,
     HdPrimvarDescriptorVector const& newPrimvarDescs,
     TfTokenVector const& internallyGeneratedPrimvarNames,
+    SdfPath const& rprimId);
+
+// Returns the buffer specs that have been removed from curRange based on the
+// new primvar descriptors, updated specs and internally generated primvar names. Buffer
+// specs with updated types will be replaced.
+// This overload handles primvar type changes and should be preferred over 
+// HdStGetRemovedPrimvarBufferSpecs.
+//
+HDST_API
+HdBufferSpecVector
+HdStGetRemovedOrReplacedPrimvarBufferSpecs(
+    HdBufferArrayRangeSharedPtr const& curRange,
+    HdPrimvarDescriptorVector const& newPrimvarDescs,
+    TfTokenVector const& internallyGeneratedPrimvarNames,
+    HdBufferSpecVector const& updatedSpecs,
     SdfPath const& rprimId);
 
 // Updates the existing range at drawCoordIndex with newRange and flags garbage
@@ -191,7 +219,7 @@ void HdStPopulateConstantPrimvars(
     HdRprimSharedData *sharedData,
     HdSceneDelegate *delegate,
     HdRenderParam *renderParam,
-    HdDrawItem *drawItem,
+    HdStDrawItem *drawItem,
     HdDirtyBits *dirtyBits,
     HdPrimvarDescriptorVector const& constantPrimvars,
     bool *hasMirroredTransform = nullptr);
@@ -280,11 +308,11 @@ HDST_API
 uint64_t HdStComputeSharedPrimvarId(
     uint64_t baseId,
     HdBufferSourceSharedPtrVector const &sources,
-    HdStComputationSharedPtrVector const &computations);
+    HdStComputationComputeQueuePairVector const &computations);
 
 HDST_API
 void HdStGetBufferSpecsFromCompuations(
-    HdStComputationSharedPtrVector const& computations,
+    HdStComputationComputeQueuePairVector const& computations,
     HdBufferSpecVector *bufferSpecs);
 
 PXR_NAMESPACE_CLOSE_SCOPE

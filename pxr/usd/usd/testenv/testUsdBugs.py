@@ -2,31 +2,16 @@
 #
 # Copyright 2017 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
+
+from __future__ import division
 
 import unittest
 
 class TestUsdBugs(unittest.TestCase):
     def test_153956(self):
-        from pixar import Sdf
+        from pxr import Sdf
 
         # Create a crate-backed .usd file and populate it with an
         # attribute connection. These files do not store specs for
@@ -237,6 +222,7 @@ class TestUsdBugs(unittest.TestCase):
         self.assertEqual(a.Get(), Vt.Vec3fArray(3, [(1,2,3), (2,3,4), (3,4,5)]))
         a.Set(((3,2,1), (4,3,2), (5,4,3)))
         self.assertEqual(a.Get(), Vt.Vec3fArray(3, [(3,2,1), (4,3,2), (5,4,3)]))
+        # pylint: disable=range-builtin-not-iterating,zip-builtin-not-iterating
         a.Set(zip(range(3), range(3), range(3)))
         self.assertEqual(a.Get(), Vt.Vec3fArray(3, [(0,0,0), (1,1,1), (2,2,2)]))
 
@@ -419,15 +405,15 @@ class TestUsdBugs(unittest.TestCase):
             layer = Sdf.Layer.CreateNew(f.name)
             foo = Sdf.CreatePrimInLayer(layer, '/foo')
             attr = Sdf.AttributeSpec(foo, 'attr', Sdf.ValueTypeNames.IntArray)
-            ints = range(1024**2)
+            ints = list(range(1024**2))
             random.shuffle(ints)
             attr.default = Vt.IntArray(ints)
             layer.Save()
             del layer
             # Now truncate layer to corrupt it.
-            fobj = open(f.name, "rw+")
+            fobj = open(f.name, "r+")
             size = os.path.getsize(f.name)
-            fobj.truncate(size / 2)
+            fobj.truncate(size // 2)
             fobj.close()
             # Attempting to open the file should raise an exception.
             with self.assertRaises(Tf.ErrorException):

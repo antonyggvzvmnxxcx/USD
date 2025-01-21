@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_TIME_SAMPLE_ARRAY_H
 #define PXR_IMAGING_HD_TIME_SAMPLE_ARRAY_H
@@ -109,7 +92,7 @@ T HdResampleRawTimeSamples(
         return vs[i-1];
     } else {
         // Linear blend of neighboring samples.
-        float alpha = (us[i]-u) / (us[i]-us[i-1]);
+        float alpha = (u-us[i-1]) / (us[i]-us[i-1]);
         return HdResampleNeighbors(alpha, vs[i-1], vs[i]);
     }
 }
@@ -163,6 +146,21 @@ std::pair<T, VtIntArray> HdResampleRawTimeSamples(
     }
 }
 
+// Returns contributing sample times for the interval from startTime to endTime.
+//
+// If there is no sample at the startTime, this will include the sample times
+// just before the start time if it exists. Similarly for the endTime.
+//
+// Return true if the value is changing on the interval from startTime to
+// endTime - or equivalently if we return two times.
+bool
+HdGetContributingSampleTimesForInterval(
+    size_t count,
+    const float * sampleTimes,
+    float startTime,
+    float endTime,
+    std::vector<float> * outSampleTimes);
+
 /// An array of a value sampled over time, in struct-of-arrays layout.
 /// This is provided as a convenience for time-sampling attributes.
 /// This type has static capacity but dynamic size, providing
@@ -204,22 +202,32 @@ struct HdTimeSampleArray
     }
 
     /// Unbox an HdTimeSampleArray holding boxed VtValue<VtArray<T>>
-    /// samples into an array holding VtArray<T> samples.
-    ///
-    /// Similar to VtValue::Get(), this will issue a coding error if the
-    /// VtValue is not holding the expected type.
-    ///
-    /// \see VtValue::Get()
-    void UnboxFrom(HdTimeSampleArray<VtValue, CAPACITY> const& box) {
+    /// samples into an array holding VtArray<T> samples. If any of the values 
+    /// contain the wrong type, their data is discarded. The function returns
+    /// true if all samples have the correct type.
+    bool UnboxFrom(HdTimeSampleArray<VtValue, CAPACITY> const& box) {
+        bool ret = true;
         Resize(box.count);
         times = box.times;
         for (size_t i=0; i < box.count; ++i) {
-            if (box.values[i].GetArraySize() > 0) {
+            if (box.values[i].template IsHolding<TYPE>() &&
+                box.values[i].GetArraySize() > 0) {
                 values[i] = box.values[i].template Get<TYPE>();
             } else {
                 values[i] = TYPE();
+                ret = false;
             }
         }
+        return ret;
+    }
+
+    /// See HdGetContributingSampleTimesForInterval.
+    bool GetContributingSampleTimesForInterval(
+        const float startTime, const float endTime,
+        std::vector<float> * const outSampleTimes) const
+    {
+        return HdGetContributingSampleTimesForInterval(
+            count, times.data(), startTime, endTime, outSampleTimes);
     }
 
     size_t count;
@@ -264,24 +272,24 @@ struct HdIndexedTimeSampleArray : public HdTimeSampleArray<TYPE, CAPACITY>
     }
 
     /// Unbox an HdIndexedTimeSampleArray holding boxed VtValue<VtArray<T>>
-    /// samples into an array holding VtArray<T> samples.
-    ///
-    /// Similar to VtValue::Get(), this will issue a coding error if the
-    /// VtValue is not holding the expected type.
-    ///
-    /// \see VtValue::Get()
-    void 
-    UnboxFrom(HdIndexedTimeSampleArray<VtValue, CAPACITY> const& box) {
+    /// samples into an array holding VtArray<T> samples. If any of the values 
+    /// contain the wrong type, their data is discarded. The function returns
+    /// true if all samples have the correct type.
+    bool UnboxFrom(HdIndexedTimeSampleArray<VtValue, CAPACITY> const& box) {
+        bool ret = true;
         Resize(box.count);
         this->times = box.times;
         indices = box.indices;
         for (size_t i=0; i < box.count; ++i) {
-            if (box.values[i].GetArraySize() > 0) {
+            if (box.values[i].template IsHolding<TYPE>() &&
+                box.values[i].GetArraySize() > 0) {
                 this->values[i] = box.values[i].template Get<TYPE>();
             } else {
                 this->values[i] = TYPE();
+                ret = false;
             }
         }
+        return ret;
     }
 
     TfSmallVector<VtIntArray, CAPACITY> indices;

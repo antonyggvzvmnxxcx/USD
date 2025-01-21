@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 /// \file simpleLightingContext.cpp
 
@@ -27,7 +10,6 @@
 
 #include "pxr/imaging/glf/simpleLightingContext.h"
 #include "pxr/imaging/glf/bindingMap.h"
-#include "pxr/imaging/glf/contextCaps.h"
 #include "pxr/imaging/glf/debugCodes.h"
 #include "pxr/imaging/glf/diagnostic.h"
 #include "pxr/imaging/glf/simpleLight.h"
@@ -58,19 +40,10 @@ TF_DEFINE_PRIVATE_TOKENS(
     _tokens,
     ((lightingUB, "Lighting"))
     ((shadowUB, "Shadow"))
-    ((bindlessShadowUB, "BindlessShadowSamplers"))
     ((materialUB, "Material"))
     ((postSurfaceShaderUB, "PostSurfaceShaderParams"))
-    ((shadowSampler, "shadowTexture"))
-    ((shadowCompareSampler, "shadowCompareTexture"))
+    ((shadowCompareTextures, "shadowCompareTextures"))
 );
-
-// XXX:
-// currently max number of lights are limited to 16 by
-// GL_MAX_VARYING_VECTORS for having the varying attribute
-//    out vec2 FshadowFilterWidth[NUM_LIGHTS];
-// which is defined in simpleLighting.glslfx.
-static const int _maxLightsUsed = 16;
 
 /* static */
 GlfSimpleLightingContextRefPtr
@@ -126,7 +99,7 @@ GlfSimpleLightingContext::GetLights() const
 int
 GlfSimpleLightingContext::GetNumLightsUsed() const
 {
-    return std::min((int)_lights.size(), _maxLightsUsed);
+    return (int)_lights.size();
 }
 
 int
@@ -241,19 +214,17 @@ GlfSimpleLightingContext::InitUniformBlockBindings(
     bindingMap->GetUniformBinding(_tokens->shadowUB);
     bindingMap->GetUniformBinding(_tokens->materialUB);
     bindingMap->GetUniformBinding(_tokens->postSurfaceShaderUB);
-
-    if (GlfSimpleShadowArray::GetBindlessShadowMapsEnabled()) {
-        bindingMap->GetUniformBinding(_tokens->bindlessShadowUB);
-    }
 }
 
 void
 GlfSimpleLightingContext::InitSamplerUnitBindings(
         GlfBindingMapPtr const &bindingMap) const
 {
-    if (!GlfSimpleShadowArray::GetBindlessShadowMapsEnabled()) {
-        bindingMap->GetSamplerUnit(_tokens->shadowSampler);
-        bindingMap->GetSamplerUnit(_tokens->shadowCompareSampler);
+    size_t const numShadows = _shadows->GetNumShadowMapPasses();
+    for (size_t i = 0; i < numShadows; ++i) {
+        bindingMap->GetSamplerUnit(
+            TfStringPrintf("%s[%zd]",
+                _tokens->shadowCompareTextures.GetText(), i));
     }
 }
 
@@ -294,14 +265,6 @@ GlfSimpleLightingContext::BindUniformBlocks(GlfBindingMapPtr const &bindingMap)
     if (!_materialUniformBlock)
         _materialUniformBlock = GlfUniformBlock::New("_materialUniformBlock");
     
-    const bool usingBindlessShadowMaps = 
-        GlfSimpleShadowArray::GetBindlessShadowMapsEnabled();
-    
-    if (usingBindlessShadowMaps && !_bindlessShadowlUniformBlock) {
-        _bindlessShadowlUniformBlock =
-            GlfUniformBlock::New("_bindlessShadowUniformBlock");
-    }
-
     bool shadowExists = false;
     if ((!_lightingUniformBlockValid ||
          !_shadowUniformBlockValid) && _lights.size() > 0) {
@@ -352,25 +315,6 @@ GlfSimpleLightingContext::BindUniformBlocks(GlfBindingMapPtr const &bindingMap)
             ARCH_PRAGMA_POP
         };
 
-        // Use a uniform buffer block for the array of 64bit bindless handles.
-        //
-        // glf/shaders/simpleLighting.glslfx uses a uvec2 array instead of
-        // uint64_t.
-        // Note that uint64_t has different padding rules depending on the
-        // layout: std140 results in 128bit alignment, while shared (default)
-        // results in 64bit alignment.
-        struct PaddedHandle {
-            uint64_t handle;
-            //uint64_t padding; // Skip padding since we don't need it.
-        };
-
-        struct BindlessShadowSamplers {
-            ARCH_PRAGMA_PUSH
-            ARCH_PRAGMA_ZERO_SIZED_STRUCT
-            PaddedHandle shadowCompareTextures[0];
-            ARCH_PRAGMA_POP
-        };
-
         size_t lightingSize = sizeof(Lighting) + sizeof(LightSource) * numLights;
         size_t shadowSize = sizeof(ShadowMatrix) * numShadows;
         Lighting *lightingData = (Lighting *)alloca(lightingSize);
@@ -378,15 +322,6 @@ GlfSimpleLightingContext::BindUniformBlocks(GlfBindingMapPtr const &bindingMap)
         memset(shadowData, 0, shadowSize);
         memset(lightingData, 0, lightingSize);
         
-        BindlessShadowSamplers *bindlessHandlesData = nullptr;
-        size_t bindlessHandlesSize = 0;
-        if (usingBindlessShadowMaps) {
-            bindlessHandlesSize = sizeof(PaddedHandle) * numShadows;
-            bindlessHandlesData = 
-                (BindlessShadowSamplers*)alloca(bindlessHandlesSize);
-            memset(bindlessHandlesData, 0, bindlessHandlesSize);
-        }
-
         GfMatrix4d viewToWorldMatrix = _worldToViewMatrix.GetInverse();
 
         lightingData->useLighting = _useLighting;
@@ -396,12 +331,13 @@ GlfSimpleLightingContext::BindUniformBlocks(GlfBindingMapPtr const &bindingMap)
             GlfSimpleLight const &light = _lights[i];
 
             setVec4(lightingData->lightSource[i].position,
-                    light.GetPosition() * _worldToViewMatrix);
+                    GfVec4f(light.GetPosition() * _worldToViewMatrix));
             setVec4(lightingData->lightSource[i].diffuse, light.GetDiffuse());
             setVec4(lightingData->lightSource[i].ambient, light.GetAmbient());
             setVec4(lightingData->lightSource[i].specular, light.GetSpecular());
             setVec3(lightingData->lightSource[i].spotDirection,
-                    _worldToViewMatrix.TransformDir(light.GetSpotDirection()));
+                    GfVec3f(_worldToViewMatrix.TransformDir(
+                                light.GetSpotDirection())));
             setVec3(lightingData->lightSource[i].attenuation,
                     light.GetAttenuation());
             lightingData->lightSource[i].spotCutoff = light.GetSpotCutoff();
@@ -446,19 +382,6 @@ GlfSimpleLightingContext::BindUniformBlocks(GlfBindingMapPtr const &bindingMap)
         if (shadowExists) {
             _shadowUniformBlock->Update(shadowData, shadowSize);
             _shadowUniformBlockValid = true;
-
-            if (usingBindlessShadowMaps) {
-                std::vector<uint64_t> const& shadowMapHandles =
-                    _shadows->GetBindlessShadowMapHandles();
-
-                for (size_t i = 0; i < shadowMapHandles.size(); i++) {
-                    bindlessHandlesData->shadowCompareTextures[i].handle
-                        = shadowMapHandles[i];
-                }
-
-                _bindlessShadowlUniformBlock->Update(
-                    bindlessHandlesData, bindlessHandlesSize);
-            }
         }
     }
 
@@ -466,11 +389,6 @@ GlfSimpleLightingContext::BindUniformBlocks(GlfBindingMapPtr const &bindingMap)
 
     if (shadowExists) {
         _shadowUniformBlock->Bind(bindingMap, _tokens->shadowUB);
-
-        if (usingBindlessShadowMaps) {
-            _bindlessShadowlUniformBlock->Bind(
-                bindingMap, _tokens->bindlessShadowUB);
-        }
     }
 
     if (!_materialUniformBlockValid) {
@@ -506,21 +424,17 @@ GlfSimpleLightingContext::BindUniformBlocks(GlfBindingMapPtr const &bindingMap)
 void
 GlfSimpleLightingContext::BindSamplers(GlfBindingMapPtr const &bindingMap)
 {
-    if (GlfSimpleShadowArray::GetBindlessShadowMapsEnabled()) {
-        // Bindless shadow maps are made resident on creation.
-        return;
+    size_t const numShadows = _shadows->GetNumShadowMapPasses();
+    for (size_t i = 0; i < numShadows; ++i) {
+        std::string samplerName =
+            TfStringPrintf("%s[%zd]",
+                _tokens->shadowCompareTextures.GetText(), i);
+        int shadowSampler = bindingMap->GetSamplerUnit(samplerName);
+
+        glActiveTexture(GL_TEXTURE0 + shadowSampler);
+        glBindTexture(GL_TEXTURE_2D, _shadows->GetShadowMapTexture(i));
+        glBindSampler(shadowSampler, _shadows->GetShadowMapCompareSampler());
     }
-
-    int shadowSampler = bindingMap->GetSamplerUnit(_tokens->shadowSampler);
-    int shadowCompareSampler = bindingMap->GetSamplerUnit(_tokens->shadowCompareSampler);
-
-    glActiveTexture(GL_TEXTURE0 + shadowSampler);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, _shadows->GetShadowMapTexture());
-    glBindSampler(shadowSampler, _shadows->GetShadowMapDepthSampler());
-
-    glActiveTexture(GL_TEXTURE0 + shadowCompareSampler);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, _shadows->GetShadowMapTexture());
-    glBindSampler(shadowCompareSampler, _shadows->GetShadowMapCompareSampler());
 
     glActiveTexture(GL_TEXTURE0);
 }
@@ -528,21 +442,17 @@ GlfSimpleLightingContext::BindSamplers(GlfBindingMapPtr const &bindingMap)
 void
 GlfSimpleLightingContext::UnbindSamplers(GlfBindingMapPtr const &bindingMap)
 {
-    if (GlfSimpleShadowArray::GetBindlessShadowMapsEnabled()) {
-        // We leave the bindless shadow maps as always resident.
-        return;
+    size_t const numShadows = _shadows->GetNumShadowMapPasses();
+    for (size_t i = 0; i < numShadows; ++i) {
+        std::string samplerName =
+            TfStringPrintf("%s[%zd]",
+                _tokens->shadowCompareTextures.GetText(), i);
+        int shadowSampler = bindingMap->GetSamplerUnit(samplerName);
+
+        glActiveTexture(GL_TEXTURE0 + shadowSampler);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glBindSampler(shadowSampler, 0);
     }
-
-    int shadowSampler = bindingMap->GetSamplerUnit(_tokens->shadowSampler);
-    int shadowCompareSampler = bindingMap->GetSamplerUnit(_tokens->shadowCompareSampler);
-
-    glActiveTexture(GL_TEXTURE0 + shadowSampler);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
-    glBindSampler(shadowSampler, 0);
-
-    glActiveTexture(GL_TEXTURE0 + shadowCompareSampler);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
-    glBindSampler(shadowCompareSampler, 0);
 
     glActiveTexture(GL_TEXTURE0);
 }
@@ -571,7 +481,7 @@ GlfSimpleLightingContext::SetStateFromOpenGL()
             GLfloat position[4], color[4];
 
             glGetLightfv(lightName, GL_POSITION, position);
-            light.SetPosition(GfVec4f(position)*viewToWorldMatrix);
+            light.SetPosition(GfVec4f(GfVec4f(position)*viewToWorldMatrix));
             
             glGetLightfv(lightName, GL_AMBIENT, color);
             light.SetAmbient(GfVec4f(color));
@@ -585,7 +495,7 @@ GlfSimpleLightingContext::SetStateFromOpenGL()
             GLfloat spotDirection[3];
             glGetLightfv(lightName, GL_SPOT_DIRECTION, spotDirection);
             light.SetSpotDirection(
-                viewToWorldMatrix.TransformDir(GfVec3f(spotDirection)));
+                GfVec3f(viewToWorldMatrix.TransformDir(GfVec3f(spotDirection))));
 
             GLfloat floatValue;
 

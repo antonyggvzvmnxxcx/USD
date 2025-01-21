@@ -1,25 +1,8 @@
 //
 // Copyright 2019 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdSt/domeLightComputations.h"
 #include "pxr/imaging/hdSt/hgiConversions.h"
@@ -58,6 +41,13 @@ HdSt_DomeLightComputationGPU::HdSt_DomeLightComputationGPU(
     _level(level), 
     _roughness(roughness)
 {
+}
+
+static 
+int 
+_MakeMultipleOf(int dim, int localSize)
+{
+    return ((dim + localSize - 1) / localSize) * localSize;
 }
 
 static
@@ -128,11 +118,35 @@ HdSt_DomeLightComputationGPU::Execute(
 
     HdStResourceRegistry* hdStResourceRegistry =
         static_cast<HdStResourceRegistry*>(resourceRegistry);
+
+    constexpr int localSize = 8;
+    const bool hasUniforms = _roughness >= 0.0f;
+
     HdStGLSLProgramSharedPtr const computeProgram =
         HdStGLSLProgram::GetComputeProgram(
             HdStPackageDomeLightShader(), 
             _shaderToken,
-            static_cast<HdStResourceRegistry*>(resourceRegistry));
+            "",
+            static_cast<HdStResourceRegistry*>(resourceRegistry), 
+            [&] (HgiShaderFunctionDesc &computeDesc) {
+                computeDesc.debugName = _shaderToken.GetString();
+                computeDesc.shaderStage = HgiShaderStageCompute;
+                computeDesc.computeDescriptor.localSize = 
+                    GfVec3i(localSize, localSize, 1);
+
+                HgiShaderFunctionAddTexture(&computeDesc, "inTexture",
+                    /*bindIndex = */0);
+                HgiShaderFunctionAddWritableTexture(&computeDesc, "outTexture",
+                    /*bindIndex = */1, /*dimensions = */2, 
+                    HgiFormatFloat16Vec4);
+                if (hasUniforms) {
+                    HgiShaderFunctionAddConstantParam(
+                        &computeDesc, "inRoughness", HdStTokens->_float);
+                }
+                HgiShaderFunctionAddStageInput(
+                    &computeDesc, "hd_GlobalInvocationID", "uvec3",
+                    HgiShaderKeywordTokens->hdGlobalInvocationID);
+            });
     if (!TF_VERIFY(computeProgram)) {
         return;
     }
@@ -152,8 +166,14 @@ HdSt_DomeLightComputationGPU::Execute(
     }
 
     // Size of texture to be created.
-    const int width  = srcDim[0] / 2;
-    const int height = srcDim[1] / 2;
+    // Downsize larger textures
+    bool downsize = (srcDim[0] > 256 && srcDim[1] > 256);
+    int width  = downsize ? srcDim[0] / 2 : srcDim[0];
+    int height = downsize ? srcDim[1] / 2 : srcDim[1];
+    
+    // Make sure dimensions align with the local size used in the Compute Shader
+    width = _MakeMultipleOf(width, localSize);
+    height = _MakeMultipleOf(height, localSize);
 
     // Get texture object from lighting shader that this
     // computation is supposed to populate
@@ -203,6 +223,7 @@ HdSt_DomeLightComputationGPU::Execute(
     HgiTextureBindDesc texBind0;
     texBind0.bindingIndex = 0;
     texBind0.stageUsage = HgiShaderStageCompute;
+    texBind0.writable = false;
     texBind0.textures.push_back(srcTextureName);
     texBind0.samplers.push_back(srcSamplerName);
     texBind0.resourceType = HgiBindResourceTypeCombinedSamplerImage;
@@ -211,6 +232,7 @@ HdSt_DomeLightComputationGPU::Execute(
     HgiTextureBindDesc texBind1;
     texBind1.bindingIndex = 1;
     texBind1.stageUsage = HgiShaderStageCompute;
+    texBind1.writable = true;
     texBind1.textures.push_back(dstTextureView->GetViewTexture());
     texBind1.samplers.push_back(srcSamplerName);
     texBind1.resourceType = HgiBindResourceTypeStorageImage;
@@ -225,8 +247,6 @@ HdSt_DomeLightComputationGPU::Execute(
     } uniform;
 
     uniform.roughness = _roughness;
-
-    bool hasUniforms = uniform.roughness >= 0.0f;
 
     HgiComputePipelineDesc desc;
     desc.debugName = "DomeLightComputation";
@@ -250,7 +270,7 @@ HdSt_DomeLightComputationGPU::Execute(
     }
 
     // Queue compute work
-    computeCmds->Dispatch(width / 32, height / 32);
+    computeCmds->Dispatch(width, height);
 
     computeCmds->PopDebugGroup();
 

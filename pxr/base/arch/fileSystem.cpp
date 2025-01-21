@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 #include "pxr/base/arch/fileSystem.h"
@@ -38,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cerrno>
+#include <filesystem>
 #include <memory>
 #include <utility>
 
@@ -74,13 +58,85 @@ static inline HANDLE _FileToWinHANDLE(FILE *file)
 
 FILE* ArchOpenFile(char const* fileName, char const* mode)
 {
+#if defined(ARCH_OS_WINDOWS)
+    bool hasPlus = strchr(mode, '+') != nullptr;
+    bool hasB = strchr(mode, 'b') != nullptr;
+
+    // Allow other processes to read/write/delete the file.  This emulates the
+    // unix-like behavior, which our code is primarily accustomed to.
+    DWORD shareMode = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    DWORD flagsAndAttributes = FILE_ATTRIBUTE_NORMAL;
+
+    DWORD desiredAccess;
+    DWORD creationDisposition;
+    int openFlags
+        = (hasB ? _O_BINARY : _O_TEXT)
+        | (hasPlus ? _O_RDWR : _O_RDONLY);
+    const char modeChar = mode[0];
+    if (modeChar == 'r') {
+        desiredAccess = GENERIC_READ | (hasPlus ? GENERIC_WRITE : 0);
+        creationDisposition = OPEN_EXISTING;
+    }
+    else if (modeChar == 'w') {
+        desiredAccess = GENERIC_WRITE | (hasPlus ? GENERIC_READ : 0);
+        creationDisposition = CREATE_ALWAYS;
+        openFlags |= _O_CREAT | _O_TRUNC;
+    }
+    else if (modeChar == 'a') {
+        // The GENERIC_WRITE - FILE_WRITE_DATA produces write permissions to all
+        // attributes, etc, but only APPEND permissions for file content.
+        desiredAccess =
+            (GENERIC_WRITE & ~FILE_WRITE_DATA) | (hasPlus ? GENERIC_READ : 0);
+        creationDisposition = OPEN_ALWAYS;
+        openFlags |= _O_CREAT | _O_APPEND;
+    }
+    else {
+        // invalid mode.
+        return nullptr;
+    }
+
+    // Call CreateFileW.
+    HANDLE hfile = CreateFileW(
+        ArchWindowsUtf8ToUtf16(fileName).c_str(),
+        desiredAccess,
+        shareMode,
+        /* securityAttributes=*/nullptr,
+        creationDisposition,
+        flagsAndAttributes,
+        /* templateFile=*/NULL);
+
+    if (hfile == INVALID_HANDLE_VALUE) {
+        // Failed to CreateFileW.
+        return nullptr;
+    }
+
+    // According to Win32 docs, a successful call to _open_osfhandle transfers
+    // ownership of hfile to the C runtime file descriptor, so a later _close()
+    // is sufficient to clean up.  There's no need to call CloseHandle().
+    int osfHandle = _open_osfhandle((intptr_t)hfile, openFlags);
+    if (osfHandle == -1) { 
+        CloseHandle(hfile);
+        return nullptr;
+    }
+
+    // According to Win32 docs, a successful call to _fdopen transfers ownership
+    // of the osfHandle to the FILE stream, so a later fclose() is sufficient to
+    // clean up.  There's no need to call _close.
+    FILE *filePtr = _fdopen(osfHandle, mode);
+    if (!filePtr) {
+        _close(osfHandle);
+    }
+
+    return filePtr;
+#else
     return fopen(fileName, mode);
+#endif
 }
 
 #if defined(ARCH_OS_WINDOWS)
 int ArchRmDir(const char* path)
 {
-    return RemoveDirectory(path) ? 0 : -1;
+    return RemoveDirectoryW(ArchWindowsUtf8ToUtf16(path).c_str()) ? 0 : -1;
 }
 #endif
 
@@ -110,7 +166,7 @@ ArchGetModificationTime(const char* pathname, double* time)
 {
     ArchStatType st;
 #if defined(ARCH_OS_WINDOWS)
-    if (_stat64(pathname, &st) == 0)
+    if (_wstat64(ArchWindowsUtf8ToUtf16(pathname).c_str(), &st) == 0)
 #else
     if (stat(pathname, &st) == 0)
 #endif
@@ -306,15 +362,10 @@ ArchNormPath(const string& inPath, bool stripDriveSpecifier)
 
     // Extract the drive specifier.  Note that we don't correctly handle
     // UNC paths or paths that start with \\? (which allow longer paths).
-    //
-    // Also make sure drive letters are always lower-case out of ArchNormPath
-    // on Windows -- this is so that we can be sure we can reliably use the
-    // paths as keys in tables, etc.
     string prefix;
     if (path.size() >= 2 && path[1] == ':') {
         if (!stripDriveSpecifier) {
-            prefix.assign(2, ':');
-            prefix[0] = std::tolower(path[0]);
+            prefix = path.substr(0,2);
         }
         path.erase(0, 2);
     }
@@ -338,9 +389,12 @@ ArchAbsPath(const string& path)
     }
 
 #if defined(ARCH_OS_WINDOWS)
-    char buffer[ARCH_PATH_MAX];
-    if (GetFullPathName(path.c_str(), ARCH_PATH_MAX, buffer, nullptr)) {
-        return buffer;
+    // @TODO support 32,767 long paths on windows by prepending "\\?\" to the
+    // path
+    wchar_t buffer[ARCH_PATH_MAX];
+    if (GetFullPathNameW(ArchWindowsUtf8ToUtf16(path).c_str(),
+                         ARCH_PATH_MAX, buffer, nullptr)) {
+        return ArchWindowsUtf16ToUtf8(buffer);
     }
     else {
         return path;
@@ -444,7 +498,7 @@ ArchGetFileLength(const char* fileName)
     // Open a handle with 0 as the desired access and full sharing.
     // This opens the file even if exclusively locked.
     HANDLE handle =
-        CreateFile(fileName, 0,
+        CreateFileW(ArchWindowsUtf8ToUtf16(fileName).c_str(), 0,
                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle) {
@@ -479,24 +533,35 @@ ArchGetFileName(FILE *file)
     }
     return result;
 #elif defined (ARCH_OS_WINDOWS)
-    static constexpr DWORD bufSize =
-        sizeof(FILE_NAME_INFO) + sizeof(WCHAR) * 4096;
-    HANDLE hfile = _FileToWinHANDLE(file);
-    auto fileNameInfo = reinterpret_cast<PFILE_NAME_INFO>(malloc(bufSize));
     string result;
-    if (GetFileInformationByHandleEx(
-            hfile, FileNameInfo, static_cast<void *>(fileNameInfo), bufSize)) {
+    std::vector<WCHAR> filePath(MAX_PATH);
+    HANDLE hfile = _FileToWinHANDLE(file);
+    DWORD dwSize = GetFinalPathNameByHandleW(hfile, filePath.data(), MAX_PATH, VOLUME_NAME_DOS);
+    // * dwSize == 0. Fail.
+    // * dwSize < MAX_PATH. Success, and dwSize returns the size without null terminator.
+    // * dwSize >= MAX_PATH. Buffer is too small, and dwSize returns the size with null terminator.
+    if (dwSize >= MAX_PATH) {
+        filePath.resize(dwSize);
+        dwSize = GetFinalPathNameByHandleW(hfile, filePath.data(), dwSize, VOLUME_NAME_DOS);
+    }
+
+    if (dwSize != 0) {
         size_t outSize = WideCharToMultiByte(
-            CP_UTF8, 0, fileNameInfo->FileName,
-            fileNameInfo->FileNameLength/sizeof(WCHAR),
+            CP_UTF8, 0, filePath.data(),
+            dwSize,
             NULL, 0, NULL, NULL);
         result.resize(outSize);
         WideCharToMultiByte(
-            CP_UTF8, 0, fileNameInfo->FileName,
-            fileNameInfo->FileNameLength/sizeof(WCHAR),
+            CP_UTF8, 0, filePath.data(),
+            -1,
             &result.front(), outSize, NULL, NULL);
+
+        // Strip path prefix if necessary.
+        // See https://learn.microsoft.com/en-us/dotnet/standard/io/file-path-formats
+        // for format of DOS device paths.
+        auto canonicalPath = std::filesystem::canonical(result);
+        result = canonicalPath.string();
     }
-    free(fileNameInfo);
     return result;                                        
 #else
 #error Unknown system architecture
@@ -585,8 +650,9 @@ ArchMakeTmpFile(const std::string& tmpdir,
     int fd = -1;
     auto cTemplate =
         MakeUnique(sTemplate, [&fd](const char* name){
-            _sopen_s(&fd, name, _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY,
-                     _SH_DENYNO, _S_IREAD | _S_IWRITE);
+                    _wsopen_s(&fd, ArchWindowsUtf8ToUtf16(name).c_str(),
+                              _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY,
+                              _SH_DENYNO, _S_IREAD | _S_IWRITE);
             return fd != -1;
         });
 #else
@@ -627,7 +693,8 @@ ArchMakeTmpSubdir(const std::string& tmpdir,
 #if defined(ARCH_OS_WINDOWS)
     retstr =
         MakeUnique(sTemplate, [](const char* name){
-            return CreateDirectory(name, NULL) != FALSE;
+            return CreateDirectoryW(
+                ArchWindowsUtf8ToUtf16(name).c_str(), NULL) != FALSE;
         });
 #else
     // Copy template to a writable buffer.
@@ -655,10 +722,10 @@ void
 Arch_InitTmpDir()
 {
 #if defined(ARCH_OS_WINDOWS)
-    char tmpPath[MAX_PATH];
+    wchar_t tmpPath[MAX_PATH];
 
     // On Windows, let GetTempPath use the standard env vars, not our own.
-    int sizeOfPath = GetTempPath(MAX_PATH - 1, tmpPath);
+    int sizeOfPath = GetTempPathW(MAX_PATH - 1, tmpPath);
     if (sizeOfPath > MAX_PATH || sizeOfPath == 0) {
         ARCH_ERROR("Call to GetTempPath failed.");
         _TmpDir = ".";
@@ -667,7 +734,7 @@ Arch_InitTmpDir()
 
     // Strip the trailing slash
     tmpPath[sizeOfPath-1] = 0;
-    _TmpDir = _strdup(tmpPath);
+    _TmpDir = _strdup(ArchWindowsUtf16ToUtf8(tmpPath).c_str());
 #else
     const std::string tmpdir = ArchGetEnv("TMPDIR");
     if (!tmpdir.empty()) {
@@ -899,7 +966,7 @@ ArchPRead(FILE *file, void *buffer, size_t count, int64_t offset)
         return nread;
 
     // Track a total and retry until we read everything or hit EOF or an error.
-    int64_t total = std::max<int64_t>(nread, 0);
+    int64_t total = 0;
     while (nread != -1 || (nread == -1 && errno == EINTR)) {
         // Update bookkeeping and retry.
         if (nread > 0) {
@@ -958,7 +1025,7 @@ ArchPWrite(FILE *file, void const *bytes, size_t count, int64_t offset)
         return nwritten;
 
     // Track a total and retry until we write everything or hit an error.
-    int64_t total = std::max<int64_t>(nwritten, 0);
+    int64_t total = 0;
     while (nwritten != -1) {
         // Update bookkeeping and retry.
         total += nwritten;
@@ -1030,8 +1097,9 @@ static int Arch_FileAccessError()
 int ArchFileAccess(const char* path, int mode)
 {
     // Simple existence check is handled specially.
+    std::wstring wpath{ ArchWindowsUtf8ToUtf16(path) };
     if (mode == F_OK) {
-        return (GetFileAttributes(path) != INVALID_FILE_ATTRIBUTES)
+        return (GetFileAttributesW(wpath.c_str()) != INVALID_FILE_ATTRIBUTES)
                 ? 0 : Arch_FileAccessError();
     }
 
@@ -1041,7 +1109,7 @@ int ArchFileAccess(const char* path, int mode)
 
     // Get the SECURITY_DESCRIPTOR size.
     DWORD length = 0;
-    if (!GetFileSecurity(path, securityInfo, NULL, 0, &length)) {
+    if (!GetFileSecurityW(wpath.c_str(), securityInfo, NULL, 0, &length)) {
         if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
             return Arch_FileAccessError();
         }
@@ -1050,7 +1118,8 @@ int ArchFileAccess(const char* path, int mode)
     // Get the SECURITY_DESCRIPTOR.
     std::unique_ptr<unsigned char[]> buffer(new unsigned char[length]);
     PSECURITY_DESCRIPTOR security = (PSECURITY_DESCRIPTOR)buffer.get();
-    if (!GetFileSecurity(path, securityInfo, security, length, &length)) {
+    if (!GetFileSecurityW(
+            wpath.c_str(), securityInfo, security, length, &length)) {
         return Arch_FileAccessError();
     }
 
@@ -1142,7 +1211,8 @@ typedef struct _REPARSE_DATA_BUFFER {
 
 std::string ArchReadLink(const char* path)
 {
-    HANDLE handle = ::CreateFile(path, GENERIC_READ, FILE_SHARE_READ,
+    HANDLE handle = ::CreateFileW(
+        ArchWindowsUtf8ToUtf16(path).c_str(), GENERIC_READ, FILE_SHARE_READ,
         NULL, OPEN_EXISTING,
         FILE_FLAG_OPEN_REPARSE_POINT |
         FILE_FLAG_BACKUP_SEMANTICS, NULL);
@@ -1211,6 +1281,14 @@ std::string ArchReadLink(const char* path)
             // Convert wide-char to narrow char
             std::wstring ws(reparsePath.get());
             string str(ws.begin(), ws.end());
+
+            // Mount point paths starting with \?? are NT Object Manager paths
+            // and cannot be used as file paths, so disable converting the path
+            // by returning the original path.
+            //
+            // See: https://superuser.com/questions/1069055/what-is-the-function-of-question-marks-in-file-system-paths-in-windows-registry
+            if (str.length() >= 3 && str.substr(0, 3) == "\\??")
+                return path;
 
             // Note that junctions do not support the relative path form
             // like SYMLINKS do, so nothing more to do here.

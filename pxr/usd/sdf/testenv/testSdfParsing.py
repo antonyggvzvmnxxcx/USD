@@ -2,25 +2,8 @@
 #
 # Copyright 2017 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 
 # This tests a set of sample sdf files that are either expected to load
 # successfully, or to emit warnings.  Files with _bad_ in the name are
@@ -33,8 +16,18 @@
 # escaping errors.
 
 from __future__ import print_function
-import sys, os, difflib, unittest
+import sys, os, difflib, unittest, platform
 from pxr import Tf, Sdf
+
+# Default encoding on Windows in python 3+ is not UTF-8, but it is on Linux &
+# Mac.  Provide a wrapper here so we specify that in that case.
+def _open(*args, **kw):
+    if platform.system() == "Windows":
+        kw['encoding'] = 'utf8'
+        return open(*args, **kw)
+    else:
+        return open(*args, **kw)
+
 
 def removeFiles(*filenames):
     """Removes the given files (if one of the args is itself a tuple or list, "unwrap" it.)"""
@@ -54,6 +47,26 @@ class TestSdfParsing(unittest.TestCase):
         # This will mean that your new test runs first and you can spot
         # failures much quicker.
         testFiles = '''
+        222_dict_key_control_characters.sdf
+        221_bad_spline_type.sdf
+        220_splines.sdf
+        219_utf8_bad_type_name.sdf
+        218_utf8_bad_identifier.sdf
+        217_utf8_identifiers.sdf
+        216_bad_variant_in_relocates_path.sdf
+        215_bad_variant_in_specializes_path.sdf
+        214_bad_variant_in_inherits_path.sdf
+        213_bad_variant_in_payload_path.sdf
+        212_bad_variant_in_reference_path.sdf
+        211_bad_authored_opaque_attributes.sdf
+        210_opaque_attributes.sdf
+        209_bad_escaped_string4.sdf
+        208_bad_escaped_string3.sdf
+        207_bad_escaped_string2.sdf
+        206_bad_escaped_string1.sdf
+        205_bad_assetPaths.sdf
+        204_really_empty.sdf
+        203_newlines.sdf
         202_displayGroups.sdf
         201_format_specifiers_in_strings.sdf
         200_bad_emptyFile.sdf
@@ -78,6 +91,7 @@ class TestSdfParsing(unittest.TestCase):
         182_bad_variant_in_relationship.sdf
         181_bad_variant_in_connection.sdf
         180_asset_paths.sdf
+        179_bad_shaped_attr_dimensions1_oldtypes.sdf
         179_bad_shaped_attr_dimensions1.sdf
         178_invalid_typeName.sdf
         177_bad_empty_lists.sdf
@@ -114,6 +128,7 @@ class TestSdfParsing(unittest.TestCase):
         115_symmetricPeer_metadata.sdf
         114_bad_prefix_metadata.sdf
         113_displayName_metadata.sdf
+        112_nested_dictionaries_oldtypes.sdf
         112_nested_dictionaries.sdf
         111_string_arrays.sdf
         108_bad_inheritPath.sdf
@@ -123,6 +138,7 @@ class TestSdfParsing(unittest.TestCase):
         99_bad_typeNameChange.sdf
         98_bad_valueType.sdf
         97_bad_valueType.sdf
+        96_bad_valueType_oldtypes.sdf
         96_bad_valueType.sdf
         95_bad_hiddenRel.sdf
         94_bad_hiddenAttr.sdf
@@ -133,9 +149,13 @@ class TestSdfParsing(unittest.TestCase):
         89_bad_attribute_displayUnit.sdf
         88_attribute_displayUnit.sdf
         86_bad_tuple_dimensions5.sdf
+        85_bad_tuple_dimensions4_oldtypes.sdf
         85_bad_tuple_dimensions4.sdf
+        84_bad_tuple_dimensions3_oldtypes.sdf
         84_bad_tuple_dimensions3.sdf
+        83_bad_tuple_dimensions2_oldtypes.sdf
         83_bad_tuple_dimensions2.sdf
+        82_bad_tuple_dimensions1_oldtypes.sdf
         82_bad_tuple_dimensions1.sdf
         81_namespace_reorder.sdf
         80_bad_hidden.sdf
@@ -152,7 +172,9 @@ class TestSdfParsing(unittest.TestCase):
         59_bad_connectListEditing.sdf
         58_bad_relListEditing.sdf
         57_bad_relListEditing.sdf
+        56_bad_value_oldtypes.sdf
         56_bad_value.sdf
+        55_bad_value_oldtypes.sdf
         55_bad_value.sdf
         54_bad_value.sdf
         53_bad_typeName.sdf
@@ -172,6 +194,7 @@ class TestSdfParsing(unittest.TestCase):
         36_tasks.sdf
         33_bad_relationship_duplicate_target.sdf
         32_relationship_syntax.sdf
+        31_attribute_values_oldtypes.sdf
         31_attribute_values.sdf
         30_bad_specifier.sdf
         29_bad_newline9.sdf
@@ -195,6 +218,7 @@ class TestSdfParsing(unittest.TestCase):
         08_bad_file.sdf
         06_largevalue.sdf
         05_bad_file.sdf
+        04_general_oldtypes.sdf
         04_general.sdf
         03_bad_file.sdf
         02_simple.sdf
@@ -231,6 +255,7 @@ class TestSdfParsing(unittest.TestCase):
         
         layerFileOut = CreateTempFile('Export')
         layerFileOut2 = CreateTempFile('ExportToString')
+        layerFileOut3 = CreateTempFile('MetadataOnly')
 
         layerDir = os.path.join(os.getcwd(), 'testSdfParsing.testenv')
         baselineDir = os.path.join(layerDir, 'baseline')
@@ -302,6 +327,12 @@ class TestSdfParsing(unittest.TestCase):
             layer = Sdf.Layer.FindOrOpen(layerFile)
             self.assertTrue(layer is not None,
                             "failed to open @%s@" % layerFile)
+
+            metadataOnlyLayer = Sdf.Layer.OpenAsAnonymous(
+                layerFile, metadataOnly=True)
+            self.assertTrue(metadataOnlyLayer is not None,
+                            "failed to open @%s@ for metadata only" % layerFile)
+
             print('\tWriting...')
             try:
                 # Use Sdf.Layer.Export to write out the layer contents directly.
@@ -309,9 +340,11 @@ class TestSdfParsing(unittest.TestCase):
 
                 # Use Sdf.Layer.ExportToString and write out the returned layer
                 # string to a file.
-                with open(layerFileOut2.name, 'w') as f:
+                with _open(layerFileOut2.name, 'w') as f:
                     f.write(layer.ExportToString())
 
+                self.assertTrue(metadataOnlyLayer.Export(layerFileOut3.name))
+                    
             except Exception as e:
                 if '_badwrite_' in file:
                     # Write errors should always be Tf.ErrorExceptions
@@ -329,14 +362,27 @@ class TestSdfParsing(unittest.TestCase):
 
             expectedFile = "%s/%s" % (baselineDir, file)
 
-            def doDiff(testFile, expectedFile):
+            def doDiff(testFile, expectedFile, metadataOnly=False):
 
-                fd = open(testFile, "r")
+                fd = _open(testFile, "r")
                 layerData = fd.readlines()
                 fd.close()
-                fd = open(expectedFile, "r")
+                fd = _open(expectedFile, "r")
                 expectedLayerData = fd.readlines()
                 fd.close()
+
+                # If we're expecting metadata only, find the metadata section in
+                # the baseline output by looking for the "(" and ")" delimiters
+                # and use that as the expected layer data.
+                if metadataOnly:
+                    try:
+                        mdStart = expectedLayerData.index("(\n", 1)
+                        mdEnd = expectedLayerData.index(")\n", mdStart)
+                        expectedLayerData = expectedLayerData[0:mdEnd+1]+["\n"]
+                    except ValueError:
+                        # If there's no layer metadata, we expect to just have
+                        # the first line of the baseline with the #sdf cookie.
+                        expectedLayerData = [expectedLayerData[0], "\n"]
 
                 diff = list(difflib.unified_diff(
                     layerData, expectedLayerData,
@@ -350,6 +396,7 @@ class TestSdfParsing(unittest.TestCase):
 
             doDiff(layerFileOut.name, expectedFile)
             doDiff(layerFileOut2.name, expectedFile)
+            doDiff(layerFileOut3.name, expectedFile, metadataOnly=True)
             
             print('\tPassed')
 

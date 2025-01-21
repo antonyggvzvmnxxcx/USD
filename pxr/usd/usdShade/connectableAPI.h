@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef USDSHADE_GENERATED_CONNECTABLEAPI_H
 #define USDSHADE_GENERATED_CONNECTABLEAPI_H
@@ -86,11 +69,6 @@ public:
     /// \sa UsdSchemaKind
     static const UsdSchemaKind schemaKind = UsdSchemaKind::NonAppliedAPI;
 
-    /// \deprecated
-    /// Same as schemaKind, provided to maintain temporary backward 
-    /// compatibility with older generated schemas.
-    static const UsdSchemaKind schemaType = UsdSchemaKind::NonAppliedAPI;
-
     /// Construct a UsdShadeConnectableAPI on UsdPrim \p prim .
     /// Equivalent to UsdShadeConnectableAPI::Get(prim.GetStage(), prim.GetPath())
     /// for a \em valid \p prim, but will not immediately throw an error for
@@ -140,12 +118,6 @@ protected:
     USDSHADE_API
     UsdSchemaKind _GetSchemaKind() const override;
 
-    /// \deprecated
-    /// Same as _GetSchemaKind, provided to maintain temporary backward 
-    /// compatibility with older generated schemas.
-    USDSHADE_API
-    UsdSchemaKind _GetSchemaType() const override;
-
 private:
     // needs to invoke _GetStaticTfType.
     friend class UsdSchemaRegistry;
@@ -173,6 +145,8 @@ public:
 protected:
     /// Returns true if the given prim is compatible with this API schema,
     /// i.e. if it is a valid shader or a node-graph.
+    /// A prim has a compatible connectableAPI if a valid behavior is registered
+    /// for it.
     USDSHADE_API
     bool _IsCompatible() const override;
     
@@ -183,6 +157,14 @@ public:
     /// that defines whether it is a container.
     USDSHADE_API
     bool IsContainer() const;
+
+    /// Returns true if container encapsulation rules should be respected when
+    /// evaluating connectibility behavior, false otherwise.
+    ///
+    /// The underlying prim type may provide runtime behavior that defines if
+    /// encapsulation rules are respected or not.
+    USDSHADE_API
+    bool RequiresEncapsulation() const;
 
     /// \name Connections 
     /// 
@@ -668,8 +650,10 @@ public:
         return ClearSources(output.GetAttr());
     }
 
-    /// Return true if the \p schemaType has a connectableAPIBehavior
+    /// Return true if the \p schemaType has a valid connectableAPIBehavior
     /// registered, false otherwise.
+    /// To check if a prim's connectableAPI has a behavior defined, use
+    /// UsdSchemaBase::operator bool().
     USDSHADE_API
     static bool HasConnectableAPI(const TfType& schemaType);
 
@@ -678,8 +662,8 @@ public:
     template <typename T>
     static bool HasConnectableAPI()
     {
-        static_assert(std::is_base_of<UsdTyped, T>::value, 
-                "Provided type must derive UsdTyped.");
+        static_assert(std::is_base_of<UsdSchemaBase, T>::value, 
+                "Provided type must derive UsdSchemaBase.");
         return HasConnectableAPI(TfType::Find<T>());
     };
 

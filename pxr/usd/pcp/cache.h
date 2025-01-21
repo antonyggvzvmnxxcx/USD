@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_PCP_CACHE_H
 #define PXR_USD_PCP_CACHE_H
@@ -38,6 +21,7 @@
 #include "pxr/usd/ar/ar.h"
 #include "pxr/usd/ar/resolverContext.h"
 #include "pxr/base/tf/declarePtrs.h"
+#include "pxr/base/tf/functionRef.h"
 #include "pxr/base/tf/hashset.h"
 
 #include <memory>
@@ -126,6 +110,18 @@ public:
     PCP_API
     PcpLayerStackPtr GetLayerStack() const;
 
+    /// Return true if this cache's root layer stack is \p layerStack, false
+    /// otherwise.  This is functionally equivalent to comparing against the
+    /// result of GetLayerStack(), but does not require constructing a TfWeakPtr
+    /// or any refcount operations.
+    bool HasRootLayerStack(PcpLayerStackRefPtr const &layerStack) const {
+        return layerStack == _layerStack;
+    }
+
+    /// \overload
+    PCP_API
+    bool HasRootLayerStack(PcpLayerStackPtr const &layerStack) const;
+
     /// Return true if the cache is configured in Usd mode.
     PCP_API
     bool IsUsd() const;
@@ -182,19 +178,13 @@ public:
     /// the muted layer did not exist, which means a composition error will 
     /// be generated.
     ///
-#if AR_VERSION == 1
-    /// A canonical identifier for each layer in \p layersToMute will be
-    /// computed using ArResolver::ComputeRepositoryPath.  Any layer 
-    /// encountered during composition with the same repository path will
-    /// be considered muted and ignored.  Relative paths will be assumed to
-    /// be relative to the cache's root layer.  Search paths are immediately 
-    /// resolved and the result is used for computing the canonical path.
-#else
     /// A canonical identifier for each layer in \p layersToMute will be
     /// computed using ArResolver::CreateIdentifier using the cache's root
-    /// layer as the anchoring asset. Any layer encountered during composition
-    /// with the same identifier will be considered muted and ignored.
-#endif
+    /// layer as the anchoring asset. If an identifier contains a file
+    /// format target that matches this cache's file format target, that
+    /// argument will be removed from the identifier. Any layer encountered
+    /// during composition with the same canonical identifier will be
+    /// considered muted and ignored.
     ///
     /// Note that muting a layer will cause this cache to release all
     /// references to that layer.  If no other client is holding on to
@@ -271,6 +261,11 @@ public:
     PCP_API
     PcpLayerStackPtr
     FindLayerStack(const PcpLayerStackIdentifier &identifier) const;
+
+    /// Return true if \p layerStack is used by this cache in its composition,
+    /// false otherwise.
+    PCP_API
+    bool UsesLayerStack(const PcpLayerStackPtr &layerStack) const;
 
     /// Compute and return a reference to the cached result for the
     /// prim index for the given path. \p allErrors will contain any errors 
@@ -361,6 +356,16 @@ public:
     const PcpPrimIndex *
     FindPrimIndex(const SdfPath &primPath) const;
 
+    /// Run the given \p callback on every prim index in the cache.
+    /// The callback must have the signature: void(const PcpPrimIndex&).
+    template <class Callback>
+    void
+    ForEachPrimIndex(const Callback& callback) const
+    {
+        TfFunctionRef<void(const PcpPrimIndex&)> fn(callback);
+        _ForEachPrimIndex(fn);
+    }
+
     /// Compute and return a reference to the cached result for the
     /// property index for the given path. \p allErrors will contain any
     /// errors encountered while performing this operation.
@@ -420,6 +425,14 @@ public:
     PCP_API
     SdfLayerHandleSet GetUsedLayers() const;
 
+    /// Return a number that can be used to determine whether or not the set of
+    /// layers used by this cache may have changed or not.  For example, if one
+    /// calls GetUsedLayers() and saves the GetUsedLayersRevision(), and then
+    /// later calls GetUsedLayersRevision() again, if the number is unchanged,
+    /// then GetUsedLayers() is guaranteed to be unchanged as well.
+    PCP_API
+    size_t GetUsedLayersRevision() const;
+
     /// Returns set of all root layers used by this cache.
     PCP_API
     SdfLayerHandleSet GetUsedRootLayers() const;
@@ -428,6 +441,17 @@ public:
     PCP_API
     const PcpLayerStackPtrVector&
     FindAllLayerStacksUsingLayer(const SdfLayerHandle& layer) const;
+
+    /// Run the given \p callbcack on every layer stack used by prim
+    /// indexes in the cache. The callback must have the signature:
+    /// void(const PcpLayerStackPtr&).
+    template <class Callback>
+    void
+    ForEachLayerStack(const Callback& callback) const
+    {
+        TfFunctionRef<void(const PcpLayerStackPtr&)> fn(callback);
+        _ForEachLayerStack(fn);
+    }
 
     /// Returns dependencies on the given site of scene description,
     /// as discovered by the cached index computations.
@@ -510,13 +534,25 @@ public:
     /// Returns true if any prim index in this cache has a dependency on a 
     /// dynamic file format argument field. 
     PCP_API
-    bool HasAnyDynamicFileFormatArgumentDependencies() const;
+    bool HasAnyDynamicFileFormatArgumentFieldDependencies() const;
+
+    /// Returns true if any prim index in this cache has a dependency on a 
+    /// dynamic file format argument attribute's default value field. 
+    PCP_API
+    bool HasAnyDynamicFileFormatArgumentAttributeDependencies() const;
 
     /// Returns true if the given \p field is the name of a field that 
     /// was composed while generating dynamic file format arguments for any prim
     /// index in this cache. 
     PCP_API
     bool IsPossibleDynamicFileFormatArgumentField(const TfToken &field) const;
+
+    /// Returns true if the given \p attributeName is the name of an attribute 
+    /// whose default value field was composed while generating dynamic file
+    /// format arguments for any prim index in this cache. 
+    PCP_API
+    bool IsPossibleDynamicFileFormatArgumentAttribute(
+        const TfToken &attributeName) const;
 
     /// Returns the dynamic file format dependency data object for the prim
     /// index with the given \p primIndexPath. This will return an empty 
@@ -526,6 +562,20 @@ public:
     const PcpDynamicFileFormatDependencyData &
     GetDynamicFileFormatArgumentDependencyData(
         const SdfPath &primIndexPath) const;
+
+    /// Returns the list of prim index paths that depend on one or more
+    /// expression variables from \p layerStack.
+    PCP_API
+    const SdfPathVector& GetPrimsUsingExpressionVariablesFromLayerStack(
+        const PcpLayerStackPtr &layerStack) const;
+
+    /// Returns the set of expression variables in \p layerStack that are
+    /// used by the prim index at \p primIndexPath.
+    PCP_API
+    const std::unordered_set<std::string>& 
+    GetExpressionVariablesFromLayerStackUsedByPrim(
+        const SdfPath &primIndexPath,
+        const PcpLayerStackPtr &layerStack) const;
 
     /// @}
 
@@ -590,6 +640,7 @@ public:
 
 private:
     friend class PcpChanges;
+    friend class Pcp_Dependencies;
     friend class Pcp_Statistics;
 
     struct _ParallelIndexer;
@@ -682,6 +733,14 @@ private:
     // Returns the property index for \p path if it exists, NULL otherwise.
     PcpPropertyIndex* _GetPropertyIndex(const SdfPath& path);
     const PcpPropertyIndex* _GetPropertyIndex(const SdfPath& path) const;
+
+    PCP_API
+    void _ForEachPrimIndex(
+        const TfFunctionRef<void(const PcpPrimIndex&)>& fn) const;
+
+    PCP_API
+    void _ForEachLayerStack(
+        const TfFunctionRef<void(const PcpLayerStackPtr&)>& fn) const;
 
 private:
     // Fixed evaluation parameters, set when the cache is created.  Note that

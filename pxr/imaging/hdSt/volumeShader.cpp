@@ -1,25 +1,8 @@
 //
 // Copyright 2019 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdSt/volumeShader.h"
 
@@ -32,17 +15,14 @@
 #include "pxr/imaging/hdSt/textureBinder.h"
 #include "pxr/imaging/hdSt/materialParam.h"
 #include "pxr/imaging/hdSt/resourceRegistry.h"
-#include "pxr/imaging/hd/renderDelegate.h"
 #include "pxr/imaging/hd/vtBufferSource.h"
-#include "pxr/imaging/glf/contextCaps.h"
 #include "pxr/base/tf/staticTokens.h"
+#include "pxr/base/gf/matrix4f.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 TF_DEFINE_PRIVATE_TOKENS(
     _tokens,
-    (stepSize)
-    (stepSizeLighting)
 
     (sampleDistance)
     (volumeBBoxInverseTransform)
@@ -51,64 +31,31 @@ TF_DEFINE_PRIVATE_TOKENS(
 );
 
 
-HdSt_VolumeShader::HdSt_VolumeShader(HdRenderDelegate * const renderDelegate)
-  : _renderDelegate(renderDelegate),
-    _lastRenderSettingsVersion(0),
-    _stepSize(HdStVolume::defaultStepSize),
-    _stepSizeLighting(HdStVolume::defaultStepSizeLighting),
-    _fillsPointsBar(false)
+HdSt_VolumeShader::HdSt_VolumeShader()
+    : _fillsPointsBar(false)
 {
 }
-
 
 HdSt_VolumeShader::~HdSt_VolumeShader() = default;
 
 void 
-HdSt_VolumeShader::AddBindings(HdBindingRequestVector * const customBindings)
+HdSt_VolumeShader::AddBindings(HdStBindingRequestVector * const customBindings)
 {
-    HdStSurfaceShader::AddBindings(customBindings);
-    customBindings->push_back(
-        HdBindingRequest(
-            HdBinding::UNIFORM,
-            _tokens->stepSize,
-            HdTypeFloat));
-    customBindings->push_back(
-        HdBindingRequest(
-            HdBinding::UNIFORM,
-            _tokens->stepSizeLighting,
-            HdTypeFloat));
+    HdSt_MaterialNetworkShader::AddBindings(customBindings);
 }
 
 void 
 HdSt_VolumeShader::BindResources(const int program,
-                                 HdSt_ResourceBinder const &binder,
-                                 HdRenderPassState const &state)
+                                 HdSt_ResourceBinder const &binder)
 {
-    HdStSurfaceShader::BindResources(program, binder, state);
-    
-    const int currentRenderSettingsVersion =
-        _renderDelegate->GetRenderSettingsVersion();
-    
-    if (_lastRenderSettingsVersion != currentRenderSettingsVersion) {
-        _lastRenderSettingsVersion = currentRenderSettingsVersion;
-        _stepSize = _renderDelegate->GetRenderSetting<float>(
-            HdStRenderSettingsTokens->volumeRaymarchingStepSize,
-            HdStVolume::defaultStepSize);
-        _stepSizeLighting = _renderDelegate->GetRenderSetting<float>(
-            HdStRenderSettingsTokens->volumeRaymarchingStepSizeLighting,
-            HdStVolume::defaultStepSizeLighting);
-    }
-    
-    binder.BindUniformf(_tokens->stepSize, 1, &_stepSize);
-    binder.BindUniformf(_tokens->stepSizeLighting, 1, &_stepSizeLighting);
+    HdSt_MaterialNetworkShader::BindResources(program, binder);
 }
 
 void
 HdSt_VolumeShader::UnbindResources(const int program,
-                                   HdSt_ResourceBinder const &binder,
-                                   HdRenderPassState const &state)
+                                   HdSt_ResourceBinder const &binder)
 {
-    HdStSurfaceShader::UnbindResources(program, binder, state);
+    HdSt_MaterialNetworkShader::UnbindResources(program, binder);
 }
 
 void
@@ -135,45 +82,62 @@ _ConcatFallback(const TfToken &token)
 void
 HdSt_VolumeShader::GetParamsAndBufferSpecsForBBoxAndSampleDistance(
     HdSt_MaterialParamVector * const params,
-    HdBufferSpecVector * const specs)
+    HdBufferSpecVector * const specs,
+    bool doublesSupported)
 {
+    VtValue mat4Fallback;
+    VtValue vec3Fallback;
+    HdType mat4Type;
+    HdType vec3Type;
+    if (doublesSupported) {
+        mat4Fallback = VtValue(GfMatrix4d());
+        vec3Fallback = VtValue(GfVec3d());
+        mat4Type = HdTypeDoubleMat4;
+        vec3Type = HdTypeDoubleVec3;
+    } else {
+        mat4Fallback = VtValue(GfMatrix4f());
+        vec3Fallback = VtValue(GfVec3f());
+        mat4Type = HdTypeFloatMat4;
+        vec3Type = HdTypeFloatVec3;
+    }
+
     {
         params->emplace_back(
             HdSt_MaterialParam::ParamTypeFallback,
             _tokens->volumeBBoxInverseTransform,
-            VtValue(GfMatrix4d()));
+            mat4Fallback);
 
         static const TfToken sourceName(
             _ConcatFallback(_tokens->volumeBBoxInverseTransform));
         specs->emplace_back(
             sourceName,
-            HdTupleType{HdTypeDoubleMat4, 1});
+            HdTupleType{mat4Type, 1});
     }
-     
+
     {
         params->emplace_back(
             HdSt_MaterialParam::ParamTypeFallback,
             _tokens->volumeBBoxLocalMin,
-            VtValue(GfVec3d()));
+            vec3Fallback);
 
         static const TfToken sourceName(
             _ConcatFallback(_tokens->volumeBBoxLocalMin));
         specs->emplace_back(
             sourceName,
-            HdTupleType{HdTypeDoubleVec3, 1});
+            HdTupleType{vec3Type, 1});
     }
-     
+
     {
         params->emplace_back(
             HdSt_MaterialParam::ParamTypeFallback,
             _tokens->volumeBBoxLocalMax,
-            VtValue(GfVec3d()));
+            vec3Fallback);
 
         static const TfToken sourceName(
             _ConcatFallback(_tokens->volumeBBoxLocalMax));
         specs->emplace_back(
             sourceName,
-            HdTupleType{HdTypeDoubleVec3, 1});
+            HdTupleType{vec3Type, 1});
     }
 
     {
@@ -193,7 +157,8 @@ HdSt_VolumeShader::GetParamsAndBufferSpecsForBBoxAndSampleDistance(
 void
 HdSt_VolumeShader::GetBufferSourcesForBBoxAndSampleDistance(
     const std::pair<GfBBox3d, float> &bboxAndSampleDistance,
-    HdBufferSourceSharedPtrVector * const sources)
+    HdBufferSourceSharedPtrVector * const sources,
+    bool doublesSupported)
 {
     const GfBBox3d &bbox = bboxAndSampleDistance.first;
     const GfRange3d &range = bbox.GetRange();
@@ -204,7 +169,9 @@ HdSt_VolumeShader::GetBufferSourcesForBBoxAndSampleDistance(
         sources->push_back(
             std::make_shared<HdVtBufferSource>(
                 sourceName,
-                VtValue(bbox.GetInverseMatrix())));
+                VtValue(bbox.GetInverseMatrix()),
+                1,
+                doublesSupported));
     }
 
     {
@@ -213,7 +180,9 @@ HdSt_VolumeShader::GetBufferSourcesForBBoxAndSampleDistance(
         sources->push_back(
             std::make_shared<HdVtBufferSource>(
                 sourceName,
-                VtValue(GetSafeMin(range))));
+                VtValue(GetSafeMin(range)),
+                1,
+                doublesSupported));
     }
 
     {
@@ -222,7 +191,9 @@ HdSt_VolumeShader::GetBufferSourcesForBBoxAndSampleDistance(
         sources->push_back(
             std::make_shared<HdVtBufferSource>(
                 sourceName,
-                VtValue(GetSafeMax(range))));
+                VtValue(GetSafeMax(range)),
+                1,
+                doublesSupported));
     }
 
     {
@@ -351,15 +322,15 @@ _ComputePoints(const GfBBox3d &bbox)
 void
 HdSt_VolumeShader::AddResourcesFromTextures(ResourceContext &ctx) const
 {
-    const bool bindlessTextureEnabled
-        = GlfContextCaps::GetInstance().bindlessTextureEnabled;
-
     HdBufferSourceSharedPtrVector shaderBarSources;
+    
+    const bool doublesSupported = ctx.GetResourceRegistry()->GetHgi()->
+        GetCapabilities()->IsSet(
+            HgiDeviceCapabilitiesBitsShaderDoublePrecision);
 
-    // Fills in sampling transforms for textures and also texture
-    // handles for bindless textures.
+    // Fills in sampling transforms for textures.
     HdSt_TextureBinder::ComputeBufferSources(
-        GetNamedTextureHandles(), bindlessTextureEnabled, &shaderBarSources);
+        GetNamedTextureHandles(), &shaderBarSources, doublesSupported);
 
     if (_fillsPointsBar) {
         // Compute volume bounding box from field bounding boxes
@@ -377,7 +348,7 @@ HdSt_VolumeShader::AddResourcesFromTextures(ResourceContext &ctx) const
 
         // And let the shader know for raymarching bounds.
         GetBufferSourcesForBBoxAndSampleDistance(
-            bboxAndSampleDistance, &shaderBarSources);
+            bboxAndSampleDistance, &shaderBarSources, doublesSupported);
     }
 
     if (!shaderBarSources.empty()) {
@@ -408,9 +379,6 @@ HdSt_VolumeShader::UpdateTextureHandles(
         return;
     }
 
-    const bool bindlessTextureEnabled
-        = GlfContextCaps::GetInstance().bindlessTextureEnabled;
-
     // Walk through the vector of named texture handles and field descriptors
     // simultaneously.
     for (size_t i = 0; i < textureHandles.size(); i++) {
@@ -428,13 +396,13 @@ HdSt_VolumeShader::UpdateTextureHandles(
         const HdStTextureIdentifier &textureId =
             TF_VERIFY(fieldPrim) ?
             fieldPrim->GetTextureIdentifier() : HdStTextureIdentifier();
-        const HdTextureType textureType = textureHandles[i].type;
+        const HdStTextureType textureType = textureHandles[i].type;
         const size_t textureMemory =
             TF_VERIFY(fieldPrim) ?
             fieldPrim->GetTextureMemory() : 0;
-        static const HdSamplerParameters samplerParams{
+        static const HdSamplerParameters samplerParams(
             HdWrapBlack, HdWrapBlack, HdWrapBlack,
-            HdMinFilterLinear, HdMagFilterLinear };
+            HdMinFilterLinear, HdMagFilterLinear);
         
         // allocate texture handle and assign it.
         textureHandles[i].handle =
@@ -443,7 +411,6 @@ HdSt_VolumeShader::UpdateTextureHandles(
                 textureType,
                 samplerParams,
                 textureMemory,
-                bindlessTextureEnabled,
                 shared_from_this());
     }
 

@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_USD_ATTRIBUTE_H
 #define PXR_USD_USD_ATTRIBUTE_H
@@ -44,6 +27,7 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 
 class UsdAttribute;
+class TsSpline;
 
 /// A std::vector of UsdAttributes.
 typedef std::vector<UsdAttribute> UsdAttributeVector;
@@ -404,6 +388,11 @@ public:
     /// stage's interpolation type.
     /// See \ref Usd_AttributeInterpolation.
     ///
+    /// If no value is authored and no fallback value is provided by the 
+    /// schema for this attribute, this function will return false. If the 
+    /// consumer's use-case requires a default value, the consumer will need
+    /// to provide one, possibly using GetTypeName().GetDefaultValue().
+    ///
     /// This templated accessor is designed for high performance data-streaming
     /// applications, allowing one to fetch data into the same container
     /// repeatedly, avoiding memory allocations when possible (VtArray
@@ -439,11 +428,21 @@ public:
     bool Get(VtValue* value, UsdTimeCode time = UsdTimeCode::Default()) const;
 
     /// Perform value resolution to determine the source of the resolved
-    /// value of this attribute at the requested UsdTimeCode \p time,
-    /// which defaults to \em default.
+    /// value of this attribute at the requested UsdTimeCode \p time.
     USD_API
     UsdResolveInfo
-    GetResolveInfo(UsdTimeCode time = UsdTimeCode::Default()) const;
+    GetResolveInfo(UsdTimeCode time) const;
+
+    /// Perform value resolution to determine the source of the resolved
+    /// value of this attribute at any non-default time. 
+    ///
+    /// Often (i.e. unless the attribute is affected by 
+    /// \ref Usd_Page_ValueClips "Value Clips") the source of the resolved value
+    /// does not vary over time. See UsdAttributeQuery as an example that takes
+    /// advantage of this quality of value resolution.
+    USD_API
+    UsdResolveInfo
+    GetResolveInfo() const;
 
     /// Set the value of this attribute in the current UsdEditTarget to
     /// \p value at UsdTimeCode \p time, which defaults to \em default.
@@ -475,6 +474,18 @@ public:
     /// \overload 
     USD_API
     bool Set(const VtValue& value, UsdTimeCode time = UsdTimeCode::Default()) const;
+
+    /// IN DEVELOPMENT.
+    USD_API
+    bool HasSpline() const;
+
+    /// IN DEVELOPMENT.
+    USD_API
+    TsSpline GetSpline() const;
+
+    /// IN DEVELOPMENT.
+    USD_API
+    bool SetSpline(const TsSpline &spline);
 
     /// Clears the authored default value and all time samples for this
     /// attribute at the current EditTarget and returns true on success.
@@ -581,32 +592,49 @@ public:
     /// \name ColorSpace API
     /// 
     /// The color space in which a given color or texture valued attribute is 
-    /// authored is set as token-valued metadata 'colorSpace' on the attribute. 
+    /// authored is set as token-valued metadata 'colorSpace' on the attribute.
+    /// Please refer to GfColorSpaceNames for a list of built in color space
+    /// token values.
+    ///
     /// For color or texture attributes that don't have an authored 'colorSpace'
-    /// value, the fallback color-space is gleaned from whatever color 
-    /// management system is specified by UsdStage::GetColorManagementSystem().
-    /// 
+    /// value, the fallback color space may be authored on the owning prim,
+    /// and determined using the UsdColorSpaceAPI applied schema.
+    ///
+    /// \ref GfColorSpaceNames "Standard color space names"
+    ///
     /// @{
     // ---------------------------------------------------------------------- //
 
-    /// Gets the color space in which the attribute is authored.
+    /// Gets the color space in which the attribute is authored if it has been
+    /// explicitly set. If the color space is not authored, any color space
+    /// set on the attribute's prim definiton will be returned.
+    /// Use \ref UsdColorSpaceAPI in order to compute the color space taking
+    /// into account any inherited color spaces.
+    ///
     /// \sa SetColorSpace()
-    /// \ref Usd_ColorConfigurationAPI "UsdStage Color Configuration API"
+    /// \ref GfColorSpaceNames "Standard color space names"
+    /// \ref UsdColorSpaceAPI "Usd Prim Color Space API"
     USD_API
     TfToken GetColorSpace() const;
 
     /// Sets the color space of the attribute to \p colorSpace.
+    /// \param colorSpace The target color space for this attribute.
+    ///
+    /// \ref UsdColorSpaceAPI "Usd Prim Color Space API" provides methods 
+    /// to compute an attribute's resolved color, considering any inherited 
+    /// colorspaces. Standard color space names are listed in 
+    /// \ref GfColorSpaceNames.
+    ///
     /// \sa GetColorSpace()
-    /// \ref Usd_ColorConfigurationAPI "UsdStage Color Configuration API"
     USD_API
     void SetColorSpace(const TfToken &colorSpace) const;
 
-    /// Returns whether color-space is authored on the attribute.
+    /// Returns whether color space is authored on the attribute.
     /// \sa GetColorSpace()
     USD_API
     bool HasColorSpace() const;
 
-    /// Clears authored color-space value on the attribute.
+    /// Clears authored color space value on the attribute.
     /// \sa SetColorSpace()
     USD_API
     bool ClearColorSpace() const;

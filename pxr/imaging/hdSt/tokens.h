@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_ST_TOKENS_H
 #define PXR_IMAGING_HD_ST_TOKENS_H
@@ -43,10 +26,15 @@ PXR_NAMESPACE_OPEN_SCOPE
     (flatNormalsQuadFloatToPacked)              \
     (flatNormalsQuadDoubleToDouble)             \
     (flatNormalsQuadDoubleToPacked)             \
+    (flatNormalsTriQuadFloatToFloat)            \
+    (flatNormalsTriQuadFloatToPacked)           \
+    (flatNormalsTriQuadDoubleToDouble)          \
+    (flatNormalsTriQuadDoubleToPacked)          \
     (quadrangulateFloat)                        \
     (quadrangulateDouble)
 
 #define HDST_TOKENS                             \
+    (constantLighting)                          \
     (packedSmoothNormals)                       \
     (smoothNormals)                             \
     (packedFlatNormals)                         \
@@ -57,10 +45,21 @@ PXR_NAMESPACE_OPEN_SCOPE
     (translation)                               \
     (sRGB)                                      \
     (raw)                                       \
-    ((colorSpaceAuto, "auto"))
-
-#define HDST_LIGHT_TOKENS                       \
-    (color)
+    ((_double, "double"))                       \
+    ((_float, "float"))                         \
+    ((_int, "int"))                             \
+    ((colorSpaceAuto, "auto"))                  \
+    (fvarIndices)                               \
+    (fvarPatchParam)                            \
+    (coarseFaceIndex)                           \
+    (processedFaceCounts)                       \
+    (processedFaceIndices)                      \
+    (geomSubsetFaceIndices)                     \
+    (pointSizeScale)                            \
+    (screenSpaceWidths)                         \
+    (minScreenSpaceWidths)                      \
+    (shadowCompareTextures)                     \
+    (storm)
 
 #define HDST_TEXTURE_TOKENS                     \
     (wrapS)                                     \
@@ -87,7 +86,8 @@ PXR_NAMESPACE_OPEN_SCOPE
     (enableTinyPrimCulling)                     \
     (volumeRaymarchingStepSize)                 \
     (volumeRaymarchingStepSizeLighting)         \
-    (volumeMaxTextureMemoryPerField)
+    (volumeMaxTextureMemoryPerField)            \
+    (maxLights)
 
 // Material tags help bucket prims into different queues for draw submission.
 // The tags supported by Storm are:
@@ -111,14 +111,16 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 #define HDST_PERF_TOKENS                        \
     (copyBufferGpuToGpu)                        \
-    (copyBufferCpuToGpu)
+    (copyBufferCpuToGpu)                        \
+    (drawItemsCacheHit)                         \
+    (drawItemsCacheMiss)                        \
+    (drawItemsCacheStale)                       \
+    (drawItemsFetched)
 
 TF_DECLARE_PUBLIC_TOKENS(HdStGLSLProgramTokens, HDST_API,
                          HDST_GLSL_PROGRAM_TOKENS);
 
 TF_DECLARE_PUBLIC_TOKENS(HdStTokens, HDST_API, HDST_TOKENS);
-
-TF_DECLARE_PUBLIC_TOKENS(HdStLightTokens, HDST_API, HDST_LIGHT_TOKENS);
 
 TF_DECLARE_PUBLIC_TOKENS(HdStTextureTokens, HDST_API, HDST_TEXTURE_TOKENS);
 

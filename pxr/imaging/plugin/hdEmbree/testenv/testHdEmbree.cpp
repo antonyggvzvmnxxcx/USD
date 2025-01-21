@@ -1,29 +1,11 @@
 //
 // Copyright 2017 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 
-#include "pxr/imaging/glf/drawTarget.h"
 #include "pxr/imaging/hio/image.h"
 
 #include "pxr/imaging/hd/engine.h"
@@ -190,8 +172,8 @@ void HdEmbree_TestGLDrawing::InitTest()
         }
         aovBinding.renderBufferId = renderBuffer;
         _sceneDelegate->AddRenderBuffer(renderBuffer,
-            GfVec3i(GetWidth(), GetHeight(), 1),
-            format, false);
+            HdRenderBufferDescriptor{GfVec3i(GetWidth(), GetHeight(), 1),
+            format, false});
     }
 
     // Params is a general argument structure to the render task.
@@ -294,17 +276,32 @@ void HdEmbree_TestGLDrawing::InitTest()
     }
 
     // Configure the camera looking slightly down on the objects.
-    GfFrustum frustum;
-    frustum.SetNearFar(GfRange1d(0.1, 1000.0));
-    frustum.SetPosition(GfVec3d(0, -5, 10));
-    frustum.SetRotation(GfRotation(GfVec3d(1, 0, 0), 45));
+    GfMatrix4f viewMatrix;
+    viewMatrix.SetLookAt(
+        GfVec3f(0, -5, 10),
+        GfRotation(GfVec3d(1, 0, 0), 45));
+    _sceneDelegate->UpdateTransform(
+        camera,
+        viewMatrix.GetInverse());
 
-    _sceneDelegate->UpdateCamera(camera,
-        HdCameraTokens->worldToViewMatrix,
-        VtValue(frustum.ComputeViewMatrix()));
-    _sceneDelegate->UpdateCamera(camera,
-        HdCameraTokens->projectionMatrix,
-        VtValue(frustum.ComputeProjectionMatrix()));
+    _sceneDelegate->UpdateCamera(
+        camera,
+        HdCameraTokens->clippingRange,
+        VtValue(GfRange1f(0.1, 1000.0)));
+
+    _sceneDelegate->UpdateCamera(
+        camera,
+        HdCameraTokens->horizontalAperture,
+        VtValue(100.0f));
+    _sceneDelegate->UpdateCamera(
+        camera,
+        HdCameraTokens->verticalAperture,
+        VtValue(100.0f));
+    _sceneDelegate->UpdateCamera(
+        camera,
+        HdCameraTokens->focalLength,
+        VtValue(50.0f));
+
     _sceneDelegate->UpdateCamera(camera,
         HdCameraTokens->windowPolicy,
         VtValue(CameraUtilCrop));
@@ -312,9 +309,6 @@ void HdEmbree_TestGLDrawing::InitTest()
 
 void HdEmbree_TestGLDrawing::DrawTest()
 {
-    // The GL viewport needs to be set before calling execute.
-    glViewport(0, 0, GetWidth(), GetHeight());
-
     // XXX: We don't plumb changes to window size to the task.
 
     // Ask hydra to execute our render task (producing an image).
@@ -373,7 +367,6 @@ void HdEmbree_TestGLDrawing::_ColorizeId(int32_t *buffer, int size)
 void HdEmbree_TestGLDrawing::OffscreenTest()
 {
     // Render and write out to a file.
-    glViewport(0, 0, GetWidth(), GetHeight());
 
     // Ask hydra to execute our render task (producing an image).
     std::shared_ptr<HdxRenderTask> renderTask =
@@ -424,11 +417,6 @@ void HdEmbree_TestGLDrawing::OffscreenTest()
         }
 
         rb->Unmap();
-    } else {
-        // If this test isn't using the AOV API, we want to write out the
-        // color data in the GL framebuffer, using the base class's
-        // helper function.
-        WriteToFile("color", _outputName);
     }
 }
 

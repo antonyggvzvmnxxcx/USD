@@ -1,25 +1,8 @@
 //
 // Copyright 2019 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdSt/renderBuffer.h"
 
@@ -31,24 +14,25 @@
 #include "pxr/imaging/hd/aov.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
 #include "pxr/imaging/hd/tokens.h"
-#include "pxr/imaging/hgi/blitCmds.h"
-#include "pxr/imaging/hgi/blitCmdsOps.h"
-#include "pxr/imaging/hgi/texture.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 static 
 HgiTextureUsage _GetTextureUsage(HdFormat format, TfToken const &name)
 {
+    // We are assuming at some point in a render buffer's lifetime it could be
+    // used to read from, so provide that ability to the render buffer. This is 
+    // especially useful for the HgiVulkan backend.
+
     if (HdAovHasDepthSemantic(name)) {
-        if (format == HdFormatFloat32UInt8) {
-            return HgiTextureUsageBitsDepthTarget |
-                   HgiTextureUsageBitsStencilTarget;
-        }
-        return HgiTextureUsageBitsDepthTarget;
+        return HgiTextureUsageBitsDepthTarget | HgiTextureUsageBitsShaderRead;
+    } else if (HdAovHasDepthStencilSemantic(name)) {
+        return HgiTextureUsageBitsDepthTarget |
+               HgiTextureUsageBitsStencilTarget |
+               HgiTextureUsageBitsShaderRead;
     }
 
-    return HgiTextureUsageBitsColorTarget;
+    return HgiTextureUsageBitsColorTarget | HgiTextureUsageBitsShaderRead;
 }
 
 HdStRenderBuffer::HdStRenderBuffer(
@@ -147,7 +131,7 @@ HdStRenderBuffer::Allocate(
             std::dynamic_pointer_cast<HdStDynamicUvTextureObject>(
                 _resourceRegistry->AllocateTextureObject(
                     GetTextureIdentifier(/*multiSampled = */ false),
-                    HdTextureType::Uv));
+                    HdStTextureType::Uv));
         if (!_textureObject) {
             TF_CODING_ERROR("Expected HdStDynamicUvTextureObject");
             return false;
@@ -156,12 +140,12 @@ HdStRenderBuffer::Allocate(
     
     if (multiSampled) {
         if (!_textureMSAAObject) {
-            // Allocate texture object if necesssary
+            // Allocate texture object if necessary
             _textureMSAAObject =
                 std::dynamic_pointer_cast<HdStDynamicUvTextureObject>(
                     _resourceRegistry->AllocateTextureObject(
                         GetTextureIdentifier(/*multiSampled = */ true),
-                        HdTextureType::Uv));
+                        HdStTextureType::Uv));
             if (!_textureMSAAObject) {
                 TF_CODING_ERROR("Expected HdStDynamicUvTextureObject");
                 return false;
@@ -211,20 +195,6 @@ HdStRenderBuffer::Map()
     }
 
     HgiTextureHandle const texture = _textureObject->GetTexture();
-    if (!texture) {
-        return nullptr;
-    }
-
-    const HgiTextureDesc &desc = texture->GetDescriptor();
-    const size_t dataByteSize =
-        desc.dimensions[0] * desc.dimensions[1] * desc.dimensions[2] *
-        HgiGetDataSizeOfFormat(desc.format);
-    
-    if (dataByteSize == 0) {
-        return nullptr;
-    }
-
-    _mappedBuffer.resize(dataByteSize);
 
     if (!TF_VERIFY(_resourceRegistry)) {
         return nullptr;
@@ -235,23 +205,10 @@ HdStRenderBuffer::Map()
         return nullptr;
     }
 
-    // Use blit work to record resource copy commands.
-    HgiBlitCmdsUniquePtr blitCmds = hgi->CreateBlitCmds();
+    size_t size = 0;
+    _mappedBuffer = HdStTextureUtils::HgiTextureReadback(hgi, texture, &size);
 
-    {
-        HgiTextureGpuToCpuOp copyOp;
-        copyOp.gpuSourceTexture = texture;
-        copyOp.sourceTexelOffset = GfVec3i(0);
-        copyOp.mipLevel = 0;
-        copyOp.cpuDestinationBuffer = _mappedBuffer.data();
-        copyOp.destinationByteOffset = 0;
-        copyOp.destinationBufferByteSize = dataByteSize;
-        blitCmds->CopyTextureGpuToCpu(copyOp);
-    }
-        
-    hgi->SubmitCmds(blitCmds.get(), HgiSubmitWaitTypeWaitUntilCompleted);
-
-    return _mappedBuffer.data();
+    return _mappedBuffer.get();
 }
 
 void
@@ -260,8 +217,8 @@ HdStRenderBuffer::Unmap()
     // XXX We could consider clearing _mappedBuffer here to free RAM.
     //     For now we assume that Map() will be called frequently so we prefer
     //     to avoid the cost of clearing the buffer over memory savings.
-    // _mappedBuffer.clear();
-    // _mappedBuffer.shrink_to_fit();
+    // _mappedBuffer.reset(nullptr);
+
     _mappers.fetch_sub(1);
 }
 
@@ -297,6 +254,12 @@ bool
 HdStRenderBuffer::IsMultiSampled() const
 {
     return bool(_textureMSAAObject);
+}
+
+uint32_t
+HdStRenderBuffer::GetMSAASampleCount() const
+{
+    return _msaaSampleCount;
 }
 
 static

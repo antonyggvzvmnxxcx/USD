@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 ///
 /// \file Sdf/AssetPathResolver.cpp
@@ -71,19 +54,27 @@ Sdf_CanCreateNewLayerWithIdentifier(
     string* whyNot)
 {
     if (identifier.empty()) {
-        if (whyNot)
-            *whyNot = "cannot create a new layer with an empty identifier.";
+        if (whyNot) {
+            *whyNot = "cannot use empty identifier.";
+        }
+        return false;
+    }
+
+    if (Sdf_IsAnonLayerIdentifier(identifier)) {
+        if (whyNot) {
+            *whyNot = "cannot use anonymous layer identifier.";
+        }
         return false;
     }
 
     if (Sdf_IdentifierContainsArguments(identifier)) {
-        if (whyNot)
-            *whyNot = "cannot create a new layer with arguments in the "
-                "identifier";
+        if (whyNot) {
+            *whyNot = "cannot use arguments in the identifier.";
+        }
         return false;
     }
 
-    return ArGetResolver().CanCreateNewLayerWithIdentifier(identifier, whyNot);
+    return true;
 }
 
 ArResolvedPath
@@ -92,20 +83,19 @@ Sdf_ResolvePath(
     ArAssetInfo* assetInfo)
 {
     TRACE_FUNCTION();
-#if AR_VERSION == 1
-    return ArResolvedPath(
-        ArGetResolver().ResolveWithAssetInfo(layerPath, assetInfo));
-#else
-    return ArGetResolver().Resolve(layerPath);
-#endif
+    string strippedLayerPath;
+    string layerArgs;
+    Sdf_SplitIdentifier(layerPath, &strippedLayerPath, &layerArgs);
+    
+    return ArGetResolver().Resolve(strippedLayerPath);
 }
 
 bool
 Sdf_CanWriteLayerToPath(
-    const string& layerPath)
+    const ArResolvedPath& resolvedPath)
 {
-    return ArGetResolver().CanWriteLayerToPath(
-        layerPath, /* whyNot = */ nullptr);
+    return ArGetResolver().CanWriteAssetToPath(
+        resolvedPath, /* whyNot = */ nullptr);
 }
 
 ArResolvedPath
@@ -117,32 +107,43 @@ Sdf_ComputeFilePath(
 
     ArResolvedPath resolvedPath = Sdf_ResolvePath(layerPath, assetInfo);  
     if (resolvedPath.empty()) {
-#if AR_VERSION == 1
-        // If we can't resolve layerPath, it means no layer currently
-        // exists at that location. Compute the local path to figure
-        // out where this layer would go if we were to create a new
-        // one. 
-        //
-        // However, we skip this for search paths since the real path
-        // is ambiguous if we can't resolve the search path above.
-        // This is important for layers with search path identifiers,
-        // because otherwise we may compute a confusing real path
-        // for these layers.
-        ArResolver& resolver = ArGetResolver();
-        if (!resolver.IsSearchPath(layerPath)) {
-            resolvedPath = ArResolvedPath(resolver.ComputeLocalPath(layerPath));
-        }
-#else
         // If we can't resolve layerPath, it means no layer currently
         // exists at that location. Use ResolveForNewAsset to figure
         // out where this layer would go if we were to create a new
         // one. 
         ArResolver& resolver = ArGetResolver();
         resolvedPath = resolver.ResolveForNewAsset(layerPath);
-#endif
     }
 
     return resolvedPath;
+}
+
+VtValue
+Sdf_ComputeLayerModificationTimestamp(
+    const SdfLayer& layer)
+{
+    std::string layerPath, args;
+    Sdf_SplitIdentifier(layer.GetIdentifier(), &layerPath, &args);
+
+    return VtValue(ArGetResolver().GetModificationTimestamp(
+        layerPath, layer.GetResolvedPath()));
+}
+
+VtDictionary
+Sdf_ComputeExternalAssetModificationTimestamps(
+    const SdfLayer& layer)
+{
+    VtDictionary result;
+    std::set<std::string> externalAssetDependencies = 
+        layer.GetExternalAssetDependencies();
+    for (const std::string& resolvedPath : externalAssetDependencies) {
+        // Get the modification timestamp for the path. Note that external
+        // asset dependencies only returns resolved paths so pass the same
+        // path for both params.
+        result[resolvedPath] = ArGetResolver().GetModificationTimestamp(
+            resolvedPath, ArResolvedPath(resolvedPath));
+    }
+    return result;
 }
 
 Sdf_AssetInfo*
@@ -169,33 +170,19 @@ Sdf_ComputeAssetInfoFromIdentifier(
         // Anonymous layers do not have repository, overlay, or real paths.
         assetInfo->identifier = identifier;
     } else {
-#if AR_VERSION == 1
-        assetInfo->identifier = ArGetResolver()
-            .ComputeNormalizedPath(identifier);
-#else
         assetInfo->identifier = identifier;
-#endif
 
+        string layerPath, arguments;
+        Sdf_SplitIdentifier(assetInfo->identifier, &layerPath, &arguments);
         if (filePath.empty()) {
-            string layerPath, arguments;
-            Sdf_SplitIdentifier(assetInfo->identifier, &layerPath, &arguments);
             assetInfo->resolvedPath = 
                 Sdf_ComputeFilePath(layerPath, &resolveInfo);
         } else {
             assetInfo->resolvedPath = ArResolvedPath(filePath);
         }
 
-#if AR_VERSION == 1
-        assetInfo->resolvedPath = ArResolvedPath(
-            Sdf_CanonicalizeRealPath(assetInfo->resolvedPath));
-
-        ArGetResolver().UpdateAssetInfo(
-            assetInfo->identifier, assetInfo->resolvedPath, fileVersion,
-            &resolveInfo);
-#else
         resolveInfo = ArGetResolver().GetAssetInfo(
-            assetInfo->identifier, assetInfo->resolvedPath);
-#endif
+            layerPath, assetInfo->resolvedPath);
     }
 
     assetInfo->resolverContext = 
@@ -258,6 +245,12 @@ Sdf_GetAnonLayerIdentifierTemplate(
     const string& tag)
 {
     string idTag = tag.empty() ? tag : TfStringTrim(tag);
+
+    // Ensure that URL-encoded characters are not misinterpreted as
+    // format strings to TfStringPrintf in Sdf_ComputeAnonLayerIdentifier.
+    // See discussion in https://github.com/PixarAnimationStudios/OpenUSD/pull/2022
+    idTag = TfStringReplace(idTag, "%", "%%");
+
     return _Tokens->AnonLayerPrefix.GetString() + "%p" +
         (idTag.empty() ? idTag : ":" + idTag);
 }
@@ -342,6 +335,19 @@ Sdf_CreateIdentifier(
     return layerPath + Sdf_EncodeArguments(arguments);
 }
 
+bool Sdf_StripIdentifierArgumentsIfPresent(
+    const std::string &identifier,
+    std::string *strippedIdentifier)
+{
+    size_t argPos = identifier.find(_Tokens->ArgsDelimiter.GetString());
+    if (argPos == string::npos) {
+        return false;
+    }
+    
+    *strippedIdentifier = string(identifier, 0, argPos);
+    return true;
+}
+
 bool
 Sdf_SplitIdentifier(
     const string& identifier,
@@ -418,9 +424,11 @@ Sdf_GetExtension(
 {
     // Split the identifier to get the layer asset path without
     // any file format arguments.
-    string assetPath;
-    std::string dummyArgs;
-    Sdf_SplitIdentifier(identifier, &assetPath, &dummyArgs);
+    string strippedPath;
+    const string &assetPath =
+        Sdf_StripIdentifierArgumentsIfPresent(identifier, &strippedPath)
+        ? strippedPath
+        : identifier;
 
     if (Sdf_IsAnonLayerIdentifier(assetPath)) {
         // Strip off the "anon:0x...:" portion of the anonymous layer
@@ -428,7 +436,7 @@ Sdf_GetExtension(
         // allows clients to create anonymous layers using tags that
         // match their asset path scheme and retrieve the extension
         // via ArResolver.
-        assetPath = Sdf_GetAnonLayerDisplayName(assetPath);
+        return Sdf_GetExtension(Sdf_GetAnonLayerDisplayName(assetPath));
     }
 
     // XXX: If the asset path is a dot file (e.g. ".sdf"), we append
@@ -436,7 +444,7 @@ Sdf_GetExtension(
     // interpreted as a directory name. This is legacy behavior that
     // should be fixed.
     if (!assetPath.empty() && assetPath[0] == '.') {
-        assetPath = "temp_file_name" + assetPath;
+        return Sdf_GetExtension("temp_file_name" + assetPath);
     }
 
     return ArGetResolver().GetExtension(assetPath);
@@ -456,30 +464,6 @@ Sdf_IsPackageOrPackagedLayer(
     const std::string& identifier)
 {
     return fileFormat->IsPackage() || ArIsPackageRelativePath(identifier);
-}
-
-string 
-Sdf_CanonicalizeRealPath(
-    const string& realPath)
-{
-    // Use the given realPath as-is if it's a relative path, otherwise
-    // use TfAbsPath to compute a platform-dependent real path.
-    //
-    // XXX: This method needs to be re-examined as we move towards a
-    // less filesystem-dependent implementation.
-
-    // If realPath is a package-relative path, absolutize just the
-    // outer path; the packaged path has a specific format defined in
-    // Ar that we don't want to modify.
-    if (ArIsPackageRelativePath(realPath)) {
-        pair<string, string> packagePath = 
-            ArSplitPackageRelativePathOuter(realPath);
-        return TfIsRelativePath(packagePath.first) ?
-            realPath : ArJoinPackageRelativePath(
-                TfAbsPath(packagePath.first), packagePath.second);
-    }
-
-    return TfIsRelativePath(realPath) ? realPath : TfAbsPath(realPath);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

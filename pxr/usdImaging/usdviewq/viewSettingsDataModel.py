@@ -1,25 +1,8 @@
 #
 # Copyright 2018 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 
 from .qt import QtCore
@@ -30,8 +13,8 @@ from .common import (RenderModes, ColorCorrectionModes, PickModes,
                      SelectionHighlightModes, CameraMaskModes, 
                      PrintWarning)
 
-from . import settings2
-from .settings2 import StateSource
+from . import settings
+from .settings import StateSource
 from pxr.UsdUtils.constantsGroup import ConstantsGroup
 from .freeCamera import FreeCamera
 from .common import ClearColors, HighlightColors
@@ -74,7 +57,37 @@ def invisibleViewSetting(f):
     return wrapper
 
 
-class ViewSettingsDataModel(QtCore.QObject, StateSource):
+def freeCameraViewSetting(f):
+    def wrapper(self, *args, **kwargs):
+        f(self, *args, **kwargs)
+        # If f raises an exception, the signal is not emitted.
+        self.signalFreeCameraSettingChanged.emit()
+        self.signalSettingChanged.emit()
+    return wrapper
+
+
+class OCIOSettings():
+    """Class to hold OCIO display, view, and colorSpace config settings
+    as strings."""
+
+    def __init__(self, display="", view="", colorSpace=""):
+        self._display = display
+        self._view = view
+        self._colorSpace = colorSpace
+
+    @property
+    def display(self):
+        return self._display
+
+    @property
+    def view(self):
+        return self._view
+
+    @property
+    def colorSpace(self):
+        return self._colorSpace
+
+class ViewSettingsDataModel(StateSource, QtCore.QObject):
     """Data model containing settings related to the rendered view of a USD
     file.
     """
@@ -84,6 +97,12 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
 
     # emitted when any view setting which may affect the rendered image changes
     signalVisibleSettingChanged = QtCore.Signal()
+
+    # emitted when any view setting that affects the free camera changes. This
+    # signal allows clients to switch to the free camera whenever its settings
+    # are modified. Some operations may cause this signal to be emitted multiple
+    # times.
+    signalFreeCameraSettingChanged = QtCore.Signal()
 
     # emitted when autoClipping changes value, so that clients can initialize
     # it efficiently.  This signal will be emitted *before* 
@@ -107,9 +126,23 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
         self._defaultMaterialAmbient = self.stateProperty("defaultMaterialAmbient", default=DEFAULT_AMBIENT)
         self._defaultMaterialSpecular = self.stateProperty("defaultMaterialSpecular", default=DEFAULT_SPECULAR)
         self._redrawOnScrub = self.stateProperty("redrawOnScrub", default=True)
+        self._stepSize = self.stateProperty("stepSize", default=1.0)
         self._renderMode = self.stateProperty("renderMode", default=RenderModes.SMOOTH_SHADED)
         self._freeCameraFOV = self.stateProperty("freeCameraFOV", default=60.0)
+        self._freeCameraAspect = self.stateProperty("freeCameraAspect", default=1.0)
+        # For freeCameraOverrideNear/Far, Use -inf as a sentinel value to mean
+        # None. (We cannot use None directly because that would cause a type-
+        # checking error in Settings.)
+        self._clippingPlaneNoneValue = float('-inf')
+        self._freeCameraOverrideNear = self.stateProperty("freeCameraOverrideNear", default=self._clippingPlaneNoneValue)
+        self._freeCameraOverrideFar = self.stateProperty("freeCameraOverrideFar", default=self._clippingPlaneNoneValue)
+        if self._freeCameraOverrideNear == self._clippingPlaneNoneValue:
+            self._freeCameraOverrideNear = None
+        if self._freeCameraOverrideFar == self._clippingPlaneNoneValue:
+            self._freeCameraOverrideFar = None
+        self._lockFreeCameraAspect = self.stateProperty("lockFreeCameraAspect", default=False)
         self._colorCorrectionMode = self.stateProperty("colorCorrectionMode", default=ColorCorrectionModes.SRGB)
+        self._ocioSettings = OCIOSettings()
         self._pickMode = self.stateProperty("pickMode", default=PickModes.PRIMS)
 
         # We need to store the trinary selHighlightMode state here,
@@ -122,6 +155,7 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
         self._highlightColorName = self.stateProperty("highlightColor", default="Yellow")
         self._ambientLightOnly = self.stateProperty("cameraLightEnabled", default=True)
         self._domeLightEnabled = self.stateProperty("domeLightEnabled", default=False)
+        self._domeLightTexturesVisible = self.stateProperty("domeLightTexturesVisible", default=True)
         self._clearColorText = self.stateProperty("backgroundColor", default="Grey (Dark)")
         self._autoComputeClippingPlanes = self.stateProperty("autoComputeClippingPlanes", default=False)
         self._showBBoxPlayback = self.stateProperty("showBBoxesDuringPlayback", default=False)
@@ -131,7 +165,6 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
         self._displayGuide = self.stateProperty("displayGuide", default=False)
         self._displayProxy = self.stateProperty("displayProxy", default=True)
         self._displayRender = self.stateProperty("displayRender", default=False)
-        self._displayPrimId = self.stateProperty("displayPrimId", default=False)
         self._enableSceneMaterials = self.stateProperty("enableSceneMaterials", default=True)
         self._enableSceneLights = self.stateProperty("enableSceneLights", default=True)
         self._cullBackfaces = self.stateProperty("cullBackfaces", default=False)
@@ -146,6 +179,7 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
 
         self._showUndefinedPrims = self.stateProperty("showUndefinedPrims", default=False)
         self._showAbstractPrims = self.stateProperty("showAbstractPrims", default=False)
+        self._showPrimDisplayNames = self.stateProperty("showPrimDisplayNames", default=True)
         self._rolloverPrimInfo = self.stateProperty("rolloverPrimInfo", default=False)
         self._displayCameraOracles = self.stateProperty("cameraOracles", default=False)
         self._cameraMaskMode = self.stateProperty("cameraMaskMode", default=CameraMaskModes.NONE)
@@ -174,14 +208,26 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
         state["defaultMaterialAmbient"] = self._defaultMaterialAmbient
         state["defaultMaterialSpecular"] = self._defaultMaterialSpecular
         state["redrawOnScrub"] = self._redrawOnScrub
+        state["stepSize"] = self._stepSize
         state["renderMode"] = self._renderMode
         state["freeCameraFOV"] = self._freeCameraFOV
+        freeCameraOverrideNear = self._freeCameraOverrideNear
+        if freeCameraOverrideNear is None:
+            freeCameraOverrideNear = self._clippingPlaneNoneValue
+        state["freeCameraOverrideNear"] = freeCameraOverrideNear
+        freeCameraOverrideFar = self._freeCameraOverrideFar
+        if freeCameraOverrideFar is None:
+            freeCameraOverrideFar = self._clippingPlaneNoneValue
+        state["freeCameraOverrideFar"] = freeCameraOverrideFar
+        state["freeCameraAspect"] = self._freeCameraAspect
+        state["lockFreeCameraAspect"] = self._lockFreeCameraAspect
         state["colorCorrectionMode"] = self._colorCorrectionMode
         state["pickMode"] = self._pickMode
         state["selectionHighlightMode"] = self._selHighlightMode
         state["highlightColor"] = self._highlightColorName
         state["cameraLightEnabled"] = self._ambientLightOnly
         state["domeLightEnabled"] = self._domeLightEnabled
+        state["domeLightTexturesVisible"] = self._domeLightTexturesVisible
         state["backgroundColor"] = self._clearColorText
         state["autoComputeClippingPlanes"] = self._autoComputeClippingPlanes
         state["showBBoxesDuringPlayback"] = self._showBBoxPlayback
@@ -191,7 +237,6 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
         state["displayGuide"] = self._displayGuide
         state["displayProxy"] = self._displayProxy
         state["displayRender"] = self._displayRender
-        state["displayPrimId"] = self._displayPrimId
         state["enableSceneMaterials"] = self._enableSceneMaterials
         state["enableSceneLights"] = self._enableSceneLights
         state["cullBackfaces"] = self._cullBackfaces
@@ -200,6 +245,7 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
         state["showAllMasterPrims"] = self._showAllPrototypePrims
         state["showUndefinedPrims"] = self._showUndefinedPrims
         state["showAbstractPrims"] = self._showAbstractPrims
+        state["showPrimDisplayNames"] = self._showPrimDisplayNames
         state["rolloverPrimInfo"] = self._rolloverPrimInfo
         state["cameraOracles"] = self._displayCameraOracles
         state["cameraMaskMode"] = self._cameraMaskMode
@@ -289,7 +335,7 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
         return self._freeCameraFOV
 
     @freeCameraFOV.setter
-    @visibleViewSetting
+    @freeCameraViewSetting
     def freeCameraFOV(self, value):
         if self._freeCamera:
             # Setting the freeCamera's fov will trigger our own update
@@ -297,10 +343,90 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
         else:
             self._freeCameraFOV = value
 
-    @visibleViewSetting
-    def _updateFOV(self):
+    @property
+    def freeCameraOverrideNear(self):
+        """Returns the free camera's near clipping plane value, if it has been
+        overridden by the user. Returns None if there is no user-defined near
+        clipping plane."""
+        return self._freeCameraOverrideNear
+
+    @freeCameraOverrideNear.setter
+    @freeCameraViewSetting
+    def freeCameraOverrideNear(self, value):
+        """Sets the near clipping plane to the given value. Passing in None will
+        clear the current override."""
+        self._freeCameraOverrideNear = value
+        if self._freeCamera:
+            self._freeCamera.overrideNear = value
+
+    @property
+    def freeCameraOverrideFar(self):
+        """Returns the free camera's far clipping plane value, if it has been
+        overridden by the user. Returns None if there is no user-defined far
+        clipping plane."""
+        return self._freeCameraOverrideFar
+
+    @freeCameraOverrideFar.setter
+    @freeCameraViewSetting
+    def freeCameraOverrideFar(self, value):
+        """Sets the far clipping plane to the given value. Passing in None will
+        clear the current override."""
+        self._freeCameraOverrideFar = value
+        if self._freeCamera:
+            self._freeCamera.overrideFar = value
+
+    @property
+    def freeCameraAspect(self):
+        return self._freeCameraAspect
+    
+    @freeCameraAspect.setter
+    @freeCameraViewSetting
+    def freeCameraAspect(self, value):
+        if self._freeCamera:
+            # Setting the freeCamera's aspect ratio will trigger our own update
+            self._freeCamera.aspectRatio = value
+        else:
+            self._freeCameraAspect = value
+
+    def _frustumChanged(self):
+        """
+        Needed when updating any camera setting (including movements). Will not
+        update the property viewer.
+        """
+        self.signalFreeCameraSettingChanged.emit()
+
+    def _frustumSettingsChanged(self):
+        """
+        Needed when updating specific camera settings (e.g., aperture). See
+        _updateFreeCameraData for the full list of dependent settings. Will
+        update the property viewer.
+        """
+        self._updateFreeCameraData()
+        self.signalSettingChanged.emit()
+
+    def _updateFreeCameraData(self):
+        '''Updates member variables with the current free camera view settings.
+        '''
         if self._freeCamera:
             self._freeCameraFOV = self.freeCamera.fov
+            self._freeCameraOverrideNear = self.freeCamera.overrideNear
+            self._freeCameraOverrideFar = self.freeCamera.overrideFar
+            if self._lockFreeCameraAspect:
+                self._freeCameraAspect = self.freeCamera.aspectRatio
+
+    @property
+    def lockFreeCameraAspect(self):
+        return self._lockFreeCameraAspect
+    
+    @lockFreeCameraAspect.setter
+    @visibleViewSetting
+    def lockFreeCameraAspect(self, value):
+        self._lockFreeCameraAspect = value
+
+        if value and not self.showMask:
+            # Make sure the camera mask is turned on so the locked aspect ratio
+            # is visible in the viewport.
+            self.cameraMaskMode = CameraMaskModes.FULL
 
     @property
     def colorCorrectionMode(self):
@@ -310,6 +436,28 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
     @visibleViewSetting
     def colorCorrectionMode(self, value):
         self._colorCorrectionMode = value
+
+    @property
+    def ocioSettings(self):
+        return self._ocioSettings
+
+    @visibleViewSetting
+    def setOcioSettings(self, colorSpace="", display="", view=""):
+        """Specifies the OCIO settings to be used. Setting the OCIO 'display'
+           requires a 'view' to be specified."""
+
+        if colorSpace:
+            self._ocioSettings._colorSpace = colorSpace
+
+        if display:
+            if view:
+                self._ocioSettings._display = display
+                self._ocioSettings._view = view
+            else:
+                PrintWarning("Cannot set a OCIO display without a view."\
+                             "Using default settings instead.")
+                self._ocioSettings._display = ""
+                self._ocioSettings._view = ""
 
     @property
     def pickMode(self):
@@ -403,15 +551,6 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
         self._displayCameraOracles = value
 
     @property
-    def displayPrimId(self):
-        return self._displayPrimId
-
-    @displayPrimId.setter
-    @visibleViewSetting
-    def displayPrimId(self, value):
-        self._displayPrimId = value
-
-    @property
     def enableSceneMaterials(self):
         return self._enableSceneMaterials
 
@@ -473,6 +612,15 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
     @invisibleViewSetting
     def showAbstractPrims(self, value):
         self._showAbstractPrims = value
+
+    @property
+    def showPrimDisplayNames(self):
+        return self._showPrimDisplayNames
+
+    @showPrimDisplayNames.setter
+    @invisibleViewSetting
+    def showPrimDisplayNames(self, value):
+        self._showPrimDisplayNames = value
 
     @property
     def rolloverPrimInfo(self):
@@ -591,6 +739,15 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
         self._domeLightEnabled = value
 
     @property
+    def domeLightTexturesVisible(self):
+        return self._domeLightTexturesVisible
+
+    @domeLightTexturesVisible.setter
+    @visibleViewSetting
+    def domeLightTexturesVisible(self, value):
+        self._domeLightTexturesVisible = value
+
+    @property
     def clearColorText(self):
         return self._clearColorText
 
@@ -641,6 +798,15 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
         self._redrawOnScrub = value
 
     @property
+    def stepSize(self):
+        return self._stepSize
+
+    @stepSize.setter
+    @visibleViewSetting
+    def stepSize(self, value):
+        self._stepSize = value
+
+    @property
     def freeCamera(self):
         return self._freeCamera
 
@@ -649,16 +815,23 @@ class ViewSettingsDataModel(QtCore.QObject, StateSource):
     def freeCamera(self, value):
         # ViewSettingsDataModel does not guarantee it will hold a valid
         # FreeCamera, but if one is set, we will keep the dataModel's stateful
-        # FOV ('freeCameraFOV') in sync with the FreeCamera
+        # free camera settings (fov, clipping planes, aspect ratio) in sync with
+        # the FreeCamera
 
         if not isinstance(value, FreeCamera) and value != None:
             raise TypeError("Free camera must be a FreeCamera object.")
         if self._freeCamera:
-            self._freeCamera.signalFrustumChanged.disconnect(self._updateFOV)
+            self._freeCamera.signalFrustumChanged.disconnect(
+                self._frustumChanged)
+            self._freeCamera.signalFrustumSettingsChanged.disconnect(
+                self._frustumSettingsChanged)
         self._freeCamera = value
         if self._freeCamera:
-            self._freeCamera.signalFrustumChanged.connect(self._updateFOV)
-            self._freeCameraFOV = self._freeCamera.fov
+            self._freeCamera.signalFrustumChanged.connect(
+                self._frustumChanged)
+            self._freeCamera.signalFrustumSettingsChanged.connect(
+                self._frustumSettingsChanged)
+            self._updateFreeCameraData()
 
     @property
     def cameraPath(self):

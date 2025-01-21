@@ -1,9 +1,10 @@
 set(DIRS
     usdcat
-    usdchecker
     usddiff
     usddumpcrate
+    usdgenschemafromsdr
     usdedit
+    usdfixbrokenpixarschemas
     usdresolve
     usdstitch
     usdstitchclips

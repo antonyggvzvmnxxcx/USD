@@ -1,35 +1,20 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usdImaging/usdImaging/sphereAdapter.h"
 
+#include "pxr/usdImaging/usdImaging/dataSourceImplicits-Impl.h"
 #include "pxr/usdImaging/usdImaging/delegate.h"
-#include "pxr/usdImaging/usdImaging/implicitSurfaceMeshUtils.h"
 #include "pxr/usdImaging/usdImaging/indexProxy.h"
 #include "pxr/usdImaging/usdImaging/tokens.h"
 
+#include "pxr/imaging/geomUtil/sphereMeshGenerator.h"
 #include "pxr/imaging/hd/mesh.h"
 #include "pxr/imaging/hd/meshTopology.h"
+#include "pxr/imaging/hd/sphereSchema.h"
 #include "pxr/imaging/hd/perfLog.h"
 #include "pxr/imaging/hd/tokens.h"
 
@@ -40,16 +25,64 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
+namespace {
+using _PrimSource = UsdImagingDataSourceImplicitsPrim<UsdGeomSphere, HdSphereSchema>;
+}
 
 TF_REGISTRY_FUNCTION(TfType)
 {
-    typedef UsdImagingSphereAdapter Adapter;
+    using Adapter = UsdImagingSphereAdapter;
     TfType t = TfType::Define<Adapter, TfType::Bases<Adapter::BaseAdapter> >();
     t.SetFactory< UsdImagingPrimAdapterFactory<Adapter> >();
 }
 
-UsdImagingSphereAdapter::~UsdImagingSphereAdapter() 
+UsdImagingSphereAdapter::~UsdImagingSphereAdapter() = default;
+
+TfTokenVector
+UsdImagingSphereAdapter::GetImagingSubprims(UsdPrim const& prim)
 {
+    return { TfToken() };
+}
+
+TfToken
+UsdImagingSphereAdapter::GetImagingSubprimType(
+        UsdPrim const& prim,
+        TfToken const& subprim)
+{
+    if (subprim.IsEmpty()) {
+        return HdPrimTypeTokens->sphere;
+    }
+    return TfToken();
+}
+
+HdContainerDataSourceHandle
+UsdImagingSphereAdapter::GetImagingSubprimData(
+        UsdPrim const& prim,
+        TfToken const& subprim,
+        const UsdImagingDataSourceStageGlobals &stageGlobals)
+{
+    if (subprim.IsEmpty()) {
+        return _PrimSource::New(
+            prim.GetPath(),
+            prim,
+            stageGlobals);
+    }
+    return nullptr;
+}
+
+HdDataSourceLocatorSet
+UsdImagingSphereAdapter::InvalidateImagingSubprim(
+        UsdPrim const& prim,
+        TfToken const& subprim,
+        TfTokenVector const& properties,
+        UsdImagingPropertyInvalidationType invalidationType)
+{
+    if (subprim.IsEmpty()) {
+        return _PrimSource::Invalidate(
+            prim, subprim,properties, invalidationType);
+    }
+    
+    return HdDataSourceLocatorSet();
 }
 
 bool
@@ -104,44 +137,26 @@ VtValue
 UsdImagingSphereAdapter::GetPoints(UsdPrim const& prim,
                                    UsdTimeCode time) const
 {
-    return GetMeshPoints(prim, time);   
-}
-
-static GfMatrix4d
-_GetImplicitGeomScaleTransform(UsdPrim const& prim, UsdTimeCode time)
-{
     UsdGeomSphere sphere(prim);
-
     double radius = 1.0;
     if (!sphere.GetRadiusAttr().Get(&radius, time)) {
         TF_WARN("Could not evaluate double-valued radius attribute on prim %s",
             prim.GetPath().GetText());
     }
 
-    return UsdImagingGenerateSphereOrCubeTransform(2.0 * radius);
-}
+    const size_t numPoints =
+        GeomUtilSphereMeshGenerator::ComputeNumPoints(numRadial, numAxial);
 
-/*static*/
-VtValue
-UsdImagingSphereAdapter::GetMeshPoints(UsdPrim const& prim, 
-                                       UsdTimeCode time)
-{
-    // Return scaled points (and not that of a unit geometry)
-    VtVec3fArray points = UsdImagingGetUnitSphereMeshPoints();
-    GfMatrix4d scale = _GetImplicitGeomScaleTransform(prim, time);
-    for (GfVec3f& pt : points) {
-        pt = scale.Transform(pt);
-    }
+    VtVec3fArray points(numPoints);
+        
+    GeomUtilSphereMeshGenerator::GeneratePoints(
+        points.begin(),
+        numRadial,
+        numAxial,
+        radius
+    );
 
     return VtValue(points);
-}
-
-/*static*/
-VtValue
-UsdImagingSphereAdapter::GetMeshTopology()
-{
-    // Topology is constant and identical for all spheres.
-    return VtValue(HdMeshTopology(UsdImagingGetUnitSphereMeshTopology()));
 }
 
 /*virtual*/ 
@@ -153,7 +168,12 @@ UsdImagingSphereAdapter::GetTopology(UsdPrim const& prim,
     TRACE_FUNCTION();
     HF_MALLOC_TAG_FUNCTION();
 
-    return GetMeshTopology();
+    // All spheres share the same topology.
+    static const HdMeshTopology topology =
+        HdMeshTopology(GeomUtilSphereMeshGenerator::GenerateTopology(
+                            numRadial, numAxial));
+
+    return VtValue(topology);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

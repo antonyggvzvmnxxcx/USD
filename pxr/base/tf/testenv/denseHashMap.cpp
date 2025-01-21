@@ -1,29 +1,13 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
 #include "pxr/base/tf/denseHashMap.h"
+#include "pxr/base/tf/diagnosticLite.h"
 #include "pxr/base/tf/hash.h"
 #include "pxr/base/tf/regTest.h"
 #include "pxr/base/tf/stringUtils.h"
@@ -51,7 +35,11 @@ static void Run()
     _Map _map;
 
     // Make sure size expectations are ok.
-    TF_AXIOM(sizeof(_Map) == 4 * sizeof(void *));
+    // Due to empty base optimization, because both HashFn and EqualKey are
+    // 0-size, should only hold a vector + pointer
+    // (Note that on windows, debug mode will change sizeof vector)
+    TF_AXIOM(sizeof(_Map) == sizeof(std::vector<_Map::value_type>)
+                             + sizeof(void *));
 
     // Insert a bunch of numbers in order.
     printf("inserting numbers to 10000\n");
@@ -243,7 +231,10 @@ static void Run()
     _Map2 _map2(TfHash(), TestTf_DenseHashMapModuloEqual(2));
 
     // Make sure size expectations are ok.
-    TF_AXIOM(sizeof(_Map2) > 4 * sizeof(void *));
+    TF_AXIOM(sizeof(TestTf_DenseHashMapModuloEqual) > 0);
+    TF_AXIOM(sizeof(_Map2) == sizeof(std::vector<_Map2::value_type>)
+                              + sizeof(void *)
+                              + sizeof(TestTf_DenseHashMapModuloEqual));
 
     // Insert a bunch of numbers in order.
     printf("inserting numbers to 10000\n");

@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_USD_CLIP_SET_H
 #define PXR_USD_USD_CLIP_SET_H
@@ -39,6 +22,7 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 TF_DECLARE_WEAK_PTRS(PcpLayerStack);
 
+class GfInterval;
 class Usd_ClipSet;
 class Usd_ClipSetDefinition;
 
@@ -81,6 +65,11 @@ public:
     /// Return set of time samples for attribute at \p path.
     std::set<double> ListTimeSamplesForPath(const SdfPath& path) const;
 
+    /// Return list of time samples for attribute at \p path
+    /// in the given \p interval.
+    std::vector<double> GetTimeSamplesInInterval(
+        const SdfPath& path, const GfInterval& interval) const;
+
     /// Query time sample for the attribute at \p path at \p time.
     /// If no time sample exists in the active clip at \p time,
     /// \p interpolator will be used to try to interpolate the
@@ -97,7 +86,7 @@ public:
     std::string name;
     PcpLayerStackPtr sourceLayerStack;
     SdfPath sourcePrimPath;
-    size_t sourceLayerIndex;
+    SdfLayerHandle sourceLayer;
     SdfPath clipPrimPath;
     Usd_ClipRefPtr manifestClip;
     Usd_ClipRefPtrVector valueClips;

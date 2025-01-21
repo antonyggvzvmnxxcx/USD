@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/garch/glApi.h"
 
@@ -34,6 +17,7 @@
 #include "pxr/imaging/hgiGL/shaderProgram.h"
 #include "pxr/imaging/hgiGL/texture.h"
 #include "pxr/base/trace/trace.h"
+#include "pxr/base/tf/scopeDescription.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -103,6 +87,7 @@ HgiGLOps::CopyTextureGpuToCpu(HgiTextureGpuToCpuOp const& copyOp)
         } else {
             HgiGLConversions::GetFormat(
                 texDesc.format,
+                texDesc.usage,
                 &glFormat,
                 &glPixelType);
         }
@@ -112,6 +97,8 @@ HgiGLOps::CopyTextureGpuToCpu(HgiTextureGpuToCpuOp const& copyOp)
                 "Copying from compressed GPU texture not supported.");
             return;
         }
+
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
 
         glGetTextureSubImage(
             srcTexture->GetTextureId(),
@@ -140,11 +127,10 @@ HgiGLOps::CopyTextureCpuToGpu(HgiTextureCpuToGpuOp const& copyOp)
         HgiTextureDesc const& desc =
             copyOp.gpuDestinationTexture->GetDescriptor();
 
-        GLenum internalFormat = 0;
         GLenum format = 0;
         GLenum type = 0;
 
-        HgiGLConversions::GetFormat(desc.format,&format,&type,&internalFormat);
+        HgiGLConversions::GetFormat(desc.format,desc.usage,&format,&type);
 
         const bool isCompressed = HgiIsCompressed(desc.format);
         GfVec3i const& offsets = copyOp.destinationTexelOffset;
@@ -152,6 +138,8 @@ HgiGLOps::CopyTextureCpuToGpu(HgiTextureCpuToGpuOp const& copyOp)
 
         HgiGLTexture* dstTexture = static_cast<HgiGLTexture*>(
             copyOp.gpuDestinationTexture.Get());
+
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
         switch(desc.type) {
         case HgiTextureType2D:
@@ -237,6 +225,8 @@ HgiGLOps::CopyBufferGpuToGpu(HgiBufferGpuToGpuOp const& copyOp)
                                  copyOp.sourceByteOffset,
                                  copyOp.destinationByteOffset,
                                  copyOp.byteSize);
+        
+        HGIGL_POST_PENDING_GL_ERRORS();
     };
 }
 
@@ -359,7 +349,10 @@ HgiGLOps::CopyTextureToBuffer(HgiTextureToBufferOp const& copyOp)
         } else {
             GLenum format = 0;
             GLenum type = 0;
-            HgiGLConversions::GetFormat(texDesc.format, &format, &type);
+            HgiGLConversions::GetFormat(texDesc.format,
+                                        texDesc.usage,
+                                        &format,
+                                        &type);
             glGetTextureImage(srcTexture->GetTextureId(),
                               copyOp.mipLevel,
                               format,
@@ -402,14 +395,13 @@ HgiGLOps::CopyBufferToTexture(HgiBufferToTextureOp const& copyOp)
 
         HgiTextureDesc const& texDesc = dstTexture->GetDescriptor();
 
-        GLenum internalFormat = 0;
         GLenum format = 0;
         GLenum type = 0;
 
         HgiGLConversions::GetFormat(texDesc.format,
+                                    texDesc.usage,
                                     &format,
-                                    &type,
-                                    &internalFormat);
+                                    &type);
 
         const bool isCompressed = HgiIsCompressed(texDesc.format);
         GfVec3i const& offsets = copyOp.destinationTexelOffset;
@@ -578,27 +570,22 @@ HgiGLOps::SetConstantValues(
 
 HgiGLOpsFn
 HgiGLOps::BindVertexBuffers(
-    uint32_t firstBinding,
-    HgiBufferHandleVector const& vertexBuffers,
-    std::vector<uint32_t> const& byteOffsets)
+    HgiVertexBufferBindingVector const &bindings)
 {
-    return [firstBinding, vertexBuffers, byteOffsets] {
+    return [bindings] {
         TRACE_SCOPE("HgiGLOps::BindVertexBuffers");
-        TF_VERIFY(byteOffsets.size() == vertexBuffers.size());
-        TF_VERIFY(byteOffsets.size() == vertexBuffers.size());
 
         // XXX use glBindVertexBuffers to bind all VBs in one go.
-        for (size_t i=0; i<vertexBuffers.size(); i++) {
-            HgiBufferHandle bufHandle = vertexBuffers[i];
-            HgiGLBuffer* buf = static_cast<HgiGLBuffer*>(bufHandle.Get());
+        for (HgiVertexBufferBinding const &binding : bindings) {
+            HgiGLBuffer* buf = static_cast<HgiGLBuffer*>(binding.buffer.Get());
             HgiBufferDesc const& desc = buf->GetDescriptor();
 
             TF_VERIFY(desc.usage & HgiBufferUsageVertex);
 
             glBindVertexBuffer(
-                firstBinding + i,
+                binding.index,
                 buf->GetBufferId(),
-                byteOffsets[i],
+                binding.byteOffset,
                 desc.vertexStride);
         }
 
@@ -609,19 +596,26 @@ HgiGLOps::BindVertexBuffers(
 HgiGLOpsFn
 HgiGLOps::Draw(
     HgiPrimitiveType primitiveType,
+    uint32_t primitiveIndexSize,
     uint32_t vertexCount,
-    uint32_t firstVertex,
-    uint32_t instanceCount)
+    uint32_t baseVertex,
+    uint32_t instanceCount,
+    uint32_t baseInstance)
 {
-    return [primitiveType, vertexCount, firstVertex, instanceCount] {
+    return [primitiveType, primitiveIndexSize,
+            vertexCount, baseVertex, instanceCount, baseInstance] {
         TRACE_SCOPE("HgiGLOps::Draw");
-        TF_VERIFY(instanceCount>0);
 
-        glDrawArraysInstanced(
+        if (primitiveType == HgiPrimitiveTypePatchList) {
+            glPatchParameteri(GL_PATCH_VERTICES, primitiveIndexSize);
+        }
+
+        glDrawArraysInstancedBaseInstance(
             HgiGLConversions::GetPrimitiveType(primitiveType),
-            firstVertex,
+            baseVertex,
             vertexCount,
-            instanceCount);
+            instanceCount,
+            baseInstance);
 
         HGIGL_POST_PENDING_GL_ERRORS();
     };
@@ -630,13 +624,14 @@ HgiGLOps::Draw(
 HgiGLOpsFn
 HgiGLOps::DrawIndirect(
     HgiPrimitiveType primitiveType,
+    uint32_t primitiveIndexSize,
     HgiBufferHandle const& drawParameterBuffer,
-    uint32_t drawBufferOffset,
+    uint32_t drawBufferByteOffset,
     uint32_t drawCount,
     uint32_t stride)
 {
-    return [primitiveType, drawParameterBuffer, drawBufferOffset, drawCount, 
-            stride] {
+    return [primitiveType, primitiveIndexSize,
+            drawParameterBuffer, drawBufferByteOffset, drawCount, stride] {
         TRACE_SCOPE("HgiGLOps::DrawIndirect");
 
         HgiGLBuffer* drawBuf =
@@ -644,9 +639,14 @@ HgiGLOps::DrawIndirect(
 
         glBindBuffer(GL_DRAW_INDIRECT_BUFFER, drawBuf->GetBufferId());
 
+        if (primitiveType == HgiPrimitiveTypePatchList) {
+            glPatchParameteri(GL_PATCH_VERTICES, primitiveIndexSize);
+        }
+
         glMultiDrawArraysIndirect(
             HgiGLConversions::GetPrimitiveType(primitiveType),
-            reinterpret_cast<const void*>(drawBufferOffset),
+            reinterpret_cast<const void*>(
+                static_cast<uintptr_t>(drawBufferByteOffset)),
             drawCount,
             stride);
 
@@ -657,32 +657,36 @@ HgiGLOps::DrawIndirect(
 HgiGLOpsFn
 HgiGLOps::DrawIndexed(
     HgiPrimitiveType primitiveType,
+    uint32_t primitiveIndexSize,
     HgiBufferHandle const& indexBuffer,
     uint32_t indexCount,
     uint32_t indexBufferByteOffset,
-    uint32_t vertexOffset,
-    uint32_t instanceCount)
+    uint32_t baseVertex,
+    uint32_t instanceCount,
+    uint32_t baseInstance)
 {
-    return [primitiveType, indexBuffer, indexCount, indexBufferByteOffset,
-            vertexOffset, instanceCount] {
+    return [primitiveType, primitiveIndexSize,
+            indexBuffer, indexCount, indexBufferByteOffset,
+            baseVertex, instanceCount, baseInstance] {
         TRACE_SCOPE("HgiGLOps::DrawIndexed");
-        TF_VERIFY(instanceCount>0);
 
         HgiGLBuffer* indexBuf = static_cast<HgiGLBuffer*>(indexBuffer.Get());
-        HgiBufferDesc const& indexDesc = indexBuf->GetDescriptor();
-
-        // We assume 32bit indices: GL_UNSIGNED_INT
-        TF_VERIFY(indexDesc.usage & HgiBufferUsageIndex32);
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBuf->GetBufferId());
 
-        glDrawElementsInstancedBaseVertex(
+        if (primitiveType == HgiPrimitiveTypePatchList) {
+            glPatchParameteri(GL_PATCH_VERTICES, primitiveIndexSize);
+        }
+
+        glDrawElementsInstancedBaseVertexBaseInstance(
             HgiGLConversions::GetPrimitiveType(primitiveType),
             indexCount,
             GL_UNSIGNED_INT,
-            (void*)(uintptr_t(indexBufferByteOffset)),
+            reinterpret_cast<const void*>(
+                static_cast<uintptr_t>(indexBufferByteOffset)),
             instanceCount,
-            vertexOffset);
+            baseVertex,
+            baseInstance);
 
         HGIGL_POST_PENDING_GL_ERRORS();
     };
@@ -691,21 +695,19 @@ HgiGLOps::DrawIndexed(
 HgiGLOpsFn
 HgiGLOps::DrawIndexedIndirect(
     HgiPrimitiveType primitiveType,
+    uint32_t primitiveIndexSize,
     HgiBufferHandle const& indexBuffer,
     HgiBufferHandle const& drawParameterBuffer,
-    uint32_t drawBufferOffset,
+    uint32_t drawBufferByteOffset,
     uint32_t drawCount,
     uint32_t stride)
 {
-    return [primitiveType, indexBuffer, drawParameterBuffer, drawBufferOffset,
+    return [primitiveType, primitiveIndexSize,
+            indexBuffer, drawParameterBuffer, drawBufferByteOffset,
             drawCount, stride] {
         TRACE_SCOPE("HgiGLOps::DrawIndexedIndirect");
 
         HgiGLBuffer* indexBuf = static_cast<HgiGLBuffer*>(indexBuffer.Get());
-        HgiBufferDesc const& indexDesc = indexBuf->GetDescriptor();
-
-        // We assume 32bit indices: GL_UNSIGNED_INT
-        TF_VERIFY(indexDesc.usage & HgiBufferUsageIndex32);
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBuf->GetBufferId());
 
@@ -714,10 +716,15 @@ HgiGLOps::DrawIndexedIndirect(
 
         glBindBuffer(GL_DRAW_INDIRECT_BUFFER, drawBuf->GetBufferId());
 
+        if (primitiveType == HgiPrimitiveTypePatchList) {
+            glPatchParameteri(GL_PATCH_VERTICES, primitiveIndexSize);
+        }
+
         glMultiDrawElementsIndirect(
             HgiGLConversions::GetPrimitiveType(primitiveType),
             GL_UNSIGNED_INT,
-            reinterpret_cast<const void*>(drawBufferOffset),
+            reinterpret_cast<const void*>(
+                static_cast<uintptr_t>(drawBufferByteOffset)),
             drawCount,
             stride);
 
@@ -735,6 +742,16 @@ HgiGLOps::Dispatch(int dimX, int dimY)
 
         HGIGL_POST_PENDING_GL_ERRORS();
     };
+}
+
+static
+bool
+_IsInt32Format(HgiFormat format)
+{
+    return (format == HgiFormatInt32) ||
+           (format == HgiFormatInt32Vec2) ||
+           (format == HgiFormatInt32Vec3) ||
+           (format == HgiFormatInt32Vec4);
 }
 
 HgiGLOpsFn
@@ -766,7 +783,19 @@ HgiGLOps::BindFramebufferOp(
             }
 
             if (colorAttachment.loadOp == HgiAttachmentLoadOpClear) {
-                glClearBufferfv(GL_COLOR, i, colorAttachment.clearValue.data());
+                // Special handling for int format used by id renders.
+                if (_IsInt32Format(colorAttachment.format)) {
+                    GLint clearValue[4] = {
+                        static_cast<GLint>(colorAttachment.clearValue[0]),
+                        static_cast<GLint>(colorAttachment.clearValue[1]),
+                        static_cast<GLint>(colorAttachment.clearValue[2]),
+                        static_cast<GLint>(colorAttachment.clearValue[3])
+                    };
+                    glClearBufferiv(GL_COLOR, i, clearValue);
+                } else {
+                    glClearBufferfv(
+                        GL_COLOR, i, colorAttachment.clearValue.data());
+                }
             }
 
             blendEnabled |= colorAttachment.blendEnabled;
@@ -788,6 +817,10 @@ HgiGLOps::BindFramebufferOp(
 
             glBlendFuncSeparatei(i, srcColor, dstColor, srcAlpha, dstAlpha);
             glBlendEquationSeparatei(i, colorOp, alphaOp);
+            glBlendColor(colorAttachment.blendConstantColor[0],
+                         colorAttachment.blendConstantColor[1],
+                         colorAttachment.blendConstantColor[2],
+                         colorAttachment.blendConstantColor[3]);
         }
 
         HgiAttachmentDesc const& depthAttachment =
@@ -808,7 +841,7 @@ HgiGLOps::BindFramebufferOp(
                     GL_DEPTH_STENCIL,
                     0,
                     depthAttachment.clearValue[0],
-                    depthAttachment.clearValue[1]);
+                    static_cast<uint32_t>(depthAttachment.clearValue[1]));
             } else {
                 glClearBufferfv(
                     GL_DEPTH,
@@ -829,6 +862,24 @@ HgiGLOps::BindFramebufferOp(
 }
 
 HgiGLOpsFn
+HgiGLOps::FillBuffer(HgiBufferHandle const& buffer, uint8_t value)
+{
+    return [buffer, value] {
+        TRACE_SCOPE("HgiGLOps::FillBuffer");
+
+        HgiGLBuffer* glBuffer = static_cast<HgiGLBuffer*>(buffer.Get());
+        if (glBuffer && glBuffer->GetBufferId()) {
+            glClearNamedBufferData(glBuffer->GetBufferId(),
+                                   GL_R8UI,
+                                   GL_RED_INTEGER,
+                                   GL_UNSIGNED_BYTE,
+                                   &value);
+            HGIGL_POST_PENDING_GL_ERRORS();
+        }
+    };
+}
+
+HgiGLOpsFn
 HgiGLOps::GenerateMipMaps(HgiTextureHandle const& texture)
 {
     return [texture] {
@@ -836,6 +887,13 @@ HgiGLOps::GenerateMipMaps(HgiTextureHandle const& texture)
 
         HgiGLTexture* glTex = static_cast<HgiGLTexture*>(texture.Get());
         if (glTex && glTex->GetTextureId()) {
+            // Note: the texture ID doesn't mean much to the end user, but
+            // making these descriptions unique helps make it clear how much
+            // time is spent on each one.
+            TF_DESCRIBE_SCOPE("Generating mipmaps (id %zu: %s)",
+                              glTex->GetTextureId(),
+                              glTex->GetDescriptor().debugName.c_str());
+
             glGenerateTextureMipmap(glTex->GetTextureId());
             HGIGL_POST_PENDING_GL_ERRORS();
         }
@@ -904,7 +962,7 @@ HgiGLOps::ResolveFramebuffer(
 }
 
 HgiGLOpsFn
-HgiGLOps::MemoryBarrier(HgiMemoryBarrier barrier)
+HgiGLOps::InsertMemoryBarrier(HgiMemoryBarrier barrier)
 {
     return [barrier] {
         if (TF_VERIFY(barrier == HgiMemoryBarrierAll)) {

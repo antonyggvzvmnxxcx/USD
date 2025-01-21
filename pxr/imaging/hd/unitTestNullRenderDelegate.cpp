@@ -1,29 +1,14 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hd/unitTestNullRenderDelegate.h"
 #include "pxr/imaging/hd/bufferArray.h"
+#include "pxr/imaging/hd/camera.h"
 #include "pxr/imaging/hd/coordSys.h"
+#include "pxr/imaging/hd/light.h"
 #include "pxr/imaging/hd/material.h"
 #include "pxr/imaging/hd/mesh.h"
 #include "pxr/imaging/hd/basisCurves.h"
@@ -32,10 +17,17 @@
 #include "pxr/imaging/hd/tokens.h"
 #include "pxr/imaging/hd/repr.h"
 #include "pxr/imaging/hd/resourceRegistry.h"
-#include "pxr/imaging/hd/strategyBase.h"
 #include "pxr/imaging/hd/unitTestNullRenderPass.h"
 
+#include <iostream>
+
 PXR_NAMESPACE_OPEN_SCOPE
+
+TF_DEFINE_PRIVATE_TOKENS(
+    _tokens,
+    (print)
+    (message)
+);
 
 
 ////////////////////////////////////////////////////////////////
@@ -226,6 +218,29 @@ private:
     Hd_NullMaterial &operator =(const Hd_NullMaterial &) = delete;
 };
 
+class Hd_NullLight final : public HdLight {
+public:
+    Hd_NullLight(SdfPath const& id) : HdLight(id) {}
+    virtual ~Hd_NullLight() = default;
+
+    virtual void Sync(HdSceneDelegate *sceneDelegate,
+                      HdRenderParam   *renderParam,
+                      HdDirtyBits     *dirtyBits) override
+    {
+        *dirtyBits = HdLight::Clean;
+    }
+
+    virtual HdDirtyBits GetInitialDirtyBitsMask() const override
+    {
+        return HdLight::AllDirty;
+    }
+
+private:
+    Hd_NullLight()                                 = delete;
+    Hd_NullLight(const Hd_NullLight &)             = delete;
+    Hd_NullLight &operator =(const Hd_NullLight &) = delete;
+};
+
 class Hd_NullCoordSys final : public HdCoordSys {
 public:
     Hd_NullCoordSys(SdfPath const& id) : HdCoordSys(id) {}
@@ -248,6 +263,28 @@ private:
     Hd_NullCoordSys &operator =(const Hd_NullCoordSys &) = delete;
 };
 
+class Hd_NullCamera final : public HdCamera {
+public:
+    Hd_NullCamera(SdfPath const& id) : HdCamera(id) {}
+    virtual ~Hd_NullCamera() override = default;
+
+    virtual void Sync(HdSceneDelegate *sceneDelegate,
+                      HdRenderParam   *renderParam,
+                      HdDirtyBits     *dirtyBits) override
+    {
+        *dirtyBits = HdCamera::Clean;
+    };
+
+    virtual HdDirtyBits GetInitialDirtyBitsMask() const override {
+        return HdCamera::AllDirty;
+    }
+
+private:
+    Hd_NullCamera()                                  = delete;
+    Hd_NullCamera(const Hd_NullCamera &)             = delete;
+    Hd_NullCamera &operator =(const Hd_NullCamera &) = delete;
+};
+
 const TfTokenVector Hd_UnitTestNullRenderDelegate::SUPPORTED_RPRIM_TYPES =
 {
     HdPrimTypeTokens->mesh,
@@ -257,7 +294,9 @@ const TfTokenVector Hd_UnitTestNullRenderDelegate::SUPPORTED_RPRIM_TYPES =
 
 const TfTokenVector Hd_UnitTestNullRenderDelegate::SUPPORTED_SPRIM_TYPES =
 {
+    HdPrimTypeTokens->camera,
     HdPrimTypeTokens->coordSys,
+    HdPrimTypeTokens->domeLight,
     HdPrimTypeTokens->material
 };
 
@@ -337,12 +376,15 @@ Hd_UnitTestNullRenderDelegate::CreateSprim(TfToken const& typeId,
 {
     if (typeId == HdPrimTypeTokens->material) {
         return new Hd_NullMaterial(sprimId);
+    } else if (typeId == HdPrimTypeTokens->domeLight) {
+        return new Hd_NullLight(SdfPath::EmptyPath());
     } else if (typeId == HdPrimTypeTokens->coordSys) {
         return new Hd_NullCoordSys(sprimId);
+    } else if (typeId == HdPrimTypeTokens->camera) {
+        return new Hd_NullCamera(sprimId);
     } else {
         TF_CODING_ERROR("Unknown Sprim Type %s", typeId.GetText());
     }
-
     return nullptr;
 }
 
@@ -351,8 +393,12 @@ Hd_UnitTestNullRenderDelegate::CreateFallbackSprim(TfToken const& typeId)
 {
     if (typeId == HdPrimTypeTokens->material) {
         return new Hd_NullMaterial(SdfPath::EmptyPath());
+    } else if (typeId == HdPrimTypeTokens->domeLight) {
+        return new Hd_NullLight(SdfPath::EmptyPath());
     } else if (typeId == HdPrimTypeTokens->coordSys) {
         return new Hd_NullCoordSys(SdfPath::EmptyPath());
+    } else if (typeId == HdPrimTypeTokens->camera) {
+        return new Hd_NullCamera(SdfPath::EmptyPath());
     } else {
         TF_CODING_ERROR("Unknown Sprim Type %s", typeId.GetText());
     }
@@ -393,6 +439,37 @@ Hd_UnitTestNullRenderDelegate::DestroyBprim(HdBprim *bPrim)
 void
 Hd_UnitTestNullRenderDelegate::CommitResources(HdChangeTracker *tracker)
 {
+}
+
+HdCommandDescriptors
+Hd_UnitTestNullRenderDelegate::GetCommandDescriptors() const
+{
+    HdCommandArgDescriptor printArgDesc{ _tokens->message, VtValue("") };
+    HdCommandArgDescriptors argDescs{ printArgDesc };
+
+    HdCommandDescriptor commandDesc(_tokens->print, "Print command", argDescs);
+
+    return { commandDesc };
+}
+
+bool
+Hd_UnitTestNullRenderDelegate::InvokeCommand(
+    const TfToken &command,
+    const HdCommandArgs &args)
+{
+    if (command == _tokens->print) {
+        HdCommandArgs::const_iterator it = args.find(_tokens->message);
+        if (it == args.end()) {
+            TF_WARN("No argument 'message' argument found.");
+            return false;
+        }
+        VtValue message = it->second;
+        std::cout << "Printing the message: " << message << std::endl;
+        return true;
+    }
+
+    TF_WARN("Unknown command '%s'", command.GetText());
+    return false;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

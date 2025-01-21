@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_REPR_H
 #define PXR_IMAGING_HD_REPR_H
@@ -170,8 +153,11 @@ public:
     }
 
     /// Transfers ownership of a draw item to this repr.
+    /// Do not use for adding geom subset draw items.
     void AddDrawItem(std::unique_ptr<HdDrawItem> &&item) {
-        _drawItems.push_back(std::move(item));
+        _drawItems.insert(_drawItems.begin() + _geomSubsetsStart, 
+            std::move(item));
+        _geomSubsetsStart++;
     }
 
     /// Returns the draw item at the requested index.
@@ -182,13 +168,55 @@ public:
         return _drawItems[index].get();
     }
 
+    /// HdRepr can hold geom subset draw items, which are unique in that they
+    /// not created at the time the repr is created, but instead when populating
+    /// the mesh topology of a mesh rprim. The number of geom subset draw items
+    /// in a repr can change over time. 
+    /// We make some assumptions when using these geom subset related functions.
+    /// We assume the geom subset draw items will only be added (or cleared) 
+    /// after all of the main draw items for a repr have been added.
+    /// We also assume that the geom subset draw items for a repr desc are all
+    /// added one after the other before moving onto the next repr desc. 
+    /// Thus the order of draw items in the _drawItems member might go something
+    /// like (assuming two repr descs and three geom subsets in this example):
+    /// [ main DI for desc 1, main DI for desc 2, GS1 DI for desc 1, 
+    ///   GS2 DI for desc 1, GS3 DI for desc 1, GS1 DI for desc 2, 
+    ///   GS2 DI for desc 2, GS3 DI for desc 2 ]
+    /// It is also possible for there to exist a main draw item for a particular
+    /// repr desc but no geom subsets for that repr desc, while having geom
+    /// subsets exist for a different repr desc.
+
+    /// Transfers ownership of a draw item to this repr.
+    /// To be used only for geom subset draw items.
+    void AddGeomSubsetDrawItem(std::unique_ptr<HdDrawItem> &&item) {
+        _drawItems.push_back(std::move(item));
+    }
+
+    /// Utility similar to GetDrawItem for getting geom subset draw items.
+    HdDrawItem* GetDrawItemForGeomSubset(size_t reprDescIndex, 
+        size_t numGeomSubsets, size_t geomSubsetIndex) const {        
+        return _drawItems[_geomSubsetsStart + reprDescIndex * numGeomSubsets + 
+            geomSubsetIndex].get();
+    }
+
+    /// Removes all of the geom subset draw items from the repr.
+    void ClearGeomSubsetDrawItems() {
+        _drawItems.erase(
+            _drawItems.begin() + _geomSubsetsStart, _drawItems.end());
+    }
+
 private:
     // Noncopyable
     HdRepr(const HdRepr&) = delete;
     HdRepr& operator=(const HdRepr&) = delete;
 
 private:
+    // Contains normal draw items first, potentially followed by geom subset
+    // draw items
     DrawItemUniquePtrVector _drawItems;
+
+    // Index into _drawItems indicating where the geom subset draw items begin.
+    size_t _geomSubsetsStart; 
 };
 
 

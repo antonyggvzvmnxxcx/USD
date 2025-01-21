@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_RENDER_INDEX_H
 #define PXR_IMAGING_HD_RENDER_INDEX_H
@@ -28,11 +11,18 @@
 #include "pxr/imaging/hd/api.h"
 #include "pxr/imaging/hd/version.h"
 #include "pxr/imaging/hd/changeTracker.h"
+#include "pxr/imaging/hd/dirtyList.h"
 #include "pxr/imaging/hd/perfLog.h"
 #include "pxr/imaging/hd/primTypeIndex.h"
 #include "pxr/imaging/hd/resourceRegistry.h"
 #include "pxr/imaging/hd/sortedIds.h"
 #include "pxr/imaging/hd/tokens.h"
+
+#include "pxr/imaging/hd/sceneIndex.h"
+#include "pxr/imaging/hd/mergingSceneIndex.h"
+#include "pxr/imaging/hd/legacyPrimSceneIndex.h"
+#include "pxr/imaging/hd/legacyTaskFactory.h"
+#include "pxr/imaging/hd/noticeBatchingSceneIndex.h"
 
 #include "pxr/imaging/hf/perfLog.h"
 
@@ -61,16 +51,14 @@ class VtValue;
 class HdInstancer;
 class HdDriver;
 
-using HdDirtyListSharedPtr = std::shared_ptr<class HdDirtyList>;
-
+using HdDriverVector = std::vector<HdDriver*>;
+using HdRprimCollectionVector = std::vector<HdRprimCollection>;
 using HdTaskSharedPtr = std::shared_ptr<class HdTask>;
-
 using HdResourceRegistrySharedPtr = std::shared_ptr<class HdResourceRegistry>;
 using HdTaskSharedPtrVector = std::vector<HdTaskSharedPtr>;
 using HdTaskContext = std::unordered_map<TfToken,
                            VtValue,
                            TfToken::HashFunctor>;
-using HdDriverVector = std::vector<HdDriver*>;
 
 /// \class HdRenderIndex
 ///
@@ -126,10 +114,21 @@ public:
     //    hgi = Hgi::CreatePlatformDefaultHgi()
     //    hgiDriver = new HdDriver<Hgi*>(HgiTokens→renderDriver, hgi)
     //    HdRenderIndex::New(_renderDelegate, {_hgiDriver})
+    // 
+    /// "instanceName" is an optional identifier useful for applications to
+    /// associate this render index with related resources (such as the scene
+    /// index instances).
+    ///
+    /// "appName" is an application name that is used to load scene index
+    /// plugins that are enabled on a per-app basis, when scene index emulation
+    /// is enabled. See HdSceneIndexPluginRegistry for more information.
+    ///
     HD_API
     static HdRenderIndex* New(
         HdRenderDelegate *renderDelegate,
-        HdDriverVector const& drivers);
+        HdDriverVector const& drivers,
+        const std::string &instanceName=std::string(),
+        const std::string &appName=std::string());
 
     HD_API
     ~HdRenderIndex();
@@ -155,21 +154,16 @@ public:
     /// \name Synchronization
     // ---------------------------------------------------------------------- //
 
-    /// Adds the dirty list to the sync queue. The actual processing of the
-    /// dirty list happens later in SyncAll().
+    /// Hydra's core currently needs to know the collections used by tasks
+    /// to aggregate the reprs that need to be synced for the dirty Rprims.
     /// 
-    /// This is typically called from HdRenderPass::Sync. However, the current
-    /// call chain ties it to SyncAll, i.e.
-    /// HdRenderIndex::SyncAll > .... > HdRenderPass::Sync > HdRenderIndex::Sync
     HD_API
-    void EnqueuePrimsToSync(
-        HdDirtyListSharedPtr const &dirtyList,
-        HdRprimCollection const &collection);
+    void EnqueueCollectionToSync(HdRprimCollection const &collection);
 
-    /// Syncs input tasks, B & S prims, (external) computations and processes 
-    /// all pending dirty lists (which syncs the R prims). At the end of this
-    /// step, all the resources that need to be updated have handles to their
-    /// data sources.
+    /// Syncs input tasks, B & S prims, (external) computations and updates the
+    /// Rprim dirty list to then sync the Rprims.
+    /// At the end of this step, all the resources that need to be updated have
+    /// handles to their data sources.
     /// This is the first phase in Hydra's execution. See HdEngine::Execute
     HD_API
     void SyncAll(HdTaskSharedPtrVector *tasks, HdTaskContext *taskContext);
@@ -235,9 +229,9 @@ public:
     HD_API
     TfToken GetRenderTag(SdfPath const& id) const;
 
-    /// Return the material tag for the given rprim
-    HD_API
-    TfToken GetMaterialTag(SdfPath const& id) const;
+    /// Like GetRenderTag, but updates the render tag if dirty.
+    TfToken UpdateRenderTag(SdfPath const& id,
+                            HdDirtyBits bits);
 
     /// Returns a sorted list of all Rprims in the render index.
     /// The list is sorted by std::less<SdfPath>
@@ -355,6 +349,24 @@ public:
     HdBprim *GetFallbackBprim(TfToken const& typeId) const;
 
     // ---------------------------------------------------------------------- //
+    /// \name Scene indices
+    // ---------------------------------------------------------------------- //
+    HD_API
+    void InsertSceneIndex(
+            const HdSceneIndexBaseRefPtr &inputScene,
+            SdfPath const& scenePathPrefix,
+            bool needsPrefixing = true);
+
+    HD_API
+    void RemoveSceneIndex(
+            const HdSceneIndexBaseRefPtr &inputScene);
+
+    /// The terminal scene index that is driving what is in the render index
+    /// through emulation.
+    HD_API
+    HdSceneIndexBaseRefPtr GetTerminalSceneIndex() const;
+
+    // ---------------------------------------------------------------------- //
     /// \name Render Delegate
     // ---------------------------------------------------------------------- //
     /// Currently, a render index only supports connection to one type of
@@ -373,35 +385,123 @@ public:
     HD_API
     HdResourceRegistrySharedPtr GetResourceRegistry() const;
 
+    /// Returns true if scene index features are available
+    /// This is true by default but can be controlled via an
+    /// HD_ENABLE_SCENE_INDEX_EMULATION environment variable.
+    HD_API
+    static bool IsSceneIndexEmulationEnabled();
+
+    /// An application or legacy scene delegate may prefer for the scene 
+    /// index observer notices generated from its prim insertions, removals, or
+    /// invalidations to be consolidated into vectorized batches. Calling this
+    /// will cause subsequent notices to be queued.
+    /// 
+    /// NOTE: This tracks depth internally and is safe to call in nested 
+    ///       contexts. It is not safe to call from multiple threads, though.
+    HD_API
+    void SceneIndexEmulationNoticeBatchBegin();
+
+    /// Flushes any queued scene index observer notices and disables further
+    /// queueing.
+    ///
+    /// NOTE: This tracks depth internally and is safe to call in nested 
+    ///       contexts. It is not safe to call from multiple threads, though.
+    HD_API
+    void SceneIndexEmulationNoticeBatchEnd();
+
+    /// Consolidate notices generated by the merging scene index to vectorized
+    /// batches. Calling this will cause subsequent notices to be queued.
+    /// 
+    /// NOTE: This tracks depth internally and is safe to call in nested 
+    ///       contexts. It is not safe to call from multiple threads, though.
+    HD_API
+    void MergingSceneIndexNoticeBatchBegin();
+
+    /// Flushes any queued scene index observer notices from the merging scene
+    /// index and disables further queueing.
+    ///
+    /// NOTE: This tracks depth internally and is safe to call in nested 
+    ///       contexts. It is not safe to call from multiple threads, though.
+    HD_API
+    void MergingSceneIndexNoticeBatchEnd();
+
+    HD_API
+    std::string GetInstanceName() const;
+
 private:
     // The render index constructor is private so we can check
     // renderDelegate before construction: see HdRenderIndex::New(...).
     HdRenderIndex(
         HdRenderDelegate *renderDelegate, 
-        HdDriverVector const& drivers);
+        HdDriverVector const& drivers,
+        const std::string &instanceName,
+        const std::string &appName);
 
     // ---------------------------------------------------------------------- //
     // Private Helper methods 
     // ---------------------------------------------------------------------- //
 
     // Go through all RPrims and reallocate their instance ids
-    // This is called once we have exhausted all all 24bit instance ids.
+    // This is called once we have exhausted all 24bit instance ids.
     void _CompactPrimIds();
 
     // Allocate the next available instance id to the prim
     void _AllocatePrimId(HdRprim* prim);
 
-    // Inserts the task into the index and updates tracking state.
-    // _TrackDelegateTask is called by the inlined InsertTask<T>, so it needs
-    // to be marked HD_API.
+    using HdTaskCreateFnc =
+            std::function<HdTaskSharedPtr(HdSceneDelegate*, SdfPath const&)>;
+
+    // Implements InsertTask<T>.
+    // Inserts task going through emulation if enabled.
     HD_API
-    void _TrackDelegateTask(HdSceneDelegate* delegate, 
-                            SdfPath const& taskId,
-                            HdTaskSharedPtr const& task);
+    void _InsertSceneDelegateTask(
+        HdSceneDelegate* delegate, 
+        SdfPath const& taskId,
+        HdLegacyTaskFactorySharedPtr factory);
 
     template <typename T>
     static inline const TfToken & _GetTypeId();
 
+
+    // Private versions of equivalent public methods which insert and remove
+    // from this render index.
+    // 
+    // The public versions check to see if scene delegate emulation is active.
+    // If not, they call through to these. Otherwise, they forward to the
+    // the HdLegacyPrimSceneIndex member. If a legacy render delegate is also
+    // in use, the scene index chain will terminate with a
+    // HdSceneIndexAdapterSceneDelegate. That will call the private versions
+    // directly so that the internal render index tables are updated.
+    // 
+    // This prevents cyclic insertion/removals while allowing a single 
+    // HdRenderIndex to be used for both front and back-end emulation.
+    //
+    // Note: all render index users should call the public APIs; only
+    // sceneIndexAdapterSceneDelegate.cpp should call these versions, to keep
+    // state synchronized.  Note, for example, that _RemoveSubtree and _Clear
+    // don't affect the task map, since tasks aren't part of emulation, whereas
+    // RemoveSubtree and Clear do affect the task map...
+    friend class HdSceneIndexAdapterSceneDelegate;
+    void _InsertRprim(TfToken const& typeId,
+                      HdSceneDelegate* sceneDelegate,
+                      SdfPath const& rprimId);
+    void _InsertSprim(TfToken const& typeId,
+                      HdSceneDelegate* delegate,
+                      SdfPath const& sprimId);
+    void _InsertBprim(TfToken const& typeId,
+                      HdSceneDelegate* delegate,
+                      SdfPath const& bprimId);
+    void _InsertInstancer(HdSceneDelegate* delegate,
+                          SdfPath const &id);
+    void _InsertTask(HdSceneDelegate* delegate,
+                     SdfPath const &id,
+                     HdTaskSharedPtr const &task);
+
+    void _RemoveRprim(SdfPath const& id);
+    void _RemoveSprim(TfToken const& typeId, SdfPath const& id);
+    void _RemoveBprim(TfToken const& typeId, SdfPath const& id);
+    void _RemoveInstancer(SdfPath const& id);
+    void _RemoveSubtree(SdfPath const& id, HdSceneDelegate* sceneDelegate);
     void _RemoveRprimSubtree(const SdfPath &root,
                              HdSceneDelegate* sceneDelegate);
     void _RemoveInstancerSubtree(const SdfPath &root,
@@ -410,6 +510,8 @@ private:
                                       HdSceneDelegate* sceneDelegate);
     void _RemoveTaskSubtree(const SdfPath &root,
                             HdSceneDelegate* sceneDelegate);
+    void _RemoveTask(SdfPath const &id);
+    void _Clear();
 
     // ---------------------------------------------------------------------- //
     // Index State
@@ -418,6 +520,18 @@ private:
         HdSceneDelegate *sceneDelegate;
         HdRprim *rprim;
     };
+
+    class _NoticeBatchingContext;
+
+    HdLegacyPrimSceneIndexRefPtr _emulationSceneIndex;
+    std::unique_ptr<_NoticeBatchingContext> _emulationBatchingCtx;
+
+    std::unique_ptr<class HdSceneIndexAdapterSceneDelegate> _siSd;
+
+    HdMergingSceneIndexRefPtr _mergingSceneIndex;
+    std::unique_ptr<_NoticeBatchingContext> _mergingBatchingCtx;
+
+    HdSceneIndexBaseRefPtr _terminalSceneIndex;
 
     struct _TaskInfo {
         HdSceneDelegate *sceneDelegate;
@@ -446,39 +560,19 @@ private:
     typedef TfHashMap<SdfPath, HdInstancer*, SdfPath::Hash> _InstancerMap;
     _InstancerMap _instancerMap;
 
-    struct _SyncQueueEntry {
-        HdDirtyListSharedPtr dirtyList;
-        HdRprimCollection collection;
-
-    };
-    typedef std::vector<_SyncQueueEntry> _SyncQueue;
-    _SyncQueue _syncQueue;
-
-    /// With the removal of task-based collection include/exclude path
-    /// filtering, HdDirtyLists were generating their lists of dirty rprim IDs
-    /// by looking through every rprim in the render index. When the number of
-    /// tasks/render passes/dirty lists grew large, this resulted in
-    /// significant overhead and lots of duplication of work.
-    /// Instead, the render index itself now takes care of generating the
-    /// complete list of dirty rprim IDs when requested by the HdDirtyList.
-    /// During SyncAll(), the first HdDirtyList to request the list of dirty
-    /// IDs for a given HdDirtyBits mask triggers the render index to produce
-    /// that list and cache it in a map. Subsequent requests reuse the cached
-    /// list. At the end of SyncAll(), the map is cleared in preparation for
-    /// the next sync.
-    std::unordered_map<HdDirtyBits, const SdfPathVector> _dirtyRprimIdsMap;
-
-    friend class HdDirtyList;
-    const SdfPathVector& _GetDirtyRprimIds(HdDirtyBits mask);
-
     HdRenderDelegate *_renderDelegate;
     HdDriverVector _drivers;
+
+
+    std::string _instanceName;
 
     // ---------------------------------------------------------------------- //
     // Sync State
     // ---------------------------------------------------------------------- //
-    TfTokenVector _activeRenderTags;
-    unsigned int  _renderTagVersion;
+    HdRprimCollectionVector _collectionsToSync;
+    HdDirtyList _rprimDirtyList;
+
+    // ---------------------------------------------------------------------- //
 
     /// Register the render delegate's list of supported prim types.
     void _InitPrimTypes();
@@ -488,8 +582,6 @@ private:
 
     /// Release the fallback prims.
     void _DestroyFallbackPrims();
-
-    void _GatherRenderTags(const HdTaskSharedPtrVector *tasks);
 
     typedef tbb::enumerable_thread_specific<HdDrawItemPtrVector>
         _ConcurrentDrawItems;
@@ -518,11 +610,8 @@ template <typename T>
 void
 HdRenderIndex::InsertTask(HdSceneDelegate* delegate, SdfPath const& id)
 {
-    HD_TRACE_FUNCTION();
-    HF_MALLOC_TAG_FUNCTION();
-
-    HdTaskSharedPtr task = std::make_shared<T>(delegate, id);
-    _TrackDelegateTask(delegate, id, task);
+    _InsertSceneDelegateTask(
+        delegate, id, HdMakeLegacyTaskFactory<T>());
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

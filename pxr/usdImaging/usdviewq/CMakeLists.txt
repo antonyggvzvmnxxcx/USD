@@ -10,22 +10,18 @@ pxr_library(usdviewq
         tf
         usd
         usdGeom
-        ${Boost_PYTHON_LIBRARY}
-
-    INCLUDE_DIRS
-        ${Boost_INCLUDE_DIRS}
+        hd
 
     PUBLIC_CLASSES
+        hydraObserver
         utils
-
-    PYTHON_CPPFILES
-        moduleDeps.cpp
         
     PUBLIC_HEADERS
         api.h
 
     PYMODULE_CPPFILES
         module.cpp
+        wrapHydraObserver.cpp
         wrapUtils.cpp
 
     PYMODULE_FILES
@@ -48,12 +44,12 @@ pxr_library(usdviewq
         prettyPrint.py
         pythonInterpreter.py
         settings.py
-        settings2.py
-        adjustClipping.py
         adjustDefaultMaterial.py
+        adjustFreeCamera.py
         preferences.py
         primViewItem.py
         common.py
+        hydraSceneBrowser.py
         legendUtil.py
         primLegend.py
         primTreeWidget.py
@@ -67,12 +63,13 @@ pxr_library(usdviewq
         viewSettingsDataModel.py
         freeCamera.py
         debugFlagsWidget.py
+        configController.py
         usdviewstyle.qss
 
     PYSIDE_UI_FILES
         mainWindowUI.ui
-        adjustClippingUI.ui
         adjustDefaultMaterialUI.ui
+        adjustFreeCameraUI.ui
         attributeValueEditorUI.ui
         preferencesUI.ui
         primLegendUI.ui
@@ -94,7 +91,7 @@ install(DIRECTORY
 )
 
 pxr_test_scripts(
-    testenv/testUsdviewqSettings2.py
+    testenv/testUsdviewqSettings.py
     testenv/testUsdviewqRootDataModel.py
     testenv/testUsdviewqSelectionDataModel.py
     testenv/testUsdviewqLauncher.py
@@ -106,9 +103,9 @@ pxr_install_test_dir(
     DEST testUsdviewqRootDataModel
 )
 
-pxr_register_test(testUsdviewqSettings2
+pxr_register_test(testUsdviewqSettings
     PYTHON
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdviewqSettings2"
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdviewqSettings"
     EXPECTED_RETURN_CODE 0
 )
 

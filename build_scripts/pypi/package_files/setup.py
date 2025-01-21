@@ -1,29 +1,11 @@
 #
 # Copyright 2020 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 import setuptools
-
-import glob, os, platform, re, shutil
+import argparse, glob, os, platform, re, shutil, sys
 
 # This setup.py script expects to be run from an inst directory in a typical
 # USD build run from build_usd.py.
@@ -34,6 +16,20 @@ import glob, os, platform, re, shutil
 # to point to the new locations of those shared library dependencies. How this
 # is done depends on platform, and is mostly accomplished by steps in the CI
 # system.
+
+# Define special arguments for setup.py to customize behavior.
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--post-release-tag", type=str,
+    help="Post release tag to append to version number")
+
+args, remaining = parser.parse_known_args()
+
+# Remove our special arguments from sys.argv so that setuptools doesn't choke on
+# them. argparse will also eat the "setup.py" argument in sys.argv[0] which is
+# apparently necessary for setuptools, so we manually prepend that to the
+# remaining unprocessed arguments.
+sys.argv = [sys.argv[0]] + remaining
 
 def windows():
     return platform.system() == "Windows"
@@ -73,9 +69,16 @@ if windows():
 import os, sys
 dllPath = os.path.split(os.path.realpath(__file__))[0]
 if sys.version_info >= (3, 8, 0):
-    os.add_dll_directory(dllPath)
-else:
-    os.environ['PATH'] = dllPath + os.pathsep + os.environ['PATH']
+    os.environ['PXR_USD_WINDOWS_DLL_PATH'] = dllPath
+# Note that we ALWAYS modify the PATH, even for python-3.8+. This is because:
+#    - Anaconda python interpreters are modified to use the old, pre-3.8, PATH-
+#      based method of loading dlls
+#    - extra calls to os.add_dll_directory won't hurt these anaconda
+#      interpreters
+#    - similarly, adding the extra PATH entry shouldn't hurt standard python
+#      interpreters
+#    - there's no canonical/bulletproof way to check for an anaconda interpreter
+os.environ['PATH'] = dllPath + os.pathsep + os.environ['PATH']
 ''')
 
 # Get the readme text
@@ -97,21 +100,24 @@ with open(os.path.join(USD_BUILD_OUTPUT, "include/pxr/pxr.h"), "r") as fh:
 
 version = "{}.{}".format(minorVersion, patchVersion)
 
+if args.post_release_tag:
+    version = "{}.{}".format(version, args.post_release_tag)
+
 # Config
 setuptools.setup(
     name="usd-core",
     version=version,
     author="Pixar Animation Studios",
-    author_email="pixar.oss+usd_pypi@gmail.com",
-    description="Pixar's Universal Scene Description library",
+    author_email="openusd+usd_pypi@pixar.com",
+    description="Pixar's Universal Scene Description",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://graphics.pixar.com/usd/docs/index.html",
+    url="https://openusd.org",
     project_urls={
-        "Documentation": "https://graphics.pixar.com/usd/docs/index.html",
-        "Developer Docs": "https://graphics.pixar.com/usd/docs/USD-Developer-API-Reference.html",
-        "Source": "https://github.com/PixarAnimationStudios/USD",
-        "Discussion Group": "https://groups.google.com/g/usd-interest"
+        "Documentation": "https://openusd.org",
+        "Developer Docs": "https://www.openusd.org/release/apiDocs.html",
+        "Source": "https://github.com/PixarAnimationStudios/OpenUSD",
+        "Discussion Group": "https://forum.openusd.org"
     },
     packages=setuptools.find_packages(os.path.join(BUILD_DIR, 'lib/python')),
     package_dir={"": os.path.join(BUILD_DIR, 'lib/python')},
@@ -128,5 +134,5 @@ setuptools.setup(
         "Environment :: Console",
         "Topic :: Multimedia :: Graphics",
     ],
-    python_requires='>=3.6, <3.8',
+    python_requires='>=3.6, <3.13',
 )

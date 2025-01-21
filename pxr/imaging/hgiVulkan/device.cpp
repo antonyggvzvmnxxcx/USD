@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hgiVulkan/capabilities.h"
 #include "pxr/imaging/hgiVulkan/commandQueue.h"
@@ -28,12 +11,10 @@
 #include "pxr/imaging/hgiVulkan/hgi.h"
 #include "pxr/imaging/hgiVulkan/instance.h"
 #include "pxr/imaging/hgiVulkan/pipelineCache.h"
+#include "pxr/imaging/hgiVulkan/vk_mem_alloc.h"
 
 #include "pxr/base/tf/diagnostic.h"
 
-#define VMA_IMPLEMENTATION
-    #include "pxr/imaging/hgiVulkan/vk_mem_alloc.h"
-#undef VMA_IMPLEMENTATION
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -73,7 +54,7 @@ _SupportsPresentation(
             DefaultVisual(dsp, DefaultScreen(dsp)));
         return vkGetPhysicalDeviceXlibPresentationSupportKHR(
                     physicalDevice, familyIndex, dsp, visualID);
-    #elif defined(VK_USE_PLATFORM_MACOS_MVK)
+    #elif defined(VK_USE_PLATFORM_METAL_EXT)
         // Presentation currently always supported on Metal / MoltenVk
         return true;
     #else
@@ -88,6 +69,7 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
     , _vmaAllocator(nullptr)
     , _commandQueue(nullptr)
     , _capabilities(nullptr)
+    , _pipelineCache(nullptr)
 {
     //
     // Determine physical device
@@ -96,11 +78,11 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
     const uint32_t maxDevices = 64;
     VkPhysicalDevice physicalDevices[maxDevices];
     uint32_t physicalDeviceCount = maxDevices;
-    TF_VERIFY(
+    HGIVULKAN_VERIFY_VK_RESULT(
         vkEnumeratePhysicalDevices(
             instance->GetVulkanInstance(),
             &physicalDeviceCount,
-            physicalDevices) == VK_SUCCESS
+            physicalDevices)
     );
 
     for (uint32_t i = 0; i < physicalDeviceCount; i++) {
@@ -113,7 +95,8 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
         if (familyIndex == VK_QUEUE_FAMILY_IGNORED) continue;
 
         // Assume we always want a presentation capable device for now.
-        if (!_SupportsPresentation(physicalDevices[i], familyIndex)) {
+        if (instance->HasPresentation() &&
+            !_SupportsPresentation(physicalDevices[i], familyIndex)) {
             continue;
         }
 
@@ -142,22 +125,22 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
     //
 
     uint32_t extensionCount = 0;
-    TF_VERIFY(
+    HGIVULKAN_VERIFY_VK_RESULT(
         vkEnumerateDeviceExtensionProperties(
             _vkPhysicalDevice,
             nullptr,
             &extensionCount,
-            nullptr) == VK_SUCCESS
+            nullptr)
     );
 
     _vkExtensions.resize(extensionCount);
 
-    TF_VERIFY(
+    HGIVULKAN_VERIFY_VK_RESULT(
         vkEnumerateDeviceExtensionProperties(
             _vkPhysicalDevice,
             nullptr,
             &extensionCount,
-            _vkExtensions.data()) == VK_SUCCESS
+            _vkExtensions.data())
     );
 
     //
@@ -172,15 +155,18 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
     queueInfo.queueCount = 1;
     queueInfo.pQueuePriorities = queuePriorities;
 
-    std::vector<const char*> extensions = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME
-    };
+    std::vector<const char*> extensions;
+
+    // Not available if we're surfaceless (minimal Lavapipe build for example).
+    if (IsSupportedExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+        extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    }
 
     // Allow certain buffers/images to have dedicated memory allocations to
     // improve performance on some GPUs.
     bool dedicatedAllocations = false;
-    if (_IsSupportedExtension(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME)
-        && _IsSupportedExtension(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME))
+    if (IsSupportedExtension(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME)
+        && IsSupportedExtension(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME))
     {
         dedicatedAllocations = true;
         extensions.push_back(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
@@ -188,8 +174,8 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
     }
 
     // Allow OpenGL interop - Note requires two extensions in HgiVulkanInstance.
-    if (_IsSupportedExtension(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME) &&
-        _IsSupportedExtension(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME))
+    if (IsSupportedExtension(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME) &&
+        IsSupportedExtension(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME))
     {
         extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME);
         extensions.push_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
@@ -197,13 +183,13 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
 
     // Memory budget query extension
     bool supportsMemExtension = false;
-    if (_IsSupportedExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
+    if (IsSupportedExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
         supportsMemExtension = true;
         extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     }
 
     // Resolve depth during render pass resolve extension
-    if (_IsSupportedExtension(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME)) {
+    if (IsSupportedExtension(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME)) {
         extensions.push_back(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
         extensions.push_back(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
         extensions.push_back(VK_KHR_MULTIVIEW_EXTENSION_NAME);
@@ -212,11 +198,31 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
 
     // Allows the same layout in structs between c++ and glsl (share structs).
     // This means instead of 'std430' you can now use 'scalar'.
-    if (_IsSupportedExtension(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME)) {
+    if (IsSupportedExtension(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME)) {
         extensions.push_back(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
     } else {
         TF_WARN("Unsupported VK_EXT_scalar_block_layout."
                 "Update gfx driver?");
+    }
+
+    // Allow conservative rasterization.
+    if (IsSupportedExtension(VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME)) {
+        extensions.push_back(VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
+    }
+
+    // Allow use of built-in shader barycentrics.
+    if (IsSupportedExtension(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME)) {
+        extensions.push_back(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
+    }
+
+    // Allow use of shader draw parameters.
+    if (IsSupportedExtension(VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME)) {
+        extensions.push_back(VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME);
+    }
+
+    // Allow use of vertex attribute divisors.
+    if (IsSupportedExtension(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME)) {
+        extensions.push_back(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
     }
 
     // This extension is needed to allow the viewport to be flipped in Y so that
@@ -225,11 +231,15 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
 
     // Enabling certain features may incure a performance hit
     // (e.g. robustBufferAccess), so only enable the features we will use.
+    VkPhysicalDeviceVulkan11Features vulkan11Features =
+        {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+    vulkan11Features.pNext = _capabilities->vkVulkan11Features.pNext;
+    vulkan11Features.shaderDrawParameters =
+        _capabilities->vkVulkan11Features.shaderDrawParameters;
+
     VkPhysicalDeviceFeatures2 features =
         {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-
-    //extension features
-    features.pNext = _capabilities->vkDeviceFeatures2.pNext;
+    features.pNext = &vulkan11Features;
 
     features.features.multiDrawIndirect =
         _capabilities->vkDeviceFeatures.multiDrawIndirect;
@@ -245,19 +255,27 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
         _capabilities->vkDeviceFeatures.shaderClipDistance;
     features.features.tessellationShader =
         _capabilities->vkDeviceFeatures.tessellationShader;
+    features.features.depthClamp =
+        _capabilities->vkDeviceFeatures.depthClamp;
+    features.features.shaderFloat64 =
+        _capabilities->vkDeviceFeatures.shaderFloat64;
+    features.features.fillModeNonSolid =
+        _capabilities->vkDeviceFeatures.fillModeNonSolid;
+    features.features.alphaToOne =
+        _capabilities->vkDeviceFeatures.alphaToOne;
 
     // Needed to write to storage buffers from vertex shader (eg. GPU culling).
     features.features.vertexPipelineStoresAndAtomics =
         _capabilities->vkDeviceFeatures.vertexPipelineStoresAndAtomics;
-
-    #if !defined(VK_USE_PLATFORM_MACOS_MVK)
-        // Needed for buffer address feature
-        features.features.shaderInt64 =
-            _capabilities->vkDeviceFeatures.shaderInt64;
-        // Needed for gl_primtiveID
-        features.features.geometryShader =
-            _capabilities->vkDeviceFeatures.geometryShader;
-    #endif
+    // Needed to write to storage buffers from fragment shader (eg. OIT).
+    features.features.fragmentStoresAndAtomics =
+        _capabilities->vkDeviceFeatures.fragmentStoresAndAtomics;
+    // Needed for buffer address feature
+    features.features.shaderInt64 =
+        _capabilities->vkDeviceFeatures.shaderInt64;
+    // Needed for gl_primtiveID
+    features.features.geometryShader =
+        _capabilities->vkDeviceFeatures.geometryShader;
 
     VkDeviceCreateInfo createInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     createInfo.queueCreateInfoCount = 1;
@@ -266,12 +284,12 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
     createInfo.enabledExtensionCount = (uint32_t) extensions.size();
     createInfo.pNext = &features;
 
-    TF_VERIFY(
+    HGIVULKAN_VERIFY_VK_RESULT(
         vkCreateDevice(
             _vkPhysicalDevice,
             &createInfo,
             HgiVulkanAllocator(),
-            &_vkDevice) == VK_SUCCESS
+            &_vkDevice)
     );
 
     HgiVulkanSetupDeviceDebug(instance, this);
@@ -299,8 +317,8 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
         allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     }
 
-    TF_VERIFY(
-        vmaCreateAllocator(&allocatorInfo, &_vmaAllocator) == VK_SUCCESS
+    HGIVULKAN_VERIFY_VK_RESULT(
+        vmaCreateAllocator(&allocatorInfo, &_vmaAllocator)
     );
 
     //
@@ -318,8 +336,12 @@ HgiVulkanDevice::HgiVulkanDevice(HgiVulkanInstance* instance)
 
 HgiVulkanDevice::~HgiVulkanDevice()
 {
-    // Make sure device is idle before destroying objects.
-    TF_VERIFY(vkDeviceWaitIdle(_vkDevice) == VK_SUCCESS);
+    if (_vkDevice) {
+        // Make sure device is idle before destroying objects.
+        HGIVULKAN_VERIFY_VK_RESULT(
+            vkDeviceWaitIdle(_vkDevice)
+        );
+    }
 
     delete _pipelineCache;
     delete _commandQueue;
@@ -373,13 +395,13 @@ HgiVulkanDevice::GetPipelineCache() const
 void
 HgiVulkanDevice::WaitForIdle()
 {
-    TF_VERIFY(
-        vkDeviceWaitIdle(_vkDevice) == VK_SUCCESS
+    HGIVULKAN_VERIFY_VK_RESULT(
+        vkDeviceWaitIdle(_vkDevice)
     );
 }
 
 bool
-HgiVulkanDevice::_IsSupportedExtension(const char* extensionName) const
+HgiVulkanDevice::IsSupportedExtension(const char* extensionName) const
 {
     for (VkExtensionProperties const& ext : _vkExtensions) {
         if (!strcmp(extensionName, ext.extensionName)) {

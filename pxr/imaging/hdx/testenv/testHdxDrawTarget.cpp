@@ -1,32 +1,11 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
-#include "pxr/imaging/garch/glApi.h"
-
-#include "pxr/imaging/glf/contextCaps.h"
 #include "pxr/imaging/glf/diagnostic.h"
-#include "pxr/imaging/glf/drawTarget.h"
 #include "pxr/imaging/glf/testGLContext.h"
 #include "pxr/base/gf/frustum.h"
 
@@ -66,20 +45,7 @@ int main(int argc, char *argv[])
 
     // prepare GL context
     GlfTestGLContext::RegisterGLContextCallbacks();
-    GarchGLApiLoad();
     GlfSharedGLContextScopeHolder sharedContext;
-    GlfContextCaps::InitInstance();
-
-    // prep draw target
-    GlfDrawTargetRefPtr drawTarget = GlfDrawTarget::New(GfVec2i(512, 512));
-    drawTarget->Bind();
-    drawTarget->AddAttachment("color", GL_RGBA, GL_FLOAT, GL_RGBA);
-    drawTarget->AddAttachment("depth", GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8,
-                              GL_DEPTH24_STENCIL8);
-    drawTarget->Unbind();
-
-    GLfloat clearColor[4] = { 0.1f, 0.1f, 0.1f, 1.0f };
-    GLfloat clearDepth[1] = { 1.0f };
 
     // Hgi and HdDriver should be constructed before HdEngine to ensure they
     // are destructed last. Hgi may be used during engine/delegate destruction.
@@ -90,11 +56,29 @@ int main(int argc, char *argv[])
     std::unique_ptr<HdRenderIndex> index(
         HdRenderIndex::New(&renderDelegate, {&driver}));
     TF_VERIFY(index);
-    std::unique_ptr<Hdx_UnitTestDelegate> delegate(
-                                         new Hdx_UnitTestDelegate(index.get()));
+    std::unique_ptr<Hdx_UnitTestDelegate> delegate =
+        std::make_unique<Hdx_UnitTestDelegate>(index.get());
     HdEngine engine;
 
     // --------------------------------------------------------------------
+
+    // AOVs
+    SdfPath colorBuffer("/aovColor");
+    {
+        HdRenderBufferDescriptor desc;
+        desc.dimensions = GfVec3i(512, 512, 1);
+        desc.format = HdFormatUNorm8Vec4;
+        desc.multiSampled = false;
+        delegate->AddRenderBuffer(colorBuffer, desc);
+    }
+    SdfPath depthBuffer("/aovDepth");
+    {
+        HdRenderBufferDescriptor desc;
+        desc.dimensions = GfVec3i(512, 512, 1);
+        desc.format = HdFormatFloat32;
+        desc.multiSampled = false;
+        delegate->AddRenderBuffer(depthBuffer, desc);
+    }
 
     // prep render task and drawtarget task
     SdfPath drawTargetTask("/drawTargetTask");
@@ -248,6 +232,21 @@ int main(int argc, char *argv[])
         VtValue vParam = delegate->GetTaskParam(renderSetupTask, HdTokens->params);
         HdxRenderTaskParams param = vParam.Get<HdxRenderTaskParams>();
         param.enableLighting = true;
+        param.framing = CameraUtilFraming(GfRect2i(GfVec2i(0,0), 512, 512));
+        param.depthFunc = HdCmpFuncLess;
+
+        HdRenderPassAovBinding colorBinding;
+        colorBinding.aovName = TfToken("color");
+        colorBinding.renderBufferId = colorBuffer;
+        colorBinding.clearValue = VtValue(
+            GfVec4f(0.1f, 0.1f, 0.1f, 1.0f));
+
+        HdRenderPassAovBinding depthBinding;
+        depthBinding.aovName = TfToken("depth");
+        depthBinding.renderBufferId = depthBuffer;
+        depthBinding.clearValue = VtValue(1.0f);
+        
+        param.aovBindings = { colorBinding, depthBinding };
         delegate->SetTaskParam(renderSetupTask, HdTokens->params, VtValue(param));
     }
 
@@ -262,16 +261,10 @@ int main(int argc, char *argv[])
 
     // --------------------------------------------------------------------
     // draw.
-    drawTarget->Bind();
-    glViewport(0, 0, 512, 512);
-    glEnable(GL_DEPTH_TEST);
-    glClearBufferfv(GL_COLOR, 0, clearColor);
-    glClearBufferfv(GL_DEPTH, 0, clearDepth);
 
     engine.Execute(index.get(), &tasks);
 
-    drawTarget->Unbind();
-    drawTarget->WriteToFile("color", "color1.png");
+    delegate->WriteRenderBufferToFile(colorBuffer, "color1.png");
 
     std::cout << "OK" << std::endl;
 }

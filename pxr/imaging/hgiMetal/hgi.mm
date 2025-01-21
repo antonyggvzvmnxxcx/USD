@@ -1,28 +1,12 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/base/arch/defines.h"
 
+#include "pxr/imaging/hgi/debugCodes.h"
 #include "pxr/imaging/hgiMetal/hgi.h"
 #include "pxr/imaging/hgiMetal/buffer.h"
 #include "pxr/imaging/hgiMetal/blitCmds.h"
@@ -53,43 +37,84 @@ TF_REGISTRY_FUNCTION(TfType)
     t.SetFactory<HgiFactory<HgiMetal>>();
 }
 
-static int _GetAPIVersion()
+struct HgiMetal::AutoReleasePool
 {
-    if (@available(macOS 10.15, ios 13.0, *)) {
-        return APIVersion_Metal3_0;
+#if !__has_feature(objc_arc)
+    NSAutoreleasePool* _pool = nil;
+    ~AutoReleasePool() {
+        Drain();
     }
-    if (@available(macOS 10.13, ios 11.0, *)) {
-        return APIVersion_Metal2_0;
+
+    void Init() {
+        _pool = [[NSAutoreleasePool alloc] init];
     }
-    
-    return APIVersion_Metal1_0;
-}
+
+    void Drain() {
+        if (_pool) {
+            [_pool drain];
+            _pool = nil;
+        }
+    }
+#else
+    void Init() {}
+    void Drain() {}
+#endif
+};
 
 HgiMetal::HgiMetal(id<MTLDevice> device)
 : _device(device)
 , _currentCmds(nullptr)
 , _frameDepth(0)
-, _apiVersion(_GetAPIVersion())
 , _workToFlush(false)
+, _pool(std::make_unique<AutoReleasePool>())
 {
     if (!_device) {
+#if defined(ARCH_OS_OSX)
         if( TfGetenvBool("HGIMETAL_USE_INTEGRATED_GPU", false)) {
-            _device = MTLCopyAllDevices()[1];
+            auto devices = MTLCopyAllDevices();
+            for (id<MTLDevice> d in devices) {
+                if ([d isLowPower]) {
+                    _device = d;
+                    break;
+                }
+            }
         }
-
+#endif
         if (!_device) {
             _device = MTLCreateSystemDefaultDevice();
         }
     }
-    
+
     static int const commandBufferPoolSize = 256;
+
     _commandQueue = [_device newCommandQueueWithMaxCommandBufferCount:
                      commandBufferPoolSize];
     _commandBuffer = [_commandQueue commandBuffer];
     [_commandBuffer retain];
 
-    _capabilities.reset(
-        new HgiMetalCapabilities(_device));
+    _capabilities.reset(new HgiMetalCapabilities(_device));
+    _indirectCommandEncoder.reset(new HgiMetalIndirectCommandEncoder(this));
+
+    MTLArgumentDescriptor *argumentDescBuffer =
+        [[MTLArgumentDescriptor alloc] init];
+    argumentDescBuffer.dataType = MTLDataTypePointer;
+    _argEncoderBuffer = [_device newArgumentEncoderWithArguments:
+                        @[argumentDescBuffer]];
+    [argumentDescBuffer release];
+
+    MTLArgumentDescriptor *argumentDescSampler =
+        [[MTLArgumentDescriptor alloc] init];
+    argumentDescSampler.dataType = MTLDataTypeSampler;
+    _argEncoderSampler = [_device newArgumentEncoderWithArguments:
+                         @[argumentDescSampler]];
+    [argumentDescSampler release];
+
+    MTLArgumentDescriptor *argumentDescTexture =
+        [[MTLArgumentDescriptor alloc] init];
+    argumentDescTexture.dataType = MTLDataTypeTexture;
+    _argEncoderTexture = [_device newArgumentEncoderWithArguments:
+                         @[argumentDescTexture]];
+    [argumentDescTexture release];
 
     HgiMetalSetupMetalDebug();
     
@@ -106,9 +131,35 @@ HgiMetal::HgiMetal(id<MTLDevice> device)
 HgiMetal::~HgiMetal()
 {
     [_commandBuffer commit];
+    [_commandBuffer waitUntilCompleted];
     [_commandBuffer release];
     [_captureScopeFullFrame release];
     [_commandQueue release];
+    [_argEncoderBuffer release];
+    [_argEncoderSampler release];
+    [_argEncoderTexture release];
+    
+    {
+        std::lock_guard<std::mutex> lock(_freeArgMutex);
+        while(_freeArgBuffers.size()) {
+            [_freeArgBuffers.top() release];
+            _freeArgBuffers.pop();
+        }
+    }
+}
+
+bool
+HgiMetal::IsBackendSupported() const
+{
+    // Want Metal 2.0 and Metal Shading Language 2.2 or higher.
+    if (@available(macOS 10.15, ios 13.0, *)) {
+        return true;
+    }
+
+    TF_DEBUG(HGI_DEBUG_IS_SUPPORTED).Msg(
+        "HgiMetal unsupported due to OS version\n");
+
+    return false;
 }
 
 id<MTLDevice>
@@ -121,23 +172,15 @@ HgiGraphicsCmdsUniquePtr
 HgiMetal::CreateGraphicsCmds(
     HgiGraphicsCmdsDesc const& desc)
 {
-    // XXX We should TF_CODING_ERROR here when there are no attachments, but
-    // during the Hgi transition we allow it to render to global gl framebuffer.
-    if (!desc.HasAttachments()) {
-        // TF_CODING_ERROR("Graphics encoder desc has no attachments");
-        return nullptr;
-    }
-
-    HgiMetalGraphicsCmds* encoder(
-        new HgiMetalGraphicsCmds(this, desc));
-
-    return HgiGraphicsCmdsUniquePtr(encoder);
+    HgiMetalGraphicsCmds* gfxCmds(new HgiMetalGraphicsCmds(this, desc));
+    return HgiGraphicsCmdsUniquePtr(gfxCmds);
 }
 
 HgiComputeCmdsUniquePtr
-HgiMetal::CreateComputeCmds()
+HgiMetal::CreateComputeCmds(
+    HgiComputeCmdsDesc const& desc)
 {
-    HgiComputeCmds* computeCmds = new HgiMetalComputeCmds(this);
+    HgiComputeCmds* computeCmds = new HgiMetalComputeCmds(this, desc);
     if (!_currentCmds) {
         _currentCmds = computeCmds;
     }
@@ -185,7 +228,16 @@ HgiMetal::DestroyTextureView(HgiTextureViewHandle* viewHandle)
 {
     // Trash the texture inside the view and invalidate the view handle.
     HgiTextureHandle texHandle = (*viewHandle)->GetViewTexture();
-    _TrashObject(&texHandle);
+
+    if (_workToFlush) {
+        [_commandBuffer
+         addCompletedHandler:[texHandle](id<MTLCommandBuffer> cmdBuffer)
+         {
+            delete texHandle.Get();
+        }];
+    } else {
+        _TrashObject(&texHandle);
+    }
     (*viewHandle)->SetViewTexture(HgiTextureHandle());
     delete viewHandle->Get();
     *viewHandle = HgiTextureViewHandle();
@@ -286,9 +338,23 @@ HgiMetal::GetAPIName() const {
     return HgiTokens->Metal;
 }
 
+HgiMetalCapabilities const*
+HgiMetal::GetCapabilities() const
+{
+    return _capabilities.get();
+}
+
+HgiMetalIndirectCommandEncoder*
+HgiMetal::GetIndirectCommandEncoder() const
+{
+    return _indirectCommandEncoder.get();
+}
+
 void
 HgiMetal::StartFrame()
 {
+    _pool->Init();
+
     if (_frameDepth++ == 0) {
         [_captureScopeFullFrame beginScope];
 
@@ -307,6 +373,8 @@ HgiMetal::EndFrame()
     if (--_frameDepth == 0) {
         [_captureScopeFullFrame endScope];
     }
+
+    _pool->Drain();
 }
 
 id<MTLCommandQueue>
@@ -316,10 +384,10 @@ HgiMetal::GetQueue() const
 }
 
 id<MTLCommandBuffer>
-HgiMetal::GetPrimaryCommandBuffer(bool flush)
+HgiMetal::GetPrimaryCommandBuffer(HgiCmds *requester, bool flush)
 {
     if (_workToFlush) {
-        if (_currentCmds) {
+        if (_currentCmds && requester != _currentCmds) {
             return nil;
         }
     }
@@ -337,21 +405,22 @@ HgiMetal::GetSecondaryCommandBuffer()
     return commandBuffer;
 }
 
+void
+HgiMetal::SetHasWork()
+{
+    _workToFlush = true;
+}
+
 int
 HgiMetal::GetAPIVersion() const
 {
-    return _apiVersion;
-}
-
-HgiMetalCapabilities const &
-HgiMetal::GetCapabilities() const
-{
-    return *_capabilities;
+    return GetCapabilities()->GetAPIVersion();
 }
 
 void
-HgiMetal::CommitPrimaryCommandBuffer(CommitCommandBufferWaitType waitType,
-                              bool forceNewBuffer)
+HgiMetal::CommitPrimaryCommandBuffer(
+    CommitCommandBufferWaitType waitType,
+    bool forceNewBuffer)
 {
     if (!_workToFlush && !forceNewBuffer) {
         return;
@@ -370,6 +439,22 @@ HgiMetal::CommitSecondaryCommandBuffer(
     id<MTLCommandBuffer> commandBuffer,
     CommitCommandBufferWaitType waitType)
 {
+    // If there are active arg buffers on this command buffer, add a callback
+    // to release them back to the free pool.
+    if (!_activeArgBuffers.empty()) {
+        _ActiveArgBuffers argBuffersToFree;
+        argBuffersToFree.swap(_activeArgBuffers);
+
+        [_commandBuffer
+         addCompletedHandler:^(id<MTLCommandBuffer> cmdBuffer)
+         {
+            std::lock_guard<std::mutex> lock(_freeArgMutex);
+            for (id<MTLBuffer> argBuffer : argBuffersToFree) {
+                _freeArgBuffers.push(argBuffer);
+            }
+         }];
+    }
+
     [commandBuffer commit];
     if (waitType == CommitCommandBuffer_WaitUntilScheduled) {
         [commandBuffer waitUntilScheduled];
@@ -385,13 +470,60 @@ HgiMetal::ReleaseSecondaryCommandBuffer(id<MTLCommandBuffer> commandBuffer)
     [commandBuffer release];
 }
 
+id<MTLArgumentEncoder>
+HgiMetal::GetBufferArgumentEncoder() const
+{
+    return _argEncoderBuffer;
+}
+
+id<MTLArgumentEncoder>
+HgiMetal::GetSamplerArgumentEncoder() const
+{
+    return _argEncoderSampler;
+}
+
+id<MTLArgumentEncoder>
+HgiMetal::GetTextureArgumentEncoder() const
+{
+    return _argEncoderTexture;
+}
+
+id<MTLBuffer>
+HgiMetal::GetArgBuffer()
+{
+    MTLResourceOptions options = _capabilities->defaultStorageMode;
+    id<MTLBuffer> buffer;
+
+    {
+        std::lock_guard<std::mutex> lock(_freeArgMutex);
+        if (_freeArgBuffers.empty()) {
+            buffer = [_device newBufferWithLength:HgiMetalArgumentOffsetSize
+                                          options:options];
+        }
+        else {
+            buffer = _freeArgBuffers.top();
+            _freeArgBuffers.pop();
+            memset(buffer.contents, 0x00, buffer.length);
+        }
+    }
+
+    if (!_commandBuffer) {
+        TF_CODING_ERROR("_commandBuffer is null");
+    }
+
+    // Keep track of active arg buffers to reuse after command buffer commit.
+    _activeArgBuffers.push_back(buffer);
+
+    return buffer;
+}
+
 bool
 HgiMetal::_SubmitCmds(HgiCmds* cmds, HgiSubmitWaitType wait)
 {
     TRACE_FUNCTION();
 
     if (cmds) {
-        _workToFlush = Hgi::_SubmitCmds(cmds, wait);
+        Hgi::_SubmitCmds(cmds, wait);
         if (cmds == _currentCmds) {
             _currentCmds = nullptr;
         }

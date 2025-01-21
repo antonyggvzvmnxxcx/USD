@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_USD_UTILS_PIPELINE_H
 #define PXR_USD_USD_UTILS_PIPELINE_H
@@ -60,33 +43,61 @@ USDUTILS_API
 TfToken UsdUtilsGetModelNameFromRootLayer(const SdfLayerHandle& rootLayer);
 
 /// Certain variant sets can be registered with the system.
-/// \sa UsdUtilsRegisteredVariantSet
 ///
-
 /// Returns the set of UsdUtilsRegisteredVariantSet objects that are registered
 /// with the pipeline. 
 ///
-/// This list will be empty until one or more plugInfo.json files
+/// Variant sets can be registered through direct enumeration inside a
+/// `plugInfo.json`, or via a plugin for situations that require dynamic
+/// configuration at runtime.
+///
+/// This list will be empty until one or more `plugInfo.json` files
 /// discoverable by your USD installation contain an entry in the
 /// UsdUtilsPipeline group like the following:
 /// \code{json}
 ///    "UsdUtilsPipeline": {
-///        "RegisteredVariantSets": [
+///        "RegisteredVariantSets": {
 ///            "modelingVariant": {
-///                "selectionExportPolicy": {
-///                    "always"
-///                }
+///                "selectionExportPolicy": "always"
 ///            },
 ///            "standin": {
-///                "selectionExportPolicy": {
-///                    "never"
-///                }
+///                "selectionExportPolicy": "never"
 ///            }
-///        ]
-///    }
+///        }
+///    }    
 /// \endcode
+///
+/// After the above variantSets are registered, this will then load any plugin 
+/// that has a `plugInfo.json` with:
+///
+/// \code{json}
+///     "UsdUtilsPipeline": {
+///         "RegistersVariantSets": true
+///     }
+/// \endcode
+///
+/// This plugin should then have code that registers code to run for
+/// `UsdUtilsRegisteredVariantSet`:
+/// \code{cpp}
+/// TF_REGISTRY_FUNCTION(UsdUtilsRegisteredVariantSet) {
+///   std::string variantSetName = ...;
+///   UsdUtilsRegisteredVariantSet::SelectionExportPolicy exportPolicy = ...;
+///   UsdUtilsRegisterVariantSet(variantSetName, exportPolicy);
+/// }
+/// \endcode
+///
+/// \sa UsdUtilsRegisterVariantSet 
 USDUTILS_API
 const std::set<UsdUtilsRegisteredVariantSet>& UsdUtilsGetRegisteredVariantSets();
+
+/// Registers \p variantSetName with \p selectionExportPolicy.
+///
+/// \sa UsdUtilsGetRegisteredVariantSets
+USDUTILS_API
+void UsdUtilsRegisterVariantSet(
+    const std::string& variantSetName,
+    const UsdUtilsRegisteredVariantSet::SelectionExportPolicy&
+        selectionExportPolicy);
 
 /// If a valid UsdPrim already exists at \p path on the USD stage \p stage, 
 /// returns it. It not, it checks to see if the path belongs to a prim 

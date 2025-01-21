@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -45,16 +28,15 @@
 #include "pxr/usd/sdf/layer.h"
 #include "pxr/usd/sdf/schema.h"
 #include "pxr/base/trace/trace.h"
-#include "pxr/base/work/arenaDispatcher.h"
+#include "pxr/base/work/dispatcher.h"
 #include "pxr/base/work/loops.h"
 #include "pxr/base/work/utils.h"
+#include "pxr/base/work/withScopedParallelism.h"
 #include "pxr/base/tf/enum.h"
 #include "pxr/base/tf/envSetting.h"
 #include "pxr/base/tf/registryManager.h"
 
-#include <tbb/atomic.h>
 #include <tbb/concurrent_queue.h>
-#include <tbb/concurrent_vector.h>
 #include <tbb/spin_rw_mutex.h>
 
 #include <algorithm>
@@ -114,7 +96,8 @@ PcpCache::PcpCache(
     _layerStackIdentifier(layerStackIdentifier),
     _usd(usd),
     _fileFormatTarget(fileFormatTarget),
-    _layerStackCache(Pcp_LayerStackRegistry::New(_fileFormatTarget, _usd)),
+    _layerStackCache(Pcp_LayerStackRegistry::New(
+        _layerStackIdentifier, _fileFormatTarget, _usd)),
     _primDependencies(new Pcp_Dependencies())
 {
     // Do nothing
@@ -137,20 +120,19 @@ PcpCache::~PcpCache()
 
     // Tear down some of our datastructures in parallel, since it can take quite
     // a bit of time.
-    WorkArenaDispatcher wd;
-
-    wd.Run([this]() { _rootLayer.Reset(); });
-    wd.Run([this]() { _sessionLayer.Reset(); });
-    wd.Run([this]() { TfReset(_includedPayloads); });
-    wd.Run([this]() { TfReset(_variantFallbackMap); });
-    wd.Run([this]() { _primIndexCache.ClearInParallel(); });
-    wd.Run([this]() { TfReset(_propertyIndexCache); });
-
-    // Wait, since _primDependencies cannot be destroyed concurrently
-    // with the prim indexes, since they both hold references to
-    // layer stacks and the layer stack registry is not currently
-    // prepared to handle concurrent expiry of layer stacks.
-    wd.Wait();
+    WorkWithScopedParallelism([this]() {
+            WorkDispatcher wd;
+            wd.Run([this]() { _rootLayer.Reset(); });
+            wd.Run([this]() { _sessionLayer.Reset(); });
+            wd.Run([this]() { TfReset(_includedPayloads); });
+            wd.Run([this]() { TfReset(_variantFallbackMap); });
+            wd.Run([this]() { _primIndexCache.ClearInParallel(); });
+            wd.Run([this]() { TfReset(_propertyIndexCache); });
+            // Wait, since _primDependencies cannot be destroyed concurrently
+            // with the prim indexes, since they both hold references to
+            // layer stacks and the layer stack registry is not currently
+            // prepared to handle concurrent expiry of layer stacks.
+        });
 
     _primDependencies.reset();
     _layerStackCache.Reset();
@@ -171,10 +153,22 @@ PcpCache::GetLayerStack() const
     return _layerStack;
 }
 
+bool
+PcpCache::HasRootLayerStack(PcpLayerStackPtr const &layerStack) const
+{
+    return get_pointer(layerStack) == get_pointer(_layerStack);
+}
+
 PcpLayerStackPtr
 PcpCache::FindLayerStack(const PcpLayerStackIdentifier &id) const
 {
     return _layerStackCache->Find(id);
+}
+
+bool
+PcpCache::UsesLayerStack(const PcpLayerStackPtr &layerStack) const
+{
+    return _layerStackCache->Contains(layerStack);
 }
 
 const PcpLayerStackPtrVector&
@@ -267,6 +261,8 @@ PcpCache::RequestLayerMuting(const std::vector<std::string>& layersToMute,
                              std::vector<std::string>* newLayersMuted,
                              std::vector<std::string>* newLayersUnmuted)
 {
+    TRACE_FUNCTION();
+
     ArResolverContextBinder binder(_layerStackIdentifier.pathResolverContext);
 
     std::vector<std::string> finalLayersToMute;
@@ -305,15 +301,8 @@ PcpCache::RequestLayerMuting(const std::vector<std::string>& layersToMute,
 
     Pcp_CacheChangesHelper cacheChanges(changes);
 
-    // Register changes for all computed layer stacks that are
-    // affected by the newly muted/unmuted layers.
-    for (const auto& layerToMute : finalLayersToMute) {
-        cacheChanges->DidMuteLayer(this, layerToMute);
-    }
-
-    for (const auto& layerToUnmute : finalLayersToUnmute) {
-        cacheChanges->DidUnmuteLayer(this, layerToUnmute);
-    }
+    cacheChanges->DidMuteAndUnmuteLayers(
+        this, finalLayersToMute, finalLayersToUnmute);
 
     // The above won't handle cases where we've unmuted the root layer
     // of a reference or payload layer stack, since prim indexing will skip
@@ -339,7 +328,7 @@ PcpCache::RequestLayerMuting(const std::vector<std::string>& layersToMute,
                     typedError->resolvedAssetPath) != finalLayersToUnmute.end();
                 if (assetWasUnmuted) {
                     cacheChanges->DidMaybeFixAsset(
-                        this, typedError->site, typedError->layer, 
+                        this, typedError->site, typedError->sourceLayer, 
                         typedError->resolvedAssetPath);
                 }
             }
@@ -425,14 +414,26 @@ PcpCache::ComputeRelationshipTargetPaths(const SdfPath & relPath,
         return;
     }
 
-    PcpTargetIndex targetIndex;
-    PcpBuildFilteredTargetIndex( PcpSite(GetLayerStackIdentifier(), relPath),
-                                 ComputePropertyIndex(relPath, allErrors),
-                                 SdfSpecTypeRelationship,
-                                 localOnly, stopProperty, includeStopProperty,
-                                 this, &targetIndex, deletedPaths,
-                                 allErrors );
-    paths->swap(targetIndex.paths);
+    auto computeTargets = [&](const PcpPropertyIndex &propIndex) {
+        PcpTargetIndex targetIndex;
+        PcpBuildFilteredTargetIndex( PcpSite(GetLayerStackIdentifier(), relPath),
+                                    propIndex,
+                                    SdfSpecTypeRelationship,
+                                    localOnly, stopProperty, includeStopProperty,
+                                    this, &targetIndex, deletedPaths,
+                                    allErrors );
+        paths->swap(targetIndex.paths);
+    };
+
+    if (IsUsd()) {
+        // USD does not cache property indexes, but we can still build one
+        // to get the relationship targets.
+        PcpPropertyIndex propIndex;
+        PcpBuildPropertyIndex(relPath, this, &propIndex, allErrors);
+        computeTargets(propIndex);
+    } else {
+        computeTargets(ComputePropertyIndex(relPath, allErrors));
+    }
 }
 
 void
@@ -452,14 +453,26 @@ PcpCache::ComputeAttributeConnectionPaths(const SdfPath & attrPath,
         return;
     }
 
-    PcpTargetIndex targetIndex;
-    PcpBuildFilteredTargetIndex( PcpSite(GetLayerStackIdentifier(), attrPath),
-                                 ComputePropertyIndex(attrPath, allErrors),
-                                 SdfSpecTypeAttribute,
-                                 localOnly, stopProperty, includeStopProperty,
-                                 this, &targetIndex,  deletedPaths,
-                                 allErrors );
-    paths->swap(targetIndex.paths);
+    auto computeTargets = [&](const PcpPropertyIndex &propIndex) {
+        PcpTargetIndex targetIndex;
+        PcpBuildFilteredTargetIndex( PcpSite(GetLayerStackIdentifier(), attrPath),
+                                    propIndex,
+                                    SdfSpecTypeAttribute,
+                                    localOnly, stopProperty, includeStopProperty,
+                                    this, &targetIndex,  deletedPaths,
+                                    allErrors );
+        paths->swap(targetIndex.paths);
+    };
+
+    if (IsUsd()) {
+        // USD does not cache property indexes, but we can still build one
+        // to get the attribute connections.
+        PcpPropertyIndex propIndex;
+        PcpBuildPropertyIndex(attrPath, this, &propIndex, allErrors);
+        computeTargets(propIndex);
+    } else {
+        computeTargets(ComputePropertyIndex(attrPath, allErrors));
+    }
 }
 
 const PcpPropertyIndex *
@@ -480,6 +493,12 @@ PcpCache::GetUsedLayers() const
         rval.insert(localLayers.begin(), localLayers.end());
     }
     return rval;
+}
+
+size_t
+PcpCache::GetUsedLayersRevision() const
+{
+    return _primDependencies->GetLayerStacksRevision();
 }
 
 SdfLayerHandleSet
@@ -519,6 +538,85 @@ PcpCache::FindSiteDependencies(
     }
     return result;
 }
+
+namespace
+{
+
+template <class CacheFilterFn>
+static void
+_ProcessDependentNode(
+    const PcpNodeRef& node, const SdfPath& localSitePath, 
+    const CacheFilterFn& cacheFilterFn,
+    PcpDependencyVector* deps)
+{
+    // Now that we have found a dependency on depPrimSitePath,
+    // use path translation to get the corresponding depIndexPath.
+    SdfPath depIndexPath;
+    bool valid = false;
+    if (node.GetArcType() == PcpArcTypeRelocate) {
+        // Relocates require special handling.  Because
+        // a relocate node's map function is always
+        // identity, we must do our own prefix replacement
+        // to step out of the relocate, then continue
+        // with regular path translation. We must step out of all 
+        // consecutive relocate nodes since they all only hold the 
+        // identity mapping. Once we hit a non-relocates node, any
+        // relocates above that will be accounted for in the map to 
+        // root function
+        PcpNodeRef parent = node.GetParentNode();
+        while (parent.GetArcType() == PcpArcTypeRelocate) {
+            parent = parent.GetParentNode();
+        }
+        depIndexPath = PcpTranslatePathFromNodeToRoot(
+            parent,
+            localSitePath.ReplacePrefix( node.GetPath(),
+                                         parent.GetPath() ),
+            &valid );
+    } else {
+        depIndexPath = PcpTranslatePathFromNodeToRoot(
+            node, localSitePath, &valid);
+    }
+
+    if (valid && TF_VERIFY(!depIndexPath.IsEmpty()) &&
+        cacheFilterFn(depIndexPath)) {
+        deps->push_back(PcpDependency{
+            depIndexPath, localSitePath,
+            node.GetMapToRoot().Evaluate() });
+    }
+}
+
+template <class CacheFilterFn>
+static void
+_ProcessCulledDependency(
+    const PcpCulledDependency& dep, const SdfPath& localSitePath,
+    const CacheFilterFn& cacheFilterFn,
+    PcpDependencyVector* deps)
+{
+    // This function mirrors _ProcessDependentNode above, see comments
+    // in that function for more details.
+    SdfPath depIndexPath;
+    bool valid = false;
+    if (!dep.unrelocatedSitePath.IsEmpty()) {
+        depIndexPath = PcpTranslatePathFromNodeToRootUsingFunction(
+            dep.mapToRoot, 
+            localSitePath.ReplacePrefix(dep.sitePath,
+                                        dep.unrelocatedSitePath),
+            &valid);
+    }
+    else {
+        depIndexPath = PcpTranslatePathFromNodeToRootUsingFunction(
+            dep.mapToRoot, localSitePath, &valid);
+    }
+
+    if (valid && TF_VERIFY(!depIndexPath.IsEmpty()) &&
+        cacheFilterFn(depIndexPath)) {
+        deps->push_back(PcpDependency{
+            depIndexPath, localSitePath,
+            dep.mapToRoot });
+    }
+}
+
+} // end anonymous namespace
 
 PcpDependencyVector
 PcpCache::FindSiteDependencies(
@@ -642,35 +740,24 @@ PcpCache::FindSiteDependencies(
                 }
             }
 
-            // Now that we have found a dependency on depPrimSitePath,
-            // use path translation to get the corresponding depIndexPath.
-            SdfPath depIndexPath;
-            bool valid = false;
-            if (node.GetArcType() == PcpArcTypeRelocate) {
-                // Relocates require special handling.  Because
-                // a relocate node's map function is always
-                // identity, we must do our own prefix replacement
-                // to step out of the relocate, then continue
-                // with regular path translation.
-                const PcpNodeRef parent = node.GetParentNode(); 
-                depIndexPath = PcpTranslatePathFromNodeToRoot(
-                    parent,
-                    localSitePath.ReplacePrefix( node.GetPath(),
-                                                 parent.GetPath() ),
-                    &valid );
-            } else {
-                depIndexPath = PcpTranslatePathFromNodeToRoot(
-                    node, localSitePath, &valid);
-            }
-            if (valid && TF_VERIFY(!depIndexPath.IsEmpty()) &&
-                cacheFilterFn(depIndexPath)) {
-                deps.push_back(PcpDependency{
-                    depIndexPath, localSitePath,
-                    node.GetMapToRoot().Evaluate() });
-            }
+            _ProcessDependentNode(node, localSitePath, cacheFilterFn, &deps);
         };
+
+        auto visitCulledDepFn = [&](const SdfPath &depPrimIndexPath,
+                                    const PcpCulledDependency &dep)
+        {
+            if (localMask != PcpDependencyTypeAnyIncludingVirtual) {
+                PcpDependencyFlags flags = dep.flags;
+                if ((flags & localMask) != flags) { 
+                    return;
+                }
+            }
+
+            _ProcessCulledDependency(dep, localSitePath, cacheFilterFn, &deps);
+        };
+
         Pcp_ForEachDependentNode(depPrimSitePath, siteLayerStack,
-                                 depPrimIndexPath, *this, visitNodeFn);
+            depPrimIndexPath, *this, visitNodeFn, visitCulledDepFn);
     };
     _primDependencies->ForEachDependencyOnSite(
         siteLayerStack, *sitePrimPath,
@@ -855,9 +942,17 @@ PcpCache::IsInvalidAssetPath(const std::string& resolvedAssetPath) const
 }
 
 bool 
-PcpCache::HasAnyDynamicFileFormatArgumentDependencies() const
+PcpCache::HasAnyDynamicFileFormatArgumentFieldDependencies() const
 {
-    return _primDependencies->HasAnyDynamicFileFormatArgumentDependencies();
+    return 
+        _primDependencies->HasAnyDynamicFileFormatArgumentFieldDependencies();
+}
+
+bool 
+PcpCache::HasAnyDynamicFileFormatArgumentAttributeDependencies() const
+{
+    return 
+        _primDependencies->HasAnyDynamicFileFormatArgumentAttributeDependencies();
 }
 
 bool 
@@ -867,12 +962,37 @@ PcpCache::IsPossibleDynamicFileFormatArgumentField(
     return _primDependencies->IsPossibleDynamicFileFormatArgumentField(field);
 }
 
+bool 
+PcpCache::IsPossibleDynamicFileFormatArgumentAttribute(
+    const TfToken &attributeName) const
+{
+    return _primDependencies->IsPossibleDynamicFileFormatArgumentAttribute(
+        attributeName);
+}
+
 const PcpDynamicFileFormatDependencyData &
 PcpCache::GetDynamicFileFormatArgumentDependencyData(
     const SdfPath &primIndexPath) const
 {
     return _primDependencies->GetDynamicFileFormatArgumentDependencyData(
         primIndexPath);
+}
+
+const SdfPathVector&
+PcpCache::GetPrimsUsingExpressionVariablesFromLayerStack(
+    const PcpLayerStackPtr &layerStack) const
+{
+    return _primDependencies->GetPrimsUsingExpressionVariablesFromLayerStack(
+        layerStack);
+}
+
+const std::unordered_set<std::string>& 
+PcpCache::GetExpressionVariablesFromLayerStackUsedByPrim(
+    const SdfPath &primIndexPath,
+    const PcpLayerStackPtr &layerStack) const
+{
+    return _primDependencies->GetExpressionVariablesFromLayerStackUsedByPrim(
+        primIndexPath, layerStack);
 }
 
 void
@@ -888,6 +1008,11 @@ PcpCache::Apply(const PcpCacheChanges& changes, PcpLifeboat* lifeboat)
         _primDependencies->RemoveAll(lifeboat);
     }
     else {
+        // If layers may have changed, inform _primDependencies.
+        if (changes.didMaybeChangeLayers) {
+            _primDependencies->LayerStacksChanged();
+        }
+
         // Blow prim and property indexes due to prim graph changes.
         TF_FOR_ALL(i, changes.didChangeSignificantly) {
             const SdfPath& path = *i;
@@ -906,13 +1031,14 @@ PcpCache::Apply(const PcpCacheChanges& changes, PcpLifeboat* lifeboat)
         }
 
         // Blow property stacks and update spec dependencies on prims.
-        auto updateSpecStacks = [this, &lifeboat](const SdfPath& path) {
+        auto updateSpecStacks = [this, &lifeboat, &changes](const SdfPath& path) {
             if (path.IsAbsoluteRootOrPrimPath()) {
                 // We've possibly changed the prim spec stack.  Note that
                 // we may have blown the prim index so check that it exists.
                 if (PcpPrimIndex* primIndex = _GetPrimIndex(path)) {
                     Pcp_RescanForSpecs(primIndex, IsUsd(),
-                                       /* updateHasSpecs */ true);
+                                       /* updateHasSpecs */ true,
+                                       &changes);
 
                     // If there are no specs left then we can discard the
                     // prim index.
@@ -932,7 +1058,7 @@ PcpCache::Apply(const PcpCacheChanges& changes, PcpLifeboat* lifeboat)
                 _RemovePropertyCache(path, lifeboat);
             }
             else if (path.IsTargetPath()) {
-                // We have potentially aded or removed a relationship target
+                // We have potentially added or removed a relationship target
                 // spec.  This invalidates the property stack for any
                 // relational attributes for this target.
                 _RemovePropertyCaches(path, lifeboat);
@@ -945,6 +1071,19 @@ PcpCache::Apply(const PcpCacheChanges& changes, PcpLifeboat* lifeboat)
 
         TF_FOR_ALL(i, changes._didChangeSpecsInternal) {
             updateSpecStacks(*i);
+        }
+
+        // Ensure that all relevant paths that have been affected by
+        // sublayer operations have their prim stacks updated
+        TF_FOR_ALL(i, changes._didChangePrimSpecsAndChildrenInternal) {
+            auto range = _primIndexCache.FindSubtreeRange(*i);
+            for (auto i = range.first; i != range.second; ++i) {
+                if (PcpPrimIndex* primIndex = _GetPrimIndex(i->first)) {
+                    Pcp_RescanForSpecs(primIndex, IsUsd(),
+                                       /* updateHasSpecs */ true,
+                                       &changes);
+                }
+            }
         }
 
         // Fix the keys for any prim or property under any of the renamed
@@ -1047,7 +1186,7 @@ PcpCache::Reload(PcpChanges* changes)
                     std::dynamic_pointer_cast<PcpErrorInvalidAssetPath>(e)) {
                     changes->DidMaybeFixAsset(this,
                                               typedErr->site,
-                                              typedErr->layer,
+                                              typedErr->sourceLayer,
                                               typedErr->resolvedAssetPath);
                 }
             }
@@ -1086,7 +1225,7 @@ PcpCache::ReloadReferences(PcpChanges* changes, const SdfPath& primPath)
                     std::dynamic_pointer_cast<PcpErrorInvalidAssetPath>(e))
                 {
                     changes->DidMaybeFixAsset(this, typedErr->site,
-                                              typedErr->layer,
+                                              typedErr->sourceLayer,
                                               typedErr->resolvedAssetPath);
                 }
             }
@@ -1113,7 +1252,7 @@ PcpCache::ReloadReferences(PcpChanges* changes, const SdfPath& primPath)
     // local layers.
     SdfLayerHandleSet layersToReload;
     for (const PcpLayerStackPtr& layerStack: layerStacksAtOrUnderPrim) {
-        for (const SdfLayerHandle& layer: layerStack->GetLayers()) {
+        for (const auto& layer: layerStack->GetLayers()) {
             if (!_layerStack->HasLayer(layer)) {
                 layersToReload.insert(layer);
             }
@@ -1176,6 +1315,25 @@ PcpCache::_RemovePropertyCaches(const SdfPath& root, PcpLifeboat* lifeboat)
 ////////////////////////////////////////////////////////////////////////
 // Private helper methods.
 
+void
+PcpCache::_ForEachLayerStack(
+    const TfFunctionRef<void(const PcpLayerStackPtr&)>& fn) const
+{
+    _layerStackCache->ForEachLayerStack(fn);
+}
+
+void
+PcpCache::_ForEachPrimIndex(
+    const TfFunctionRef<void(const PcpPrimIndex&)>& fn) const
+{
+    for (const auto& entry : _primIndexCache) {
+        const PcpPrimIndex& primIndex = entry.second;
+        if (primIndex.IsValid()) {
+            fn(primIndex);
+        }
+    }
+}
+
 PcpPrimIndex*
 PcpCache::_GetPrimIndex(const SdfPath& path)
 {
@@ -1210,8 +1368,9 @@ struct PcpCache::_ParallelIndexer
                               const PcpLayerStackPtr &layerStack)
         : _cache(cache)
         , _layerStack(layerStack)
-        , _resolver(ArGetResolver())
-        {}
+        , _resolver(ArGetResolver()) {
+        _isPublishing = false;
+    }
 
     void Prepare(_UntypedIndexingChildrenPredicate childrenPred,
                  PcpPrimIndexInputs baseInputs,
@@ -1234,15 +1393,17 @@ struct PcpCache::_ParallelIndexer
 
     // Run the added work and wait for it to complete.
     void RunAndWait() {
-        {
-            Pcp_Dependencies::ConcurrentPopulationContext
-                populationContext(*_cache->_primDependencies);
-            TF_FOR_ALL(i, _toCompute) {
-                _dispatcher.Run(&This::_ComputeIndex, this, i->first, i->second,
-                                /*checkCache=*/true);
-            }
-            _dispatcher.Wait();
-        }
+        WorkWithScopedParallelism([this]() {
+                Pcp_Dependencies::ConcurrentPopulationContext
+                    populationContext(*_cache->_primDependencies);
+                TF_FOR_ALL(i, _toCompute) {
+                    _dispatcher.Run(&This::_ComputeIndex, this,
+                                    i->first, i->second, /*checkCache=*/true);
+                }
+                _dispatcher.Wait();
+                // Publish any remaining outputs.
+                _PublishOutputs();
+            });
 
         // Clear out results & working space.  If stuff is huge, dump it
         // asynchronously, otherwise clear in place to possibly reuse heap for
@@ -1302,8 +1463,19 @@ struct PcpCache::_ParallelIndexer
 
         if (!index) {
             // We didn't find an index in the cache, so we must compute one.
+            
+            // The indexing function produces these outputs (which includes the
+            // resulting prim index).  However, we require a stable memory
+            // address where the final prim index will reside so we can spawn
+            // child tasks that reliably refer to the index as its parent.  So
+            // below, after we've done the indexing, we'll move the index to a
+            // path table node that we will eventually store in the PcpCache's
+            // _primIndexCache.  This means that the following code cannot use
+            // outputs.primIndex reliably after this move has occurred.  Instead
+            // the following code should use the 'index' local variable.
             PcpPrimIndexOutputs outputs;
-
+            _PrimIndexCache::NodeHandle outputIndexNode;
+            
             // Establish inputs.
             PcpPrimIndexInputs inputs = _baseInputs;
             inputs.parentIndex = parentIndex;
@@ -1336,21 +1508,47 @@ struct PcpCache::_ParallelIndexer
                     _cache->_includedPayloads.erase(path);
                 }
             }
-            
-            // Publish to cache.
-            {
-                tbb::spin_rw_mutex::scoped_lock lock(_primIndexCacheMutex);
-                PcpPrimIndex *mutableIndex = &_cache->_primIndexCache[path];
-                index = mutableIndex;
-                TF_VERIFY(!index->IsValid(),
-                          "PrimIndex for %s already exists in cache",
-                          index->GetPath().GetText());
-                mutableIndex->Swap(outputs.primIndex);
-                lock.release();
-                _cache->_primDependencies->Add(
-                    *index, std::move(outputs.dynamicFileFormatDependency));
+
+            // The following code uses the computed index, but we store it in a
+            // path table node handle that we'll put the cache later.  This way
+            // the memory address stays stable for child indexing tasks, etc.
+            // Note that this means the following code CANNOT use
+            // 'outputs.index', as it is moved-from.  It must use 'index'
+            // instead.
+            outputIndexNode = _PrimIndexCache::NodeHandle::New(
+                path, std::move(outputs.primIndex));
+            index = &outputIndexNode.GetMapped();
+        
+            // Arrange to publish to cache.
+
+            // If we are still checking the cache but we had to compute an
+            // index, it means the one in the cache for this path was invalid.
+            // In that case, we need to replace the invalid one in the cache,
+            // and fetch a new index pointer synchronously.
+            if (checkCache) {
+                index = _PublishOneOutput(
+                    {std::move(outputIndexNode), std::move(outputs)},
+                    /*allowInvalid=*/true);
             }
-        }
+            // Otherwise arrange to publish, but only do so if another thread
+            // isn't already working on it.
+            else {
+                // Add this to the publishing queue.
+                _toPublish.push(
+                    {std::move(outputIndexNode), std::move(outputs)});
+                // If another thread is already publishing, just let it handle
+                // the job.  Otherwise try to take the publishing state from
+                // false -> true, and if we do so, we'll do the publishing.
+                bool isPublishing =
+                    _isPublishing.load(std::memory_order_relaxed);
+                if (!isPublishing &&
+                    _isPublishing.compare_exchange_strong(isPublishing, true)) {
+                    // We took _isPublishing to true, so publish.
+                    _PublishOutputs();
+                    _isPublishing = false;
+                }
+            }
+        }   
 
         // Invoke the client's predicate to see if we should do children.
         TfTokenVector namesToCompose;
@@ -1366,13 +1564,49 @@ struct PcpCache::_ParallelIndexer
                     continue;
                 }
 
-                _dispatcher.Run(
-                    &This::_ComputeIndex, this, index,
-                    path.AppendChild(name), checkCache);
+                _dispatcher.Run([this, index, path, name, checkCache]() {
+                    _ComputeIndex(index, path.AppendChild(name), checkCache);
+                });
             }
         }
+        
     }
 
+    PcpPrimIndex const *
+    _PublishOneOutput(std::pair<_PrimIndexCache::NodeHandle,
+                      PcpPrimIndexOutputs> &&outputItem,
+                      bool allowInvalid) {
+        tbb::spin_rw_mutex::scoped_lock lock(_primIndexCacheMutex);
+        auto iresult = _cache->_primIndexCache.insert(
+            std::move(outputItem.first));
+        if (!iresult.second) {
+            TF_VERIFY(allowInvalid && !iresult.first->second.IsValid(),
+                      "PrimIndex <%s> already exists in cache",
+                      iresult.first->first.GetAsString().c_str());
+            // Replace the invalid index.
+            iresult.first->second =
+                std::move(outputItem.first.GetMutableMapped());
+        }
+        PcpPrimIndex *mutableIndex = &iresult.first->second;
+        lock.release();
+        _cache->_primDependencies->Add(
+            *mutableIndex, 
+            std::move(outputItem.second.culledDependencies),
+            std::move(outputItem.second.dynamicFileFormatDependency),
+            std::move(outputItem.second.expressionVariablesDependency));
+        return mutableIndex;
+    }
+                     
+
+    void _PublishOutputs() {
+        TRACE_FUNCTION();
+        // Publish.
+        std::pair<_PrimIndexCache::NodeHandle, PcpPrimIndexOutputs> outputItem;
+        while (_toPublish.try_pop(outputItem)) {
+            _PublishOneOutput(std::move(outputItem), /*allowInvalid=*/false);
+        }
+    }
+    
     // Fixed inputs.
     PcpCache * const _cache;
     const PcpLayerStackPtr _layerStack;
@@ -1381,7 +1615,7 @@ struct PcpCache::_ParallelIndexer
     // Utils.
     tbb::spin_rw_mutex _primIndexCacheMutex;
     tbb::spin_rw_mutex _includedPayloadsMutex;
-    WorkArenaDispatcher _dispatcher;
+    WorkDispatcher _dispatcher;
 
     // Varying inputs.
     _UntypedIndexingChildrenPredicate _childrenPredicate;
@@ -1392,6 +1626,10 @@ struct PcpCache::_ParallelIndexer
     char const *_mallocTag1;
     char const *_mallocTag2;
     vector<pair<const PcpPrimIndex *, SdfPath> > _toCompute;
+    tbb::concurrent_queue<
+        std::pair<_PrimIndexCache::NodeHandle, PcpPrimIndexOutputs>
+        > _toPublish;
+    std::atomic<bool> _isPublishing;
 };
 
 void
@@ -1489,8 +1727,11 @@ PcpCache::_ComputePrimIndexWithCompatibleInputs(
         outputs.allErrors.end());
 
     // Add dependencies.
-    _primDependencies->Add(outputs.primIndex, 
-                           std::move(outputs.dynamicFileFormatDependency));
+    _primDependencies->Add(
+        outputs.primIndex, 
+        std::move(outputs.culledDependencies),
+        std::move(outputs.dynamicFileFormatDependency),
+        std::move(outputs.expressionVariablesDependency));
 
     // Update _includedPayloads if we included a discovered payload.
     if (outputs.payloadState == PcpPrimIndexOutputs::IncludedByPredicate) {

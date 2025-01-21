@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_ST_MATERIAL_H
 #define PXR_IMAGING_HD_ST_MATERIAL_H
@@ -35,7 +18,8 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-using HdStSurfaceShaderSharedPtr = std::shared_ptr<class HdStSurfaceShader>;
+using HdSt_MaterialNetworkShaderSharedPtr =
+        std::shared_ptr<class HdSt_MaterialNetworkShader>;
 
 class HioGlslfx;
 
@@ -43,6 +27,17 @@ class HdStMaterial final: public HdMaterial
 {
 public:
     HF_MALLOC_TAG_NEW("new HdStMaterial");
+
+    /// For volumes, the corresponding draw items do not use the
+    /// HdStShaderCode produced by HdStMaterial. Instead HdStVolume is
+    /// using some data from the material to produce its own HdStShaderCode
+    /// based on the volume field bindings.
+    struct VolumeMaterialData final
+    {
+        /// glslfx source code for volume
+        std::string source;
+        HdSt_MaterialParamVector params;
+    };
 
     HDST_API
     HdStMaterial(SdfPath const& id);
@@ -64,9 +59,14 @@ public:
     HDST_API
     HdDirtyBits GetInitialDirtyBitsMask() const override;
 
-    /// Obtains the render delegate specific representation of the shader.
+    /// Obtains the GLSLFX code together with supporting information
+    /// such as material params and textures to render surfaces.
     HDST_API
-    HdStShaderCodeSharedPtr GetShaderCode() const;
+    HdSt_MaterialNetworkShaderSharedPtr GetMaterialNetworkShader() const;
+
+    /// Obtains the GLSLFLX code together with material params to
+    /// render volumes.
+    inline const VolumeMaterialData &GetVolumeMaterialData() const;
 
     /// Summary flag. Returns true if the material is bound to one or more
     /// textures and any of those textures is a ptex texture.
@@ -87,7 +87,8 @@ public:
     /// Used to set the fallback shader for prim.
     /// This class takes ownership of the passed in object.
     HDST_API
-    void SetSurfaceShader(HdStSurfaceShaderSharedPtr &shaderCode);
+    void SetMaterialNetworkShader(
+        HdSt_MaterialNetworkShaderSharedPtr &shaderCode);
 
 private:
     // Processes the texture descriptors from a material network to
@@ -111,7 +112,8 @@ private:
 
     static HioGlslfx *_fallbackGlslfx;
 
-    HdStSurfaceShaderSharedPtr _surfaceShader;
+    HdSt_MaterialNetworkShaderSharedPtr _materialNetworkShader;
+    VolumeMaterialData _volumeMaterialData;
 
     bool _isInitialized : 1;
     bool _hasPtex : 1;
@@ -143,6 +145,12 @@ inline const TfToken& HdStMaterial::GetMaterialTag() const
 {
     return _materialTag;
 }
+
+inline const HdStMaterial::VolumeMaterialData &
+HdStMaterial::GetVolumeMaterialData() const {
+    return _volumeMaterialData;
+}
+
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

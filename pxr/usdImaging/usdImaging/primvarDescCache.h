@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_IMAGING_USD_IMAGING_PRIMVARDESC_CACHE_H
 #define PXR_USD_IMAGING_USD_IMAGING_PRIMVARDESC_CACHE_H
@@ -32,6 +15,7 @@
 
 #include "pxr/usd/sdf/path.h"
 
+#include "pxr/base/tf/hash.h"
 #include "pxr/base/tf/token.h"
 
 #include <tbb/concurrent_unordered_map.h>
@@ -71,9 +55,8 @@ public:
 
         struct Hash {
             inline size_t operator()(Key const& key) const {
-                size_t hash = key._path.GetHash();
-                boost::hash_combine(hash, key._attribute.Hash());
-                return hash;
+                return TfHash::Combine(key._path.GetHash(),
+                                       key._attribute.Hash());
             }
         };
 
@@ -98,7 +81,6 @@ private:
         typedef tbb::concurrent_queue<_MapIt>                          _QueueType;
 
         _MapType   _map;
-        _QueueType _deferredDeleteQueue;
     };
 
 
@@ -116,35 +98,6 @@ private:
             return false;
         }
         *value = it->second;
-        return true;
-    }
-
-    /// Locates the requested \p key then populates \p value, swap the value
-    /// from the entry and queues the entry up for deletion.
-    /// Returns true if found.
-    /// This function is thread-safe, but Garbage collection must be called
-    /// to perform the actual deletion.
-    /// Note: second hit on same key will be sucessful, but return whatever
-    /// value was passed into the first _Extract.
-    template <typename T>
-    bool _Extract(Key const& key, T* value) {
-        if (!TF_VERIFY(!_locked)) {
-            return false;
-        }
-      
-        typedef _TypedCache<T> Cache_t;
-        Cache_t *cache = nullptr;
-
-        _GetCache(&cache);
-        typename Cache_t::_MapIt it = cache->_map.find(key);
-
-        if (it == cache->_map.end()) {
-            return false;
-        }
-
-        // If we're going to erase the old value, swap to avoid a copy.
-        std::swap(it->second, *value);
-        cache->_deferredDeleteQueue.push(it);
         return true;
     }
 
@@ -180,20 +133,6 @@ private:
         return res.first->second;
     }
 
-    /// Removes items from the cache that are marked for deletion.
-    /// This is not thread-safe and designed to be called after
-    /// all the worker threads have been joined.
-    template <typename T>
-    void _GarbageCollect(_TypedCache<T> &cache) {
-        typedef _TypedCache<T> Cache_t;
-
-        typename Cache_t::_MapIt it;
-
-        while (cache._deferredDeleteQueue.try_pop(it)) {
-            cache._map.unsafe_erase(it);
-        }
-    }
-
 public:
 
     void EnableMutation() { _locked = false; }
@@ -210,16 +149,6 @@ public:
 
     bool FindPrimvars(SdfPath const& path, HdPrimvarDescriptorVector* value) const {
         return _Find(Key::Primvars(path), value);
-    }
-
-    bool ExtractPrimvars(SdfPath const& path, HdPrimvarDescriptorVector* value) {
-        return _Extract(Key::Primvars(path), value);
-    }
-
-    /// Remove any items from the cache that are marked for defered deletion.
-    void GarbageCollect()
-    {
-        _GarbageCollect(_pviCache);
     }
 
 private:

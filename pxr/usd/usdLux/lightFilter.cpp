@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usd/usdLux/lightFilter.h"
 #include "pxr/usd/usd/schemaRegistry.h"
@@ -75,13 +58,9 @@ UsdLuxLightFilter::Define(
 }
 
 /* virtual */
-UsdSchemaKind UsdLuxLightFilter::_GetSchemaKind() const {
+UsdSchemaKind UsdLuxLightFilter::_GetSchemaKind() const
+{
     return UsdLuxLightFilter::schemaKind;
-}
-
-/* virtual */
-UsdSchemaKind UsdLuxLightFilter::_GetSchemaType() const {
-    return UsdLuxLightFilter::schemaType;
 }
 
 /* static */
@@ -107,6 +86,23 @@ UsdLuxLightFilter::_GetTfType() const
     return _GetStaticTfType();
 }
 
+UsdAttribute
+UsdLuxLightFilter::GetShaderIdAttr() const
+{
+    return GetPrim().GetAttribute(UsdLuxTokens->lightFilterShaderId);
+}
+
+UsdAttribute
+UsdLuxLightFilter::CreateShaderIdAttr(VtValue const &defaultValue, bool writeSparsely) const
+{
+    return UsdSchemaBase::_CreateAttr(UsdLuxTokens->lightFilterShaderId,
+                       SdfValueTypeNames->Token,
+                       /* custom = */ false,
+                       SdfVariabilityUniform,
+                       defaultValue,
+                       writeSparsely);
+}
+
 namespace {
 static inline TfTokenVector
 _ConcatenateAttributeNames(const TfTokenVector& left,const TfTokenVector& right)
@@ -124,7 +120,7 @@ const TfTokenVector&
 UsdLuxLightFilter::GetSchemaAttributeNames(bool includeInherited)
 {
     static TfTokenVector localNames = {
-        UsdLuxTokens->collectionFilterLinkIncludeRoot,
+        UsdLuxTokens->lightFilterShaderId,
     };
     static TfTokenVector allNames =
         _ConcatenateAttributeNames(
@@ -156,23 +152,34 @@ PXR_NAMESPACE_OPEN_SCOPE
 class UsdLuxLightFilter_ConnectableAPIBehavior : 
     public UsdShadeConnectableAPIBehavior
 {
+public:
+    // By default all UsdLuxLightFilter connectable behavior should be container
+    // and we expect to make light filters be connected across multiple light
+    // scopes, hence ignoring encapsulation rules.
+    UsdLuxLightFilter_ConnectableAPIBehavior() :
+        UsdShadeConnectableAPIBehavior(
+                true /*isContainer*/, false /*requiresEncapsulation*/) {}
+
     bool
     CanConnectInputToSource(const UsdShadeInput &input,
                             const UsdAttribute &source,
-                            std::string *reason) override
-    {     
+                            std::string *reason) const override
+    {   
         return _CanConnectInputToSource(input, source, reason, 
                 ConnectableNodeTypes::DerivedContainerNodes);
     }
 
-    bool IsContainer() const
-    {
-        return true;
-    }
 
     // Note that LightFilter's outputs are not connectable (different from
     // UsdShadeNodeGraph default behavior) as there are no known use-case for 
     // these right now.
+    bool
+    CanConnectOutputToSource(const UsdShadeOutput &output,
+                             const UsdAttribute &source,
+                             std::string *reason) const override
+    {
+        return false;
+    }
 
 };
 
@@ -238,6 +245,59 @@ UsdCollectionAPI
 UsdLuxLightFilter::GetFilterLinkCollectionAPI() const
 {
     return UsdCollectionAPI(GetPrim(), UsdLuxTokens->filterLink);
+}
+
+static TfToken 
+_GetShaderIdAttrName(const TfToken &renderContext)
+{
+    if (renderContext.IsEmpty()) {
+        return UsdLuxTokens->lightFilterShaderId;
+    }
+    return TfToken(SdfPath::JoinIdentifier(
+        renderContext, UsdLuxTokens->lightFilterShaderId));
+}
+
+UsdAttribute 
+UsdLuxLightFilter::GetShaderIdAttrForRenderContext(
+    const TfToken &renderContext) const
+{
+    return GetPrim().GetAttribute(_GetShaderIdAttrName(renderContext));
+}
+
+UsdAttribute 
+UsdLuxLightFilter::CreateShaderIdAttrForRenderContext(
+    const TfToken &renderContext, 
+    VtValue const &defaultValue, 
+    bool writeSparsely) const
+{
+    return UsdSchemaBase::_CreateAttr(_GetShaderIdAttrName(renderContext),
+                       SdfValueTypeNames->Token,
+                       /* custom = */ false,
+                       SdfVariabilityUniform,
+                       defaultValue,
+                       writeSparsely);
+}
+
+TfToken 
+UsdLuxLightFilter::GetShaderId(const TfTokenVector &renderContexts) const
+{
+    TfToken shaderId;
+    // The passed in render contexts are in priority order so return the shader
+    // ID from the first render context specific shaderId attribute that has a
+    // a non-empty value.
+    for (const TfToken &renderContext : renderContexts) {
+        if (UsdAttribute shaderIdAttr = 
+                GetShaderIdAttrForRenderContext(renderContext)) {
+            shaderIdAttr.Get(&shaderId);
+            if (!shaderId.IsEmpty()) {
+                return shaderId;
+            }
+        }
+    }
+    // Return the default shaderId attributes values if we couldn't get a value
+    // for any of the render contexts.
+    GetShaderIdAttr().Get(&shaderId);
+    return shaderId;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hgiVulkan/computeCmds.h"
 #include "pxr/imaging/hgiVulkan/commandBuffer.h"
@@ -33,7 +16,9 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-HgiVulkanComputeCmds::HgiVulkanComputeCmds(HgiVulkan* hgi)
+HgiVulkanComputeCmds::HgiVulkanComputeCmds(
+    HgiVulkan* hgi,
+    HgiComputeCmdsDesc const&)
     : HgiComputeCmds()
     , _hgi(hgi)
     , _commandBuffer(nullptr)
@@ -41,6 +26,7 @@ HgiVulkanComputeCmds::HgiVulkanComputeCmds(HgiVulkan* hgi)
     , _pushConstantsDirty(false)
     , _pushConstants(nullptr)
     , _pushConstantsByteSize(0)
+    , _localWorkGroupSize(GfVec3i(1, 1, 1))
 {
 }
 
@@ -75,6 +61,22 @@ HgiVulkanComputeCmds::BindPipeline(HgiComputePipelineHandle pipeline)
         _pipelineLayout = pso->GetVulkanPipelineLayout();
         pso->BindPipeline(_commandBuffer->GetVulkanCommandBuffer());
     }
+
+    // Get and store local work group size from shader function desc
+    const HgiShaderFunctionHandleVector shaderFunctionsHandles = 
+        pipeline.Get()->GetDescriptor().shaderProgram.Get()->GetDescriptor().
+            shaderFunctions;
+
+    for (const auto &handle : shaderFunctionsHandles) {
+        const HgiShaderFunctionDesc &shaderDesc = handle.Get()->GetDescriptor();
+        if (shaderDesc.shaderStage == HgiShaderStageCompute) {
+            if (shaderDesc.computeDescriptor.localSize[0] > 0 && 
+                shaderDesc.computeDescriptor.localSize[1] > 0 &&
+                shaderDesc.computeDescriptor.localSize[2] > 0) {
+                _localWorkGroupSize = shaderDesc.computeDescriptor.localSize;
+            }
+        }
+    }
 }
 
 void
@@ -94,7 +96,7 @@ HgiVulkanComputeCmds::SetConstantValues(
 {
     _CreateCommandBuffer();
     // Delay pushing until we know for sure what the pipeline will be.
-    if (!_pushConstants || _pushConstantsByteSize < byteSize) {
+    if (!_pushConstants || _pushConstantsByteSize != byteSize) {
         delete[] _pushConstants;
         _pushConstants = new uint8_t[byteSize];
         _pushConstantsByteSize = byteSize;
@@ -109,10 +111,34 @@ HgiVulkanComputeCmds::Dispatch(int dimX, int dimY)
     _CreateCommandBuffer();
     _BindResources();
 
+    const int threadsPerGroupX = _localWorkGroupSize[0];
+    const int threadsPerGroupY = _localWorkGroupSize[1];
+    int numWorkGroupsX = (dimX + (threadsPerGroupX - 1)) / threadsPerGroupX;
+    int numWorkGroupsY = (dimY + (threadsPerGroupY - 1)) / threadsPerGroupY;
+
+    // Determine device's num compute work group limits
+    const VkPhysicalDeviceLimits limits = 
+        _hgi->GetCapabilities()->vkDeviceProperties.limits;
+    const GfVec3i maxNumWorkGroups = GfVec3i(
+        limits.maxComputeWorkGroupCount[0],
+        limits.maxComputeWorkGroupCount[1],
+        limits.maxComputeWorkGroupCount[2]);
+
+    if (numWorkGroupsX > maxNumWorkGroups[0]) {
+        TF_WARN("Max number of work group available from device is %i, larger "
+                "than %i", maxNumWorkGroups[0], numWorkGroupsX);
+        numWorkGroupsX = maxNumWorkGroups[0];
+    }
+    if (numWorkGroupsY > maxNumWorkGroups[1]) {
+        TF_WARN("Max number of work group available from device is %i, larger "
+                "than %i", maxNumWorkGroups[1], numWorkGroupsY);
+        numWorkGroupsY = maxNumWorkGroups[1];
+    }
+
     vkCmdDispatch(
         _commandBuffer->GetVulkanCommandBuffer(),
-        (uint32_t) dimX,
-        (uint32_t) dimY,
+        (uint32_t) numWorkGroupsX,
+        (uint32_t) numWorkGroupsY,
         1);
 }
 
@@ -169,10 +195,16 @@ HgiVulkanComputeCmds::_BindResources()
 }
 
 void
-HgiVulkanComputeCmds::MemoryBarrier(HgiMemoryBarrier barrier)
+HgiVulkanComputeCmds::InsertMemoryBarrier(HgiMemoryBarrier barrier)
 {
     _CreateCommandBuffer();
-    _commandBuffer->MemoryBarrier(barrier);
+    _commandBuffer->InsertMemoryBarrier(barrier);
+}
+
+HgiComputeDispatch
+HgiVulkanComputeCmds::GetDispatchMethod() const
+{
+    return HgiComputeDispatchSerial;
 }
 
 void

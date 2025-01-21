@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdx/renderSetupTask.h"
 #include "pxr/imaging/hdx/package.h"
@@ -35,23 +18,39 @@
 #include "pxr/imaging/hd/camera.h"
 #include "pxr/imaging/hdSt/renderPassShader.h"
 #include "pxr/imaging/hdSt/renderPassState.h"
+#include "pxr/imaging/hdSt/resourceRegistry.h"
+#include "pxr/imaging/hdSt/tokens.h"
+#include "pxr/imaging/hdSt/volume.h"
 
 #include "pxr/imaging/cameraUtil/conformWindow.h"
 
-#include <mutex>
-
 PXR_NAMESPACE_OPEN_SCOPE
 
-HdxRenderSetupTask::HdxRenderSetupTask(HdSceneDelegate* delegate, SdfPath const& id)
+static const HioGlslfxSharedPtr &
+_GetRenderPassColorGlslfx()
+{
+    static const HioGlslfxSharedPtr glslfx =
+        std::make_shared<HioGlslfx>(HdxPackageRenderPassColorShader());
+    return glslfx;
+}
+
+static const HioGlslfxSharedPtr &
+_GetRenderPassIdGlslfx()
+{
+    static const HioGlslfxSharedPtr glslfx =
+        std::make_shared<HioGlslfx>(HdxPackageRenderPassIdShader());
+    return glslfx;
+}
+
+HdxRenderSetupTask::HdxRenderSetupTask(
+    HdSceneDelegate* delegate, SdfPath const& id)
     : HdTask(id)
     , _colorRenderPassShader(
-        std::make_shared<HdStRenderPassShader>(
-            HdxPackageRenderPassColorShader()))
+        std::make_shared<HdStRenderPassShader>(_GetRenderPassColorGlslfx()))
     , _idRenderPassShader(
-        std::make_shared<HdStRenderPassShader>(
-            HdxPackageRenderPassIdShader()))
-    , _overrideWindowPolicy{false, CameraUtilFit}
+        std::make_shared<HdStRenderPassShader>(_GetRenderPassIdGlslfx()))
     , _viewport(0)
+    , _enableIdRenderFromParams(false)
 {
 }
 
@@ -82,12 +81,27 @@ void
 HdxRenderSetupTask::Prepare(HdTaskContext* ctx,
                             HdRenderIndex* renderIndex)
 {
-
     _PrepareAovBindings(ctx, renderIndex);
     PrepareCamera(renderIndex);
 
     HdRenderPassStateSharedPtr &renderPassState =
-            _GetRenderPassState(renderIndex);
+        _GetRenderPassState(renderIndex);
+
+    const float stepSize = renderIndex->GetRenderDelegate()->
+        GetRenderSetting<float>(
+            HdStRenderSettingsTokens->volumeRaymarchingStepSize,
+            HdStVolume::defaultStepSize);
+    const float stepSizeLighting = renderIndex->GetRenderDelegate()->
+        GetRenderSetting<float>(
+            HdStRenderSettingsTokens->volumeRaymarchingStepSizeLighting,
+            HdStVolume::defaultStepSizeLighting);
+    renderPassState->SetVolumeRenderingConstants(stepSize, stepSizeLighting);
+
+    if (HdStRenderPassState * const hdStRenderPassState =
+            dynamic_cast<HdStRenderPassState*>(renderPassState.get())) {
+        _SetRenderpassShadersForStorm(hdStRenderPassState,
+            renderIndex->GetResourceRegistry());
+    }
 
     renderPassState->Prepare(renderIndex->GetResourceRegistry());
     (*ctx)[HdxTokens->renderPassState] = VtValue(_renderPassState);
@@ -103,23 +117,67 @@ HdxRenderSetupTask::Execute(HdTaskContext* ctx)
     (*ctx)[HdxTokens->renderPassState] = VtValue(_renderPassState);
 }
 
+static
+bool
+_AovHasIdSemantic(TfToken const &name)
+{
+    // For now id render only means primId or instanceId.
+    return name == HdAovTokens->primId ||
+           name == HdAovTokens->instanceId;
+}
+
 void
 HdxRenderSetupTask::_SetRenderpassShadersForStorm(
-    HdxRenderTaskParams const &params,
-    HdStRenderPassState *renderPassState)
+    HdStRenderPassState *renderPassState,
+    HdResourceRegistrySharedPtr const &resourceRegistry)
 {
-    renderPassState->SetUseSceneMaterials(params.enableSceneMaterials);
-    if (params.enableIdRender) {
+    // XXX: This id render codepath will be deprecated soon.
+    if (_enableIdRenderFromParams) {
         renderPassState->SetRenderPassShader(_idRenderPassShader);
-    } else {
+        return;
+    // If no aovs are bound, use pre-assembled color render pass shader.
+    } else if (_aovBindings.empty()) {
         renderPassState->SetRenderPassShader(_colorRenderPassShader);
+        return;
     }
+
+    HdStResourceRegistrySharedPtr const& hdStResourceRegistry =
+        std::static_pointer_cast<HdStResourceRegistry>(resourceRegistry);
+
+    renderPassState->SetRenderPassShader(
+        HdStRenderPassShader::CreateRenderPassShaderFromAovs(
+            renderPassState,
+            hdStResourceRegistry,
+            _aovBindings));
 }
 
 void
 HdxRenderSetupTask::SyncParams(HdSceneDelegate* delegate,
                                HdxRenderTaskParams const &params)
 {
+    _viewport = params.viewport;
+    _framing = params.framing;
+    _overrideWindowPolicy = params.overrideWindowPolicy;
+    _cameraId = params.camera;
+    _aovBindings = params.aovBindings;
+    _aovInputBindings = params.aovInputBindings;
+
+    // Inspect aovs to see if we're doing an id render.
+    bool usingIdAov = false;
+    for (size_t i = 0; i < _aovBindings.size(); ++i) {
+        if (_AovHasIdSemantic(_aovBindings[i].aovName)) {
+            usingIdAov = true;
+            break;
+        }
+    }
+
+    // XXX: For now, we track enabling an id render via params vs. AOV bindings 
+    // as two slightly different states regarding MSAA. We will soon deprecate 
+    // "enableIdRender" as an option, though.
+    _enableIdRenderFromParams = params.enableIdRender;
+    const bool enableIdRender = params.enableIdRender || usingIdAov;
+    const bool enableIdRenderNoIdAov = params.enableIdRender && !usingIdAov;
+
     HdRenderIndex &renderIndex = delegate->GetRenderIndex();
     HdRenderPassStateSharedPtr &renderPassState =
             _GetRenderPassState(&renderIndex);
@@ -129,6 +187,7 @@ HdxRenderSetupTask::SyncParams(HdSceneDelegate* delegate,
     renderPassState->SetPointColor(params.pointColor);
     renderPassState->SetPointSize(params.pointSize);
     renderPassState->SetLightingEnabled(params.enableLighting);
+    renderPassState->SetClippingEnabled(params.enableClipping);
     renderPassState->SetAlphaThreshold(params.alphaThreshold);
     renderPassState->SetCullStyle(params.cullStyle);
 
@@ -158,27 +217,35 @@ HdxRenderSetupTask::SyncParams(HdSceneDelegate* delegate,
                 params.blendAlphaSrcFactor, params.blendAlphaDstFactor);
         renderPassState->SetBlendConstantColor(params.blendConstantColor);
         
+        // Don't enable alpha to coverage for id renders.
+        // XXX: If the list of aovs includes both color and an id aov (such as 
+        // primdId), we still disable alpha to coverage for the render pass, 
+        // which may result in different behavior for the color output compared 
+        // to if the user didn't request an id aov at the same time.
+        // If this becomes an issue, we'll need to reconsider this approach.
         renderPassState->SetAlphaToCoverageEnabled(
             params.enableAlphaToCoverage &&
+            !enableIdRender &&
             !TfDebug::IsEnabled(HDX_DISABLE_ALPHA_TO_COVERAGE));
+
+        // For id renders that use an id aov (which use an int format), it's ok
+        // to have multi-sampling enabled. During the MSAA resolve for integer
+        // types, a single sample will be selected.
+        renderPassState->SetMultiSampleEnabled(
+            params.useAovMultiSample && !enableIdRenderNoIdAov);
 
         if (HdStRenderPassState * const hdStRenderPassState =
                     dynamic_cast<HdStRenderPassState*>(renderPassState.get())) {
+            hdStRenderPassState->SetUseSceneMaterials(
+                params.enableSceneMaterials);
+            
+            // Don't enable multisample for id renders.
             hdStRenderPassState->SetUseAovMultiSample(
-                params.useAovMultiSample);
+                params.useAovMultiSample && !enableIdRenderNoIdAov);
             hdStRenderPassState->SetResolveAovMultiSample(
                 params.resolveAovMultiSample);
-            
-            _SetRenderpassShadersForStorm(
-                params, hdStRenderPassState);
         }
     }
-
-    _viewport = params.viewport;
-    _framing = params.framing;
-    _overrideWindowPolicy = params.overrideWindowPolicy;
-    _cameraId = params.camera;
-    _aovBindings = params.aovBindings;
 }
 
 void
@@ -187,6 +254,10 @@ HdxRenderSetupTask::_PrepareAovBindings(HdTaskContext* ctx,
 {
     // Walk the aov bindings, resolving the render index references as they're
     // encountered.
+    //
+    // This is somewhat fragile. One of the clients is _BindTexture in
+    // hdSt/renderPassShader.cpp.
+    //
     for (size_t i = 0; i < _aovBindings.size(); ++i) {
         if (_aovBindings[i].renderBuffer == nullptr) {
             _aovBindings[i].renderBuffer = static_cast<HdRenderBuffer*>(
@@ -198,14 +269,7 @@ HdxRenderSetupTask::_PrepareAovBindings(HdTaskContext* ctx,
     HdRenderPassStateSharedPtr &renderPassState =
             _GetRenderPassState(renderIndex);
     renderPassState->SetAovBindings(_aovBindings);
-
-    if (!_aovBindings.empty()) {
-        // XXX Tasks that are not RenderTasks (OIT, ColorCorrection etc) also
-        // need access to AOVs, but cannot access SetupTask or RenderPassState.
-        // One option is to let them know about the aovs directly (as task
-        // parameters), but instead we do so via the task context.
-        (*ctx)[HdxTokens->aovBindings] = VtValue(_aovBindings);
-    }
+    renderPassState->SetAovInputBindings(_aovInputBindings);
 }
 
 void
@@ -217,19 +281,20 @@ HdxRenderSetupTask::PrepareCamera(HdRenderIndex* renderIndex)
         return;
     } 
 
-    const HdCamera *camera = static_cast<const HdCamera *>(
-        renderIndex->GetSprim(HdPrimTypeTokens->camera, _cameraId));
-    TF_VERIFY(camera);
+    const HdCamera * const camera =
+        static_cast<const HdCamera *>(
+            renderIndex->GetSprim(HdPrimTypeTokens->camera, _cameraId));
 
     HdRenderPassStateSharedPtr const &renderPassState =
             _GetRenderPassState(renderIndex);
 
+    renderPassState->SetCamera(camera);
+    renderPassState->SetOverrideWindowPolicy(_overrideWindowPolicy);
+
     if (_framing.IsValid()) {
-        renderPassState->SetCameraAndFraming(
-            camera, _framing, _overrideWindowPolicy);
+        renderPassState->SetFraming(_framing);
     } else {
-        renderPassState->SetCameraAndViewport(
-            camera, _viewport);
+        renderPassState->SetViewport(_viewport);
     }
 }
 
@@ -300,6 +365,9 @@ std::ostream& operator<<(std::ostream& out, const HdxRenderTaskParams& pv)
     for (auto const& a : pv.aovBindings) {
         out << a << " ";
     }
+    for (auto const& a : pv.aovInputBindings) {
+        out << a << " (input) ";
+    }
     return out;
 }
 
@@ -320,6 +388,7 @@ bool operator==(const HdxRenderTaskParams& lhs, const HdxRenderTaskParams& rhs)
            lhs.pointSelectedSize        == rhs.pointSelectedSize        &&
  
            lhs.aovBindings              == rhs.aovBindings              &&
+           lhs.aovInputBindings         == rhs.aovInputBindings         &&
            
            lhs.depthBiasUseDefault      == rhs.depthBiasUseDefault      &&
            lhs.depthBiasEnable          == rhs.depthBiasEnable          &&

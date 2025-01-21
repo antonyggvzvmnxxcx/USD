@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/garch/glApi.h"
 
@@ -32,8 +15,8 @@ PXR_NAMESPACE_OPEN_SCOPE
 HgiGLBuffer::HgiGLBuffer(HgiBufferDesc const & desc)
     : HgiBuffer(desc)
     , _bufferId(0)
-    , _mapped(nullptr)
     , _cpuStaging(nullptr)
+    , _bindlessGPUAddress(0)
 {
 
     if (desc.byteSize == 0) {
@@ -46,31 +29,11 @@ HgiGLBuffer::HgiGLBuffer(HgiBufferDesc const & desc)
         HgiGLObjectLabel(GL_BUFFER, _bufferId,  _descriptor.debugName);
     }
 
-    if ((_descriptor.usage & HgiBufferUsageVertex)  ||
-        (_descriptor.usage & HgiBufferUsageIndex32) ||
-        (_descriptor.usage & HgiBufferUsageUniform)) {
-        glNamedBufferData(
-            _bufferId,
-            _descriptor.byteSize,
-            _descriptor.initialData,
-            GL_STATIC_DRAW);
-    } else if (_descriptor.usage & HgiBufferUsageStorage) {
-        GLbitfield flags =
-            GL_MAP_READ_BIT       |
-            GL_MAP_WRITE_BIT      |
-            GL_MAP_PERSISTENT_BIT |
-            GL_MAP_COHERENT_BIT;
-
-        glNamedBufferStorage(
-            _bufferId,
-            _descriptor.byteSize,
-            _descriptor.initialData,
-            flags | GL_DYNAMIC_STORAGE_BIT);
-
-        _mapped = glMapNamedBufferRange(_bufferId, 0, desc.byteSize, flags);
-    } else {
-        TF_CODING_ERROR("Unknown HgiBufferUsage bit");
-    }
+    glNamedBufferData(
+        _bufferId,
+        _descriptor.byteSize,
+        _descriptor.initialData,
+        GL_STATIC_DRAW);
 
     // glBindVertexBuffer (graphics cmds) needs to know the stride of each
     // vertex buffer. Make sure user provides it.
@@ -86,10 +49,6 @@ HgiGLBuffer::HgiGLBuffer(HgiBufferDesc const & desc)
 HgiGLBuffer::~HgiGLBuffer()
 {
     if (_bufferId > 0) {
-        if (_descriptor.usage & HgiBufferUsageStorage) {
-            glUnmapNamedBuffer(_bufferId);
-        }
-        
         glDeleteBuffers(1, &_bufferId);
         _bufferId = 0;
     }
@@ -126,5 +85,23 @@ HgiGLBuffer::GetCPUStagingAddress()
     // via CopyBufferCpuToGpu cmd by the client.
     return _cpuStaging;
 }
+
+uint64_t
+HgiGLBuffer::GetBindlessGPUAddress()
+{
+    // note: gpu address remains valid until the buffer object is deleted,
+    // or when the data store is respecified via BufferData/BufferStorage.
+    // It doesn't change even when we make the buffer resident or non-resident.
+    // https://www.opengl.org/registry/specs/NV/shader_buffer_load.txt
+    if (!_bindlessGPUAddress) {
+        glGetNamedBufferParameterui64vNV(
+            _bufferId, GL_BUFFER_GPU_ADDRESS_NV, &_bindlessGPUAddress);
+    }
+    if (!_bindlessGPUAddress) {
+        TF_CODING_ERROR("Failed to get bindless buffer GPU address");
+    }
+    return _bindlessGPUAddress;
+}
+
 
 PXR_NAMESPACE_CLOSE_SCOPE

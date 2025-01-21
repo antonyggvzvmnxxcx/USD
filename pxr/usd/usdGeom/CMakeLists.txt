@@ -2,6 +2,8 @@ set(PXR_PREFIX pxr/usd)
 set(PXR_PACKAGE usdGeom)
 
 pxr_library(usdGeom
+    INCLUDE_SCHEMA_FILES
+
     LIBRARIES
         js
         tf
@@ -11,106 +13,48 @@ pxr_library(usdGeom
         trace
         usd
         work
-        ${Boost_PYTHON_LIBRARY}
         ${TBB_tbb_LIBRARY}
 
     INCLUDE_DIRS
-        ${Boost_INCLUDE_DIRS}
         ${TBB_INCLUDE_DIRS}
 
     PUBLIC_CLASSES
         debugCodes
-        tokens
         bboxCache
         constraintTarget
         xformCache
-        basisCurves
-        boundable
         boundableComputeExtent
-        camera
-        capsule
-        cone
-        cube
-        curves
-        cylinder
-        hermiteCurves
-        imageable
-        gprim
-        mesh
         metrics
-        modelAPI
-        motionAPI
-        nurbsCurves
-        nurbsPatch
-        pointBased
-        pointInstancer
-        points
         primvar
-        primvarsAPI
-        scope
-        sphere
-        subset
-        xform
-        xformable
         xformOp
-        xformCommonAPI
-        
+
     PUBLIC_HEADERS
         api.h
 
-    PYTHON_CPPFILES
-        moduleDeps.cpp
 
     PRIVATE_CLASSES
         samplingUtils
 
     PYMODULE_CPPFILES
-        module.cpp
         wrapBBoxCache.cpp
-        wrapBasisCurves.cpp
-        wrapBoundable.cpp
-        wrapCamera.cpp
         wrapConstraintTarget.cpp
-        wrapCapsule.cpp
-        wrapCone.cpp
-        wrapCube.cpp
-        wrapCurves.cpp
-        wrapCylinder.cpp
-        wrapGprim.cpp
-        wrapHermiteCurves.cpp
-        wrapImageable.cpp
-        wrapMesh.cpp
         wrapMetrics.cpp
-        wrapModelAPI.cpp
-        wrapMotionAPI.cpp
-        wrapNurbsCurves.cpp
-        wrapNurbsPatch.cpp
-        wrapPointBased.cpp
-        wrapPointInstancer.cpp
-        wrapPoints.cpp
         wrapPrimvar.cpp
-        wrapPrimvarsAPI.cpp
-        wrapScope.cpp
-        wrapSphere.cpp
-        wrapSubset.cpp
-        wrapTokens.cpp
-        wrapXform.cpp
         wrapXformCache.cpp
-        wrapXformable.cpp
         wrapXformOp.cpp
-        wrapXformCommonAPI.cpp
 
     PYMODULE_FILES
         __init__.py
 
-    RESOURCE_FILES
-        plugInfo.json
-        generatedSchema.usda
-        schema.usda:usdGeom/schema.usda
-
     DOXYGEN_FILES
         overview.dox
         snippets.dox
+        images/USDCurveBasisMatrix.png
+        images/USDCurveHydra.png
+        images/USDCurvePrimvars.png
+        images/USDTetMeshRightHanded.svg
+        images/USDTetMeshLeftHanded.svg
+        examples_usdGeom.cpp
 )
 
 pxr_test_scripts(
@@ -134,6 +78,7 @@ pxr_test_scripts(
     testenv/testUsdGeomPurposeVisibility.py
     testenv/testUsdGeomSchemata.py
     testenv/testUsdGeomSubset.py
+    testenv/testUsdGeomTetMesh.py
     testenv/testUsdGeomXformable.py
     testenv/testUsdGeomXformCommonAPI.py
 )
@@ -182,6 +127,11 @@ pxr_install_test_dir(
 )
 
 pxr_install_test_dir(
+    SRC testenv/testUsdGeomCamera
+    DEST testUsdGeomCamera
+)
+
+pxr_install_test_dir(
     SRC testenv/testUsdGeomConsts
     DEST testUsdGeomConsts
 )
@@ -217,11 +167,18 @@ pxr_install_test_dir(
 
 pxr_install_test_dir(
     SRC testenv/testUsdGeomImageable
-    DEST testUsdGeomImageable)
+    DEST testUsdGeomImageable
+)
 
 pxr_install_test_dir(
     SRC testenv/testUsdGeomMesh
-    DEST testUsdGeomMesh)
+    DEST testUsdGeomMesh
+)
+
+pxr_install_test_dir(
+    SRC testenv/testUsdGeomTetMesh
+    DEST testUsdGeomTetMesh
+)
 
 pxr_register_test(testUsdGeomBasisCurves
     PYTHON
@@ -270,6 +227,19 @@ pxr_register_test(testUsdGeomCurves
 pxr_register_test(testUsdGeomMesh
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomMesh"
+    EXPECTED_RETURN_CODE 0
+)
+
+pxr_register_test(testUsdGeomTetMesh
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomTetMesh"
+    DIFF_COMPARE tetMeshRH.usda
+    DIFF_COMPARE tetMeshLH.usda
+)
+
+pxr_register_test(testUsdGeomMetrics
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomMetrics"
     EXPECTED_RETURN_CODE 0
 )
 

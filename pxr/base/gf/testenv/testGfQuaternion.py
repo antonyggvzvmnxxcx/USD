@@ -2,25 +2,8 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 from __future__ import division
 
@@ -83,9 +66,11 @@ class TestGfQuaternion(unittest.TestCase):
     def test_Methods(self):
         for quatType, vec3Type, closeVal in testClasses:
             q = quatType()
+            self.assertEqual(quatType.GetZero(), quatType(0))
             self.assertEqual(quatType.GetIdentity(), quatType(1, vec3Type()))
 
-            self.assertTrue(quatType.GetIdentity().GetLength() == 1)
+            self.assertTrue(quatType.GetZero().GetLength() == 0 and
+                            quatType.GetIdentity().GetLength() == 1)
             self.assertTrue(Gf.IsClose(quatType(1,vec3Type(2,3,4)).GetLength(),
                                        5.4772255750516612, closeVal))
             
@@ -124,29 +109,44 @@ class TestGfQuaternion(unittest.TestCase):
             q2.real = 2
             self.assertTrue(q1 != q2)
 
+            q = quatType(1, vec3Type(2,3,4)) * quatType.GetZero()
+            self.assertEqual(q, quatType.GetZero())
+
             q = quatType(1, vec3Type(2,3,4)) * quatType.GetIdentity()
             self.assertEqual(q, quatType(1, vec3Type(2,3,4)))
 
             q = quatType(1, vec3Type(2,3,4))
+            q *= quatType.GetZero()
+            self.assertEqual(q, quatType.GetZero())
+
+            q = quatType(1, vec3Type(2,3,4))
+            q_original = q
             q *= quatType.GetIdentity()
             self.assertEqual(q, quatType(1, vec3Type(2,3,4)))
+            self.assertTrue(q is q_original)
 
             q *= 10
             self.assertEqual(q, quatType(10, vec3Type(20,30,40)))
+            self.assertTrue(q is q_original)
             q = q * 10
             self.assertEqual(q, quatType(100, vec3Type(200,300,400)))
             q = 10 * q
             self.assertEqual(q, quatType(1000, vec3Type(2000,3000,4000)))
+            q_original = q
             q /= 100
             self.assertEqual(q, quatType(10, vec3Type(20,30,40)))
+            self.assertTrue(q is q_original)
             q = q / 10
             self.assertEqual(q, quatType(1, vec3Type(2,3,4)))
 
+            q_original = q
             q += q
             self.assertEqual(q, quatType(2, vec3Type(4,6,8)))
+            self.assertTrue(q is q_original)
 
             q -= quatType(1, vec3Type(2,3,4))
             self.assertEqual(q, quatType(1, vec3Type(2,3,4)))
+            self.assertTrue(q is q_original)
 
             q = q + q
             self.assertEqual(q, quatType(2, vec3Type(4,6,8)))
@@ -207,6 +207,12 @@ class TestGfQuaternion(unittest.TestCase):
             r2 = q.Transform(p)
             self.assertTrue(Gf.IsClose(r1, vec3Type(0.0, 1.0, 0.0), closeVal) and
                             Gf.IsClose(r1, r2, closeVal))
+
+    def test_Hash(self):
+        for QuatType, Vec3Type, _ in testClasses:
+            q = QuatType(1.0, Vec3Type(2.0, 3.0, 4.0))
+            self.assertEqual(hash(q), hash(q))
+            self.assertEqual(hash(q), hash(QuatType(q)))
 
 if __name__ == '__main__':
     unittest.main()

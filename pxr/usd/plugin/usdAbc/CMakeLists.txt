@@ -15,6 +15,22 @@ if (PXR_ENABLE_HDF5_SUPPORT)
    list(APPEND optionalIncludeDirs ${HDF5_INCLUDE_DIRS})
 endif()
 
+# Use the import targets set by Imath's package config
+# Note that the ImathConfig target must also be included to insure the
+# Imath directory is part of the include paths when compiling this
+# library. This is needed to accommodate Alembic headers that include
+# <half.h> instead of <Imath/half.h>
+if (Imath_FOUND)
+    set(__ALEMBIC_IMATH_LIBS "Imath::ImathConfig;Imath::Imath")
+else()
+    set(__ALEMBIC_IMATH_INCLUDES ${OPENEXR_INCLUDE_DIRS})
+    LIST(APPEND __ALEMBIC_IMATH_LIBS ${OPENEXR_Half_LIBRARY})
+    LIST(APPEND __ALEMBIC_IMATH_LIBS ${OPENEXR_Imath_LIBRARY})
+    LIST(APPEND __ALEMBIC_IMATH_LIBS ${OPENEXR_Iex_LIBRARY})
+    LIST(APPEND __ALEMBIC_IMATH_LIBS ${OPENEXR_IexMath_LIBRARY})
+endif()
+
+
 pxr_plugin(usdAbc
     LIBRARIES
         tf
@@ -23,15 +39,12 @@ pxr_plugin(usdAbc
         usd
         usdGeom
         ${ALEMBIC_LIBRARIES}
-        ${OPENEXR_Half_LIBRARY} 
-        ${OPENEXR_Imath_LIBRARY} 
-        ${OPENEXR_Iex_LIBRARY} 
-        ${OPENEXR_IexMath_LIBRARY}
+        ${__ALEMBIC_IMATH_LIBS}
         ${optionalLibs}
 
     INCLUDE_DIRS
         ${ALEMBIC_INCLUDE_DIR}
-        ${OPENEXR_INCLUDE_DIRS}
+        ${__ALEMBIC_IMATH_INCLUDES}
         ${optionalIncludeDirs}
 
     PRIVATE_CLASSES
@@ -44,9 +57,6 @@ pxr_plugin(usdAbc
 
     PRIVATE_HEADERS
         api.h
-
-    PYTHON_CPPFILES
-        moduleDeps.cpp
 
     PYMODULE_CPPFILES
         module.cpp
@@ -76,6 +86,7 @@ pxr_test_scripts(
     testenv/testUsdAbcUvReadWrite.py
     testenv/testUsdAbcUvReadWrite_OldEncoding.py
     testenv/testUsdAbcSDFArguments.py
+    testenv/testUsdAbcXformPrimCollapsing.py
 )
 
 pxr_install_test_dir(
@@ -111,6 +122,11 @@ pxr_install_test_dir(
 pxr_install_test_dir(
     SRC testenv/testUsdAbcIndexedProperties
     DEST testUsdAbcIndexedProperties
+)
+
+pxr_install_test_dir(
+    SRC testenv/testUsdAbcIndexedGeomArb
+    DEST testUsdAbcIndexedGeomArb
 )
 
 pxr_install_test_dir(
@@ -158,6 +174,11 @@ pxr_install_test_dir(
     DEST testUsdAbcSDFArguments
 )
 
+pxr_install_test_dir(
+    SRC testenv/testUsdAbcXformPrimCollapsing
+    DEST testUsdAbcXformPrimCollapsing
+)
+
 pxr_register_test(testUsdAbcAlembicData
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdAbcAlembicData"
@@ -200,6 +221,14 @@ pxr_register_test(testUsdAbcIndexedProperties
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdAbcIndexedProperties"
     DIFF_COMPARE indexedTextureCoordinates.def.usda
+    EXPECTED_RETURN_CODE 0
+    ENV
+        USD_ABC_TESTSUFFIX=def
+)
+
+pxr_register_test(testUsdAbcIndexedGeomArb
+    COMMAND "${CMAKE_INSTALL_PREFIX}/bin/usdcat hasColorSet.abc --out good_primvars_namespace_after_fix.usda"
+    DIFF_COMPARE good_primvars_namespace_after_fix.usda
     EXPECTED_RETURN_CODE 0
     ENV
         USD_ABC_TESTSUFFIX=def
@@ -275,5 +304,11 @@ pxr_register_test(testUsdAbcUvReadWrite_OldEncoding
 pxr_register_test(testUsdAbcSDFArguments
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdAbcSDFArguments"
+    EXPECTED_RETURN_CODE 0
+)
+
+pxr_register_test(testUsdAbcXformPrimCollapsing
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdAbcXformPrimCollapsing"
     EXPECTED_RETURN_CODE 0
 )

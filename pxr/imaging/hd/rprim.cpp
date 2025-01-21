@@ -1,47 +1,15 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hd/rprim.h"
 
-#include "pxr/imaging/hd/bufferSpec.h"
 #include "pxr/imaging/hd/changeTracker.h"
-#include "pxr/imaging/hd/computation.h"
-#include "pxr/imaging/hd/drawItem.h"
-#include "pxr/imaging/hd/extComputation.h"
 #include "pxr/imaging/hd/instancer.h"
-#include "pxr/imaging/hd/instanceRegistry.h"
-#include "pxr/imaging/hd/material.h"
 #include "pxr/imaging/hd/perfLog.h"
-#include "pxr/imaging/hd/repr.h"
 #include "pxr/imaging/hd/renderIndex.h"
-#include "pxr/imaging/hd/resourceRegistry.h"
-#include "pxr/imaging/hd/sceneDelegate.h"
-#include "pxr/imaging/hd/tokens.h"
-#include "pxr/imaging/hd/vtBufferSource.h"
-
-#include "pxr/base/tf/envSetting.h"
-
-#include "pxr/base/arch/hash.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -55,10 +23,7 @@ HdRprim::HdRprim(SdfPath const& id)
     _sharedData.rprimID = id;
 }
 
-HdRprim::~HdRprim()
-{
-    /*NOTHING*/
-}
+HdRprim::~HdRprim() = default;
 
 // -------------------------------------------------------------------------- //
 ///                 Rprim Hydra Engine API : Pre-Sync & Sync-Phase
@@ -180,12 +145,6 @@ HdRprim::SetMaterialId(SdfPath const& materialId)
     _materialId = materialId;
 }
 
-void 
-HdRprim::SetMaterialTag(TfToken const& materialTag)
-{
-    _sharedData.materialTag = materialTag;
-}
-
 bool
 HdRprim::IsDirty(HdChangeTracker &changeTracker) const
 {
@@ -196,11 +155,17 @@ void
 HdRprim::UpdateReprSelector(HdSceneDelegate* delegate,
                             HdDirtyBits *dirtyBits)
 {
-    SdfPath const& id = GetId();
-    if (HdChangeTracker::IsReprDirty(*dirtyBits, id)) {
-        _authoredReprSelector = delegate->GetReprSelector(id);
+    if (HdChangeTracker::IsReprDirty(*dirtyBits, GetId())) {
+        _authoredReprSelector = delegate->GetReprSelector(GetId());
         *dirtyBits &= ~HdChangeTracker::DirtyRepr;
     }
+}
+
+void
+HdRprim::UpdateRenderTag(HdSceneDelegate *delegate,
+                         HdRenderParam *renderParam)
+{
+    _renderTag = delegate->GetRenderTag(GetId());
 }
 
 // -------------------------------------------------------------------------- //

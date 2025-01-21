@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hgiVulkan/conversions.h"
 #include "pxr/imaging/hgiVulkan/device.h"
@@ -37,7 +20,9 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 HgiVulkanShaderFunction::HgiVulkanShaderFunction(
     HgiVulkanDevice* device,
-    HgiShaderFunctionDesc const& desc)
+    Hgi const* hgi,
+    HgiShaderFunctionDesc const& desc,
+    int shaderVersion)
     : HgiShaderFunction(desc)
     , _device(device)
     , _spirvByteSize(0)
@@ -52,11 +37,9 @@ HgiVulkanShaderFunction::HgiVulkanShaderFunction(
     const char* debugLbl = _descriptor.debugName.empty() ?
         "unknown" : _descriptor.debugName.c_str();
 
-    HgiVulkanShaderGenerator shaderGenerator {desc};
-    std::stringstream ss;
-    shaderGenerator.Execute(ss);
-    std::string shaderStr = ss.str();
-    const char* shaderCode = shaderStr.c_str();
+    HgiVulkanShaderGenerator shaderGenerator(hgi, desc);
+    shaderGenerator.Execute();
+    const char *shaderCode = shaderGenerator.GetGeneratedShaderCode();
 
     // Compile shader and capture errors
     bool result = HgiVulkanCompileGLSL(
@@ -74,12 +57,12 @@ HgiVulkanShaderFunction::HgiVulkanShaderFunction(
         shaderCreateInfo.codeSize = _spirvByteSize;
         shaderCreateInfo.pCode = (uint32_t*) spirv.data();
 
-        TF_VERIFY(
+        HGIVULKAN_VERIFY_VK_RESULT(
             vkCreateShaderModule(
                 device->GetVulkanDevice(),
                 &shaderCreateInfo,
                 HgiVulkanAllocator(),
-                &_vkShaderModule) == VK_SUCCESS
+                &_vkShaderModule)
         );
 
         // Debug label
@@ -102,7 +85,11 @@ HgiVulkanShaderFunction::HgiVulkanShaderFunction(
         _descriptorSetInfo = HgiVulkanGatherDescriptorSetInfo(spirv);
     }
 
+    // Clear these pointers in our copy of the descriptor since we
+    // have to assume they could become invalid after we return.
+    _descriptor.shaderCodeDeclarations = nullptr;
     _descriptor.shaderCode = nullptr;
+    _descriptor.generatedShaderCodeOut = nullptr;
 }
 
 HgiVulkanShaderFunction::~HgiVulkanShaderFunction()

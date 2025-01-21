@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_USD_RELATIONSHIP_H
 #define PXR_USD_USD_RELATIONSHIP_H
@@ -53,7 +36,7 @@ typedef std::vector<UsdRelationship> UsdRelationshipVector;
 /// A UsdRelationship is a pointer to other objects, which are named by their
 /// scenegraph paths.  When authoring relationships, the \em target parameters
 /// should be scenegraph paths in the composed namespace of the UsdStage into
-/// which you are authoring.  If your edits are targetted to a different
+/// which you are authoring.  If your edits are targeted to a different
 /// layer, across various composition arcs (because you specified a non-default
 /// \ref UsdEditTarget), the target's path will be automatically translated
 /// into the proper namespace.
@@ -65,10 +48,10 @@ typedef std::vector<UsdRelationship> UsdRelationshipVector;
 /// relationship in weaker layers \em without stomping the weaker opinions,
 /// although stomping behavior is still possible, via SetTargets().
 ///
-/// An authored relationship creates a dependency of the targetting prim on
-/// the targetted prim(s).  We consider these dependencies to be "load
+/// An authored relationship creates a dependency of the targeting prim on
+/// the targeted prim(s).  We consider these dependencies to be "load
 /// dependencies", which means that when we load the targeting prim's
-/// "load group", we will also load the targetted prims' load groups, to ensure
+/// "load group", we will also load the targeted prims' load groups, to ensure
 /// that all the data required to render the model containing the targeting
 /// prim is composed and available.
 ///
@@ -89,7 +72,7 @@ typedef std::vector<UsdRelationship> UsdRelationshipVector;
 /// the aggregate.
 ///
 /// This can happen because references encapsulate just the tree whose root
-/// is targetted in the reference - no other scene description in the
+/// is targeted in the reference - no other scene description in the
 /// referenced layer will be composed into the aggregate.  So if some
 /// descendant prim of the referenced root targets a relationship to another
 /// tree in the same layer, that relationship would dangle, and the client
@@ -117,11 +100,11 @@ typedef std::vector<UsdRelationship> UsdRelationshipVector;
 ///     other prims to target.  The prim also hosts a "bindingVariant"
 ///     UsdVariantSet whose variants each modulate the target of the
 ///     binding-post relationship.  We can now change the \em forwarded target 
-///     of all prims targetting the binding-post by simply switching the
+///     of all prims targeting the binding-post by simply switching the
 ///     bindingVariant VariantSet.  We will work through this example in
 ///     the USD reference manual.
 /// \li Defining a relationship as part of a model's interface (so that it can
-///     be targetted in model hierarchy with no models loaded), which, inside
+///     be targeted in model hierarchy with no models loaded), which, inside
 ///     the model's payload, forwards to prims useful to a client, the set of
 ///     which may vary depending on the model's configured VariantSets.
 ///

@@ -1,31 +1,14 @@
 //
 // Copyright 2018 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_IMAGING_USD_SKEL_IMAGING_SKELETON_ADAPTER_H
 #define PXR_USD_IMAGING_USD_SKEL_IMAGING_SKELETON_ADAPTER_H
 
 #include "pxr/pxr.h"
-#include "pxr/usdImaging/usdImaging/primAdapter.h"
+#include "pxr/usdImaging/usdImaging/instanceablePrimAdapter.h"
 #include "pxr/usdImaging/usdSkelImaging/api.h"
 
 #include "pxr/imaging/hd/meshTopology.h"
@@ -36,21 +19,18 @@
 #include "pxr/usd/usdSkel/skeleton.h"
 #include "pxr/usd/usdSkel/skeletonQuery.h"
 
-#include <boost/unordered_map.hpp>
 #include <unordered_map>
-
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-
-/// \class UsdImagingSkeletonAdapter
+/// \class UsdSkelImagingSkeletonAdapter
 ///
-/// Support for drawing bones of a UsdSkelSkeleton.  
+/// Prim adapter for UsdSkel's Skeleton.
 ///
-class UsdSkelImagingSkeletonAdapter : public UsdImagingPrimAdapter 
+class UsdSkelImagingSkeletonAdapter : public UsdImagingInstanceablePrimAdapter 
 {
 public:
-    using BaseAdapter = UsdImagingPrimAdapter;
+    using BaseAdapter = UsdImagingInstanceablePrimAdapter;
 
     UsdSkelImagingSkeletonAdapter()
         : BaseAdapter()
@@ -210,12 +190,14 @@ public:
                             const UsdImagingInstancerContext *instancerContext) 
                                         const override;
 
+    USDSKELIMAGING_API
     HdExtComputationOutputDescriptorVector
     GetExtComputationOutputs(UsdPrim const& prim,
                              SdfPath const& cachePath,
                              const UsdImagingInstancerContext* instancerContext)
                                     const override;
 
+    USDSKELIMAGING_API
     HdExtComputationPrimvarDescriptorVector
     GetExtComputationPrimvars(
             UsdPrim const& prim,
@@ -223,7 +205,7 @@ public:
             HdInterpolation interpolation,
             const UsdImagingInstancerContext* instancerContext) const override;
 
-    USDIMAGING_API
+    USDSKELIMAGING_API
     VtValue 
     GetExtComputationInput(
             UsdPrim const& prim,
@@ -232,7 +214,7 @@ public:
             UsdTimeCode time,
             const UsdImagingInstancerContext* instancerContext) const override;
 
-    USDIMAGING_API
+    USDSKELIMAGING_API
     size_t
     SampleExtComputationInput(
             UsdPrim const& prim,
@@ -244,7 +226,7 @@ public:
             float *sampleTimes,
             VtValue *sampleValues) override;
 
-    USDIMAGING_API
+    USDSKELIMAGING_API
     std::string 
     GetExtComputationKernel(
             UsdPrim const& prim,
@@ -259,6 +241,30 @@ public:
                 UsdTimeCode time,
                 VtIntArray *outIndices) const override;
 
+    // ---------------------------------------------------------------------- //
+    /// \name Scene Index Support
+    // ---------------------------------------------------------------------- //
+    USDSKELIMAGING_API
+    TfTokenVector GetImagingSubprims(UsdPrim const &prim) override;
+
+    USDSKELIMAGING_API
+    TfToken GetImagingSubprimType(
+            UsdPrim const &prim,
+            TfToken const &subprim) override;
+
+    USDSKELIMAGING_API
+    HdContainerDataSourceHandle GetImagingSubprimData(
+            UsdPrim const& prim,
+            TfToken const& subprim,
+            const UsdImagingDataSourceStageGlobals &stageGlobals) override;
+
+    USDSKELIMAGING_API
+    HdDataSourceLocatorSet InvalidateImagingSubprim(
+            UsdPrim const& prim,
+            TfToken const& subprim,
+            TfTokenVector const& properties,
+            UsdImagingPropertyInvalidationType invalidationType) override;
+    
 protected:
     // ---------------------------------------------------------------------- //
     /// \name Change Processing API (protected)
@@ -267,6 +273,11 @@ protected:
                      UsdImagingIndexProxy* index) override;
 
 private:
+    enum class _ComputationType : uint8_t {
+        Points,
+        Normals
+    };
+
     // ---------------------------------------------------------------------- //
     /// Handlers for the Bone Mesh
     // ---------------------------------------------------------------------- //
@@ -308,10 +319,18 @@ private:
     // ---------------------------------------------------------------------- //
     /// Handlers for the skinning computations
     // ---------------------------------------------------------------------- //
-    bool _IsSkinningComputationPath(const SdfPath& cachePath) const;
-    
-    bool
-    _IsSkinningInputAggregatorComputationPath(const SdfPath& cachePath)const;
+    bool _IsSkinningPointsComputationPath(const SdfPath& cachePath) const;
+
+    bool _IsSkinningNormalsComputationPath(const SdfPath& cachePath) const;
+
+    _ComputationType _GetSkinningComputationType(
+        const SdfPath& cachePath) const;
+
+    bool _IsSkinningPointsInputAggregatorComputationPath(
+        const SdfPath& cachePath) const;
+
+    bool _IsSkinningNormalsInputAggregatorComputationPath(
+        const SdfPath& cachePath) const;
 
     void _TrackSkinningComputationVariability(
             const UsdPrim& skinnedPrim,
@@ -324,18 +343,34 @@ private:
                                        const SdfPath& skinnedPrimCachePath,
                                        UsdTimeCode time) const;
     
-    SdfPath _GetSkinningComputationPath(const SdfPath& skinnedPrimPath) const;
+    VtVec3fArray _GetSkinnedPrimNormals(const UsdPrim& skinnedPrim,
+                                       const SdfPath& skinnedPrimCachePath,
+                                       UsdTimeCode time) const;
+
+    VtIntArray _GetSkinnedPrimFaceVertexIndices(const UsdPrim& skinnedPrim,
+                                       const SdfPath& skinnedPrimCachePath,
+                                       UsdTimeCode time) const;
+
+    SdfPath _GetSkinningComputationPath(
+        const SdfPath& skinnedPrimPath,
+        _ComputationType computationType) const;
 
     SdfPath _GetSkinningInputAggregatorComputationPath(
-        const SdfPath& skinnedPrimPath) const;
+        const SdfPath& skinnedPrimPath,
+        _ComputationType computationType) const;
 
     // Static helper methods
     static
-    std::string _LoadSkinningComputeKernel();
+    std::string _LoadSkinningComputeKernel(const TfToken& kernelKey);
 
     static
-    const std::string& _GetSkinningComputeKernel();
- 
+    const std::string& _GetLBSSkinningComputeKernel(
+        _ComputationType computationType);
+
+    static
+    const std::string& _GetDQSSkinningComputeKernel(
+        _ComputationType computationType);
+    
     // ---------------------------------------------------------------------- //
     /// Handlers for the skinned prim
     // ---------------------------------------------------------------------- //
@@ -397,6 +432,26 @@ private:
             float *sampleTimes,
             VtValue *sampleValues);
 
+    /// Returns the sample time offset that should be reported for computation
+    /// inputs which are not time-varying.
+    double _GetDefaultSampleTime(UsdTimeCode time);
+
+    // ---------------------------------------------------------------------- //
+    /// Matrix helpers
+    // ---------------------------------------------------------------------- //
+    static
+    bool
+    _ExtractSkinningScaleXforms(
+        const VtMatrix4fArray& skinningXforms,
+        _ComputationType computationType,
+        VtMatrix3fArray* skinningScaleXforms);
+
+    static
+    bool
+    _ExtractSkinningDualQuats(
+        const VtMatrix4fArray& skinningXforms,
+        _ComputationType computationType,
+        VtVec4fArray* skinningDualQuats);
 
     // ---------------------------------------------------------------------- //
     /// Populated skeleton state
@@ -414,6 +469,8 @@ private:
         /// Compute animated  bone mesh points.
         VtVec3fArray ComputePoints(UsdTimeCode time) const;
 
+        /// Returns the purpose opinion authored on the skeleton prim or its
+        /// ancestors. If none exists, returns an empty token.
         TfToken ComputePurpose() const;
 
     private:
@@ -441,13 +498,15 @@ private:
         _SkinnedPrimData(const SdfPath& skelPath,
                          const UsdSkelSkeletonQuery& skelQuery,
                          const UsdSkelSkinningQuery& skinningQuery,
-                         const SdfPath& skelRootPath);
+                         const SdfPath& skelRootPath,
+                         const UsdSkelImagingSkeletonAdapter* adapter);
 
         std::shared_ptr<UsdSkelBlendShapeQuery> blendShapeQuery;
         UsdSkelSkinningQuery skinningQuery;
         UsdSkelAnimQuery animQuery;
         SdfPath skelPath, skelRootPath;
         bool hasJointInfluences = false;
+        TfToken normalsInterpolation;
     };
 
     const _SkinnedPrimData* _GetSkinnedPrimData(const SdfPath& cachePath) const;

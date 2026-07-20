@@ -1,26 +1,11 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
-#
+
+from __future__ import division
 from .qt import QtCore, QtWidgets
 
 # simple class to have a "clear" button on a line edit when the line edit
@@ -33,7 +18,7 @@ class OverridableLineEdit(QtWidgets.QLineEdit):
         # create the clear button.
         self._clearButton = QtWidgets.QToolButton(self)
         self._clearButton.setText('x')
-        self._clearButton.setCursor(QtCore.Qt.ArrowCursor)
+        self._clearButton.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
         self._clearButton.setFixedSize(16, 16)
         self._clearButton.hide()
         self._defaultText = ''  # default value holder
@@ -44,7 +29,7 @@ class OverridableLineEdit(QtWidgets.QLineEdit):
     # properly place the button
     def resizeEvent(self, event):
         sz = QtCore.QSize(self._clearButton.size())
-        frameWidth = self.style().pixelMetric(QtWidgets.QStyle.PM_DefaultFrameWidth)
+        frameWidth = self.style().pixelMetric(QtWidgets.QStyle.PixelMetric.PM_DefaultFrameWidth)
         self._clearButton.move(self.rect().right() - frameWidth - sz.width(),
                                (self.rect().bottom() + 1 - sz.height())/2)
 

@@ -1,30 +1,14 @@
 #
 # Copyright 2017 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 
-from pxr import Usd, UsdGeom, UsdShade
+from numbers import Real
+from pxr import Usd, UsdGeom, UsdShade, UsdSemantics
 from .qt import QtCore
-from .common import Timer, IncludedPurposes
+from .common import IncludedPurposes, Timer
 from pxr.UsdUtils.constantsGroup import ConstantsGroup
 
 class ChangeNotice(ConstantsGroup):
@@ -41,12 +25,12 @@ class RootDataModel(QtCore.QObject):
     signalStageReplaced = QtCore.Signal()
     signalPrimsChanged = QtCore.Signal(ChangeNotice, ChangeNotice)
 
-    def __init__(self, printTiming=False):
+    def __init__(self, makeTimer=None):
 
         QtCore.QObject.__init__(self)
 
         self._stage = None
-        self._printTiming = printTiming
+        self._makeTimer = makeTimer if makeTimer is not None else Timer
 
         self._currentFrame = Usd.TimeCode.Default()
         self._playing = False
@@ -80,14 +64,14 @@ class RootDataModel(QtCore.QObject):
                 self._pcListener = None
 
             if value is None:
-                with Timer() as t:
+                with self._makeTimer('close stage'):
                     self._stage = None
-                if self._printTiming:
-                    t.PrintTime('close stage')
             else:
                 self._stage = value
 
             if self._stage:
+                self._frameRangeBegin = self._stage.GetStartTimeCode()
+                self._frameRangeEnd = self._stage.GetEndTimeCode()
                 from pxr import Tf
                 self._pcListener = \
                     Tf.Notice.Register(Usd.Notice.ObjectsChanged,
@@ -117,6 +101,47 @@ class RootDataModel(QtCore.QObject):
 
         self._emitPrimsChanged(primChange, propertyChange)
 
+    frameRangeChanged = QtCore.Signal(float, float)
+    currentFrameChanged = QtCore.Signal(Usd.TimeCode)
+
+    @property
+    def frameRangeBegin(self):
+        """Get the start of the current frame range"""
+        return self._frameRangeBegin
+
+    @frameRangeBegin.setter
+    def frameRangeBegin(self, value):
+        """Set the start of the current frame range"""
+        if value is None:
+            value = 0.0
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError(f"Expected real number, got: {value!r}")
+        value = float(value)
+
+        if value != self._frameRangeBegin:
+            self._frameRangeBegin = value
+            self.frameRangeChanged.emit(
+                self._frameRangeBegin, self._frameRangeEnd)
+
+    @property
+    def frameRangeEnd(self):
+        """Get the end of the current frame range"""
+        return self._frameRangeEnd
+
+    @frameRangeEnd.setter
+    def frameRangeEnd(self, value):
+        """Set the end of the current frame range"""
+        if value is None:
+            value = 0.0
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError(f"Expected real number, got: {value!r}")
+        value = float(value)
+
+        if value != self._frameRangeEnd:
+            self._frameRangeEnd = value
+            self.frameRangeChanged.emit(
+                self._frameRangeBegin, self._frameRangeEnd)
+
     @property
     def currentFrame(self):
         """Get a Usd.TimeCode object which represents the current frame being
@@ -130,8 +155,9 @@ class RootDataModel(QtCore.QObject):
 
         if not isinstance(value, Usd.TimeCode):
             raise ValueError("Expected Usd.TimeCode, got: {}".format(value))
-
-        self._currentFrame = value
+        if value != self._currentFrame:
+            self.currentFrameChanged.emit(value)
+            self._currentFrame = value
         self._bboxCache.SetTime(self._currentFrame)
         self._xformCache.SetTime(self._currentFrame)
 
@@ -228,3 +254,14 @@ class RootDataModel(QtCore.QObject):
         # We don't use the binding cache yet since it isn't exposed to python.
         return UsdShade.MaterialBindingAPI(
                 prim).ComputeBoundMaterial(purpose)
+
+    def getResolvedLabels(self, prim, frame):
+        """Compute the resolved labels for a prim."""
+        inheritedTaxonomies = \
+                UsdSemantics.LabelsAPI.ComputeInheritedTaxonomies(prim)
+        resolvedLabels: dict[str, list[str]] = {}
+        for taxonomy in inheritedTaxonomies:
+            query = UsdSemantics.LabelsQuery(taxonomy, frame)
+            labels = query.ComputeUniqueInheritedLabels(prim)
+            resolvedLabels[taxonomy] = list(labels)
+        return resolvedLabels

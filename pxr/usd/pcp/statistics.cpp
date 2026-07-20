@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -96,19 +79,17 @@ public:
         }
     }
 
-    struct MapFuncHash {
-        size_t operator()(const PcpMapFunction &m) const {
-            return m.Hash();
-        }
-    };
-
     static void AccumulateCacheStats(
         const PcpCache* cache, Pcp_CacheStats* stats)
     {
-        typedef std::shared_ptr<PcpPrimIndex_Graph::_SharedData> 
+        typedef std::shared_ptr<PcpPrimIndex_Graph::_NodePool> 
             _SharedNodePool;
         std::set<_SharedNodePool> seenNodePools;
-        TfHashSet<PcpMapFunction, MapFuncHash> allMapFuncs;
+
+        // Avoid storing PcpMapFunction directly, since comparisons and
+        // hashing operations may be expensive due to deferred-composition
+        // functions.
+        std::set<PcpMapFunction::PathMap> seenPathMaps;
 
         TF_FOR_ALL(it, cache->_primIndexCache) {
             const PcpPrimIndex& primIndex = it->second;
@@ -125,7 +106,7 @@ public:
                 primIndex, &stats->culledGraphStats, 
                 /* culledNodesOnly = */ true);
 
-            if (seenNodePools.insert(primIndex.GetGraph()->_data).second) {
+            if (seenNodePools.insert(primIndex.GetGraph()->_nodes).second) {
                 ++(stats->numGraphInstances);
 
                 AccumulateGraphStats(
@@ -138,8 +119,16 @@ public:
 
             // Gather map functions
             for (const PcpNodeRef &node: primIndex.GetNodeRange()) {
-                allMapFuncs.insert(node.GetMapToParent().Evaluate());
-                allMapFuncs.insert(node.GetMapToRoot().Evaluate());
+                // Avoid reexamining nodes that were already processed via
+                // namespace ancestors.
+                if (node.IsDueToAncestor()) {
+                    continue;
+                }
+
+                seenPathMaps.insert(node.GetMapToParent().Evaluate()
+                    .GetSourceToTargetMap());
+                seenPathMaps.insert(node.GetMapToRoot().Evaluate()
+                    .GetSourceToTargetMap());
             }
         }
 
@@ -153,9 +142,8 @@ public:
         }
 
         // PcpMapFunction size distribution
-        TF_FOR_ALL(i, allMapFuncs) {
-            size_t size = i->GetSourceToTargetMap().size();
-            stats->mapFunctionSizeDistribution[size] += 1;
+        for (const auto& m : seenPathMaps) {
+            stats->mapFunctionSizeDistribution[m.size()] += 1;
         }
 
         // PcpLayerStack _relocatesPrimPaths size distribution
@@ -170,7 +158,7 @@ public:
     struct _Helper {
         static std::string FormatNumber(size_t n)
         {
-            return TfStringPrintf("%'zd", n);
+            return TfStringPrintf("%zd", n);
         }
 
         static std::string FormatAverage(size_t n, size_t d)

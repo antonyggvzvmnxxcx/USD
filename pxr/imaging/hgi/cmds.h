@@ -1,30 +1,14 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HGI_CMDS_H
 #define PXR_IMAGING_HGI_CMDS_H
 
 #include "pxr/pxr.h"
+#include "pxr/base/gf/vec4f.h"
 #include "pxr/imaging/hgi/api.h"
 #include "pxr/imaging/hgi/enums.h"
 #include <memory>
@@ -67,6 +51,14 @@ protected:
     HGI_API
     void _SetSubmitted();
 
+    static constexpr GfVec4f s_computeDebugColor
+        = { 0.855, 0.161, 0.11, 1.0 };
+    static constexpr GfVec4f s_graphicsDebugColor
+        = { 0, 0.639, 0.878, 1.0 };
+    static constexpr GfVec4f s_blitDebugColor
+        = { 0.99607843137, 0.87450980392, 0.0, 1.0 };
+    static constexpr GfVec4f s_markerDebugColor
+        = { 0.0, 0.0, 0.0, 0.0 };
 private:
     HgiCmds & operator=(const HgiCmds&) = delete;
     HgiCmds(const HgiCmds&) = delete;

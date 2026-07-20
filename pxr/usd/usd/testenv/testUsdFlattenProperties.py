@@ -2,28 +2,11 @@
 #
 # Copyright 2017 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 
 import os, unittest
-from pxr import Usd, Sdf, Tf, Plug
+from pxr import Usd, Sdf, Tf, Gf, Plug
 
 class TestUsdFlattenProperties(unittest.TestCase):
     @classmethod
@@ -45,13 +28,13 @@ class TestUsdFlattenProperties(unittest.TestCase):
                 self.stage2: { -10: 100, 0: 1000 }
         }
         self.expectedTimeCodeDefaultValueOffsetSubLayer = {
-                self.srcStage: Sdf.TimeCode(0),
-                self.stage2: Sdf.TimeCode(-10)
+                self.srcStage: Gf.TimeCode(0),
+                self.stage2: Gf.TimeCode(-10)
         }
         self.expectedTimeCodeTimeSampleOffsetSubLayer = {
-                self.srcStage: { 0: Sdf.TimeCode(100), 10: Sdf.TimeCode(1000) },
+                self.srcStage: { 0: Gf.TimeCode(100), 10: Gf.TimeCode(1000) },
 
-                self.stage2: { -10.0: Sdf.TimeCode(90), 0.0: Sdf.TimeCode(990) }
+                self.stage2: { -10.0: Gf.TimeCode(90), 0.0: Gf.TimeCode(990) }
         }
 
     def tearDown(self):
@@ -197,9 +180,9 @@ class TestUsdFlattenProperties(unittest.TestCase):
         srcAttr = self.srcStage.GetPrimAtPath("/OffsetTimeCodeTimeSamples") \
                             .GetAttribute(propName)
 
-        self.assertEqual(self._GetDefault(srcAttr), Sdf.TimeCode(10))
+        self.assertEqual(self._GetDefault(srcAttr), Gf.TimeCode(10))
         self.assertEqual(self._GetTimeSamples(srcAttr), 
-                         { 10: Sdf.TimeCode(110), 20: Sdf.TimeCode(1010) })
+                         { 10: Gf.TimeCode(110), 20: Gf.TimeCode(1010) })
 
         rootPrimPath = Sdf.Path("/OffsetTimeCodeTimeSamplesRoot")
 
@@ -207,20 +190,20 @@ class TestUsdFlattenProperties(unittest.TestCase):
             dstAttr = srcAttr.FlattenTo(
                 dstStage.OverridePrim(rootPrimPath))
 
-            self.assertEqual(self._GetDefault(dstAttr), Sdf.TimeCode(10))
+            self.assertEqual(self._GetDefault(dstAttr), Gf.TimeCode(10))
             self.assertEqual(
-                self._GetTimeSamples(dstAttr), { 10: Sdf.TimeCode(110), 
-                                                 20: Sdf.TimeCode(1010) })
+                self._GetTimeSamples(dstAttr), { 10: Gf.TimeCode(110), 
+                                                 20: Gf.TimeCode(1010) })
             self.assertEqual(
                 self._GetDefaultInLayer(
                     dstStage.GetRootLayer(), rootPrimPath.AppendProperty(
                         propName)), 
-                Sdf.TimeCode(10))
+                Gf.TimeCode(10))
             self.assertEqual(
                 self._GetTimeSamplesInLayer(
                     dstStage.GetRootLayer(), rootPrimPath.AppendProperty(
                         propName)),
-                { 10: Sdf.TimeCode(110), 20: Sdf.TimeCode(1010) })
+                { 10: Gf.TimeCode(110), 20: Gf.TimeCode(1010) })
 
             subPrimPath = Sdf.Path("/OffsetTimeCodeTimeSamplesSublayer")
             dstSubLayer = dstStage.GetLayerStack()[-1]
@@ -229,10 +212,10 @@ class TestUsdFlattenProperties(unittest.TestCase):
                 dstAttr = srcAttr.FlattenTo(
                     dstStage.OverridePrim(subPrimPath))
 
-                self.assertEqual(self._GetDefault(dstAttr), Sdf.TimeCode(10))
+                self.assertEqual(self._GetDefault(dstAttr), Gf.TimeCode(10))
                 self.assertEqual(
-                    self._GetTimeSamples(dstAttr), { 10: Sdf.TimeCode(110), 
-                                                     20: Sdf.TimeCode(1010) })
+                    self._GetTimeSamples(dstAttr), { 10: Gf.TimeCode(110), 
+                                                     20: Gf.TimeCode(1010) })
                 self.assertEqual(
                     self._GetDefaultInLayer(
                         dstSubLayer, subPrimPath.AppendProperty(propName)), 

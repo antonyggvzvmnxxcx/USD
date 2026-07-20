@@ -1,25 +1,8 @@
 //
 // Copyright 2017 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 
@@ -31,16 +14,86 @@
 #include "pxr/base/tf/fileUtils.h"
 #include "pxr/base/tf/pathUtils.h"
 #include "pxr/base/tf/stringUtils.h"
+#include "pxr/base/tf/envSetting.h"
 
 #if defined(ARCH_OS_WINDOWS)
 #include <Windows.h>
+#include <algorithm>
+#include <chrono>
 #include <io.h>
+#include <thread>
 #endif
 
 #include <string>
 #include <cerrno>
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+#if defined(ARCH_OS_WINDOWS)
+
+// On Windows we retry renames for reasons explained below.  By default, we wait
+// up to 300 msec before giving up (15 retries x 20msec waits).
+TF_DEFINE_ENV_SETTING(
+    PXR_WINDOWS_FILE_ATOMIC_RENAME_RETRIES, 15,
+    "Times to retry atomic file renaming if locked");
+
+TF_DEFINE_ENV_SETTING(
+    PXR_WINDOWS_FILE_ATOMIC_RENAME_RETRY_WAIT_MS, 20,
+    "Wait time in milliseconds between atomic file rename retries if locked");
+
+static bool
+TryMove(std::wstring const &wsrc, std::wstring const &wdst)
+{
+    return MoveFileExW(
+        wsrc.c_str(), wdst.c_str(),
+        MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED) != FALSE;
+}
+
+static bool
+HaveMovePermissions(std::string const &src, std::string const &dst)
+{
+    // Docs for MoveFileExW say:
+    //    To delete or rename a file, you must have either delete permission on
+    //    the file or delete child permission in the parent directory.
+    if (ArchWindowsFileAccess(src.c_str(), DELETE) != 0) {
+        // Don't have delete perms on file, check for FILE_DELETE_CHILD on
+        // parent dir
+        std::string srcParent = TfGetPathName(src);
+        if (ArchWindowsFileAccess(srcParent.c_str(), FILE_DELETE_CHILD) != 0) {
+            return false;
+        }
+    }
+    // Check create child permission in the parent directory of dst
+    std::string dstParent = TfGetPathName(dst);
+    return ArchWindowsFileAccess(dstParent.c_str(), FILE_ADD_FILE) == 0;
+}
+
+// Older networked filesystems have reported incorrect file permissions
+// on Windows so the write permissions check has been disabled as a default
+static const bool requireWritePermissionDefault = false;
+
+#else // !defined(ARCH_OS_WINDOWS)
+
+static const bool requireWritePermissionDefault = true;
+
+#endif // defined (ARCH_OS_WINDOWS)
+
+#ifdef ARCH_OS_WASM_VM
+    // These defines are not present in sys/stat.h when building WASM, so we
+    // will define some reasonable values for use here.
+    #define ACCESSPERMS 0666
+    #define DEFFILEMODE 0666
+#endif
+
+TF_DEFINE_ENV_SETTING(
+    TF_REQUIRE_FILESYSTEM_WRITE_PERMISSION, requireWritePermissionDefault,
+        "If enabled, check for both directory and file write permissions "
+        "before creating output files. Otherwise attempt to create output "
+        "files without first checking permissions. Note that if this is "
+        "disabled and the directory is writable then there is a risk of "
+        "renaming and obliterating the file; however it may be worth "
+        "disabling if your networked file system often reports incorrect "
+        "file permissions.");
 
 bool
 Tf_AtomicRenameFileOver(std::string const &srcFileName,
@@ -49,10 +102,55 @@ Tf_AtomicRenameFileOver(std::string const &srcFileName,
 {
     bool result = true;
 #if defined(ARCH_OS_WINDOWS)
-    bool moved = MoveFileEx(srcFileName.c_str(),
-                            dstFileName.c_str(),
-                            MOVEFILE_REPLACE_EXISTING |
-                            MOVEFILE_COPY_ALLOWED) != FALSE;
+    const std::wstring wsrc{ ArchWindowsUtf8ToUtf16(srcFileName) };
+    const std::wstring wdst{ ArchWindowsUtf8ToUtf16(dstFileName) };
+
+    // On Windows, it's not uncommon for some external process to grab a handle
+    // to newly created files (ie, Anti-Virus, Windows File Indexing), which can
+    // make that file inaccessible, and make the move fail.  The duration of the
+    // lock is usually brief, though, so add a short-ish retry period if it's
+    // locked.
+    auto getClampedEnvSetting =
+        [](TfEnvSetting<int> &setting, int minVal, int maxVal) {
+            int val = TfGetEnvSetting(setting);
+            int clamped = std::clamp(val, minVal, maxVal);
+            if (val != clamped) {
+                TF_WARN("Clamped %s setting %d to range [%d, %d] -> %d",
+                        setting._name, val, minVal, maxVal, clamped);
+            }
+            return clamped;
+        };
+
+    // With default values for PXR_WINDOWS_FILE_ATOMIC_RENAME_RETRIES +
+    // PXR_WINDOWS_FILE_ATOMIC_RENAME_RETRY_WAIT_MS, we will wait at most 15 *
+    // 20msec = 300msec. Clamp the setting values, so even if set to crazy
+    // values, it will wait at most 100 * .300s = 30s
+    static const int numRetries = getClampedEnvSetting(
+        PXR_WINDOWS_FILE_ATOMIC_RENAME_RETRIES, 0, 100);
+    static const int waitMS = getClampedEnvSetting(
+        PXR_WINDOWS_FILE_ATOMIC_RENAME_RETRY_WAIT_MS, 0, 300);
+    
+    bool moved = false;
+    const int numTries = 1 + numRetries;
+    for (int i = 0; i != numTries; ++i) {
+        moved = TryMove(wsrc, wdst);
+        if (moved) {
+            break;
+        }
+        DWORD lastError = ::GetLastError();
+        // Only check file perms the first time as an optimization - it's a
+        // filesystem operation, and possibly slow
+        if (i == 0 && !HaveMovePermissions(srcFileName, dstFileName)) {
+            break;
+        }
+        if (lastError != ERROR_SHARING_VIOLATION &&
+            lastError != ERROR_LOCK_VIOLATION &&
+            lastError != ERROR_ACCESS_DENIED) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(waitMS));
+    }
+
     if (!moved) {
         *error = TfStringPrintf(
             "Failed to rename temporary file '%s' to '%s': %s",
@@ -75,7 +173,7 @@ Tf_AtomicRenameFileOver(std::string const &srcFileName,
     } else {
         const mode_t mask = umask(0);
         umask(mask);
-        fileMode = DEFFILEMODE - mask;
+        fileMode = DEFFILEMODE & ~mask;
     }
 
     if (chmod(srcFileName.c_str(), fileMode) != 0) {
@@ -133,23 +231,26 @@ Tf_CreateSiblingTempFile(std::string fileName,
     std::string dirPath = TfStringGetBeforeSuffix(realFilePath, '/');
 #endif
 
-    if (ArchFileAccess(dirPath.c_str(), W_OK) != 0) {
-        *error = TfStringPrintf(
-            "Insufficient permissions to write to destination "
-            "directory '%s'", dirPath.c_str());
-        return result;
-    }
+    if (TfGetEnvSetting(TF_REQUIRE_FILESYSTEM_WRITE_PERMISSION)) {
+        if (ArchFileAccess(dirPath.c_str(), W_OK) != 0) {
+            *error = TfStringPrintf(
+                "Insufficient permissions to write to destination "
+                "directory '%s'", dirPath.c_str());
+            return result;
+        }
 
-    // Directory exists and has write permission. Check whether the destination
-    // file exists and has write permission. We can rename into this path
-    // successfully even if we can't write to the file, but we retain the policy
-    // that if the user couldn't open the file for writing, they can't write to
-    // the file via this object.
-    if (ArchFileAccess(realFilePath.c_str(), W_OK) != 0 && errno != ENOENT) {
-        *error = TfStringPrintf(
-            "Insufficient permissions to write to destination "
-            "file '%s'", realFilePath.c_str());
-        return result;
+        // Directory exists and has write permission. Check whether the
+        // destination file exists and has write permission. We can rename into
+        // this path successfully even if we can't write to the file, but we
+        // retain the policy that if the user couldn't open the file for
+        // writing, they can't write to the file via this object.
+        if (ArchFileAccess(
+                realFilePath.c_str(), W_OK) != 0 && errno != ENOENT) {
+            *error = TfStringPrintf(
+                "Insufficient permissions to write to destination "
+                "file '%s'", realFilePath.c_str());
+            return result;
+        }
     }
 
     std::string tmpFilePrefix =

@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 
@@ -28,12 +11,15 @@
 #include "pxr/imaging/hdSt/basisCurvesShaderKey.h"
 #include "pxr/imaging/hdSt/basisCurvesTopology.h"
 #include "pxr/imaging/hdSt/bufferArrayRange.h"
+#include "pxr/imaging/hdSt/computation.h"
 #include "pxr/imaging/hdSt/drawItem.h"
 #include "pxr/imaging/hdSt/extCompGpuComputation.h"
 #include "pxr/imaging/hdSt/geometricShader.h"
 #include "pxr/imaging/hdSt/instancer.h"
 #include "pxr/imaging/hdSt/material.h"
+#include "pxr/imaging/hdSt/materialNetworkShader.h"
 #include "pxr/imaging/hdSt/primUtils.h"
+#include "pxr/imaging/hdSt/renderParam.h"
 #include "pxr/imaging/hdSt/resourceRegistry.h"
 #include "pxr/imaging/hdSt/tokens.h"
 
@@ -45,10 +31,16 @@
 #include "pxr/base/gf/vec2i.h"
 
 #include "pxr/imaging/hd/bufferSource.h"
-#include "pxr/imaging/hd/computation.h"
 #include "pxr/imaging/hd/repr.h"
-#include "pxr/imaging/hd/vertexAdjacency.h"
+#include "pxr/imaging/hf/diagnostic.h"
 #include "pxr/base/vt/value.h"
+
+#include "pxr/imaging/hd/extComputationPrimvarsSchema.h"
+#include "pxr/imaging/hd/extComputationPrimvarSchema.h"
+#include "pxr/imaging/hd/primvarsSchema.h"
+#include "pxr/imaging/hd/primvarSchema.h"
+
+#include "pxr/imaging/hd/sceneIndexAdapterSceneDelegate.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -58,8 +50,11 @@ HdStBasisCurves::HdStBasisCurves(SdfPath const& id)
     , _topologyId(0)
     , _customDirtyBitsInUse(0)
     , _refineLevel(0)
-    , _displayOpacity(false)
+    , _displayOpacityFromInstancer(false)
+    , _displayOpacityFromPrimvars(false)
+    , _displayInOverlay(false)
     , _occludedSelectionShowsThrough(false)
+    , _pointsShadingEnabled(false)
 {
     /*NOTHING*/
 }
@@ -68,26 +63,37 @@ HdStBasisCurves::HdStBasisCurves(SdfPath const& id)
 HdStBasisCurves::~HdStBasisCurves() = default;
 
 void
+HdStBasisCurves::UpdateRenderTag(HdSceneDelegate *delegate,
+                                 HdRenderParam *renderParam)
+{
+    HdStUpdateRenderTag(delegate, renderParam, this);
+}
+
+
+void
 HdStBasisCurves::Sync(HdSceneDelegate *delegate,
                       HdRenderParam   *renderParam,
                       HdDirtyBits     *dirtyBits,
                       TfToken const   &reprToken)
 {
-    bool updateMaterialTag = false;
+    _UpdateVisibility(delegate, dirtyBits);
+
+    bool updateMaterialTags = false;
     if (*dirtyBits & HdChangeTracker::DirtyMaterialId) {
         HdStSetMaterialId(delegate, renderParam, this);
-        updateMaterialTag = true;
+        updateMaterialTags = true;
     }
-    if (*dirtyBits & HdChangeTracker::DirtyDisplayStyle) {
-        updateMaterialTag = true;
+    if (*dirtyBits & (HdChangeTracker::DirtyDisplayStyle|
+                      HdChangeTracker::NewRepr)) {
+        updateMaterialTags = true;
     }
 
     // Check if either the material or geometric shaders need updating for
     // draw items of all the reprs.
-    bool updateMaterialShader = false;
+    bool updateMaterialNetworkShader = false;
     if (*dirtyBits & (HdChangeTracker::DirtyMaterialId |
                       HdChangeTracker::NewRepr)) {
-        updateMaterialShader = true;
+        updateMaterialNetworkShader = true;
     }
 
     bool updateGeometricShader = false;
@@ -98,20 +104,22 @@ HdStBasisCurves::Sync(HdSceneDelegate *delegate,
         updateGeometricShader = true;
     }
 
-    bool displayOpacity = _displayOpacity;
+    bool displayOpacity =
+        _displayOpacityFromInstancer || _displayOpacityFromPrimvars;
     _UpdateRepr(delegate, renderParam, reprToken, dirtyBits);
 
-    if (updateMaterialTag || 
-        (GetMaterialId().IsEmpty() && displayOpacity != _displayOpacity)) { 
-
-        HdStSetMaterialTag(delegate, renderParam, this, _displayOpacity,
-                           _occludedSelectionShowsThrough);
+    if (updateMaterialTags || 
+        (GetMaterialId().IsEmpty() &&
+         displayOpacity !=
+         (_displayOpacityFromPrimvars || _displayOpacityFromInstancer))) { 
+        _UpdateMaterialTagsForAllReprs(delegate, renderParam);
     }
 
-    if (updateMaterialShader || updateGeometricShader) {
+    if (updateMaterialNetworkShader || updateGeometricShader) {
         _UpdateShadersForAllReprs(delegate, renderParam,
-                                  updateMaterialShader, updateGeometricShader);
+                          updateMaterialNetworkShader, updateGeometricShader);
     }
+
 
     // This clears all the non-custom dirty bits. This ensures that the rprim
     // doesn't have pending dirty bits that add it to the dirty list every
@@ -125,6 +133,27 @@ void
 HdStBasisCurves::Finalize(HdRenderParam *renderParam)
 {
     HdStMarkGarbageCollectionNeeded(renderParam);
+
+    HdStRenderParam * const stRenderParam =
+        static_cast<HdStRenderParam*>(renderParam);
+
+    // Decrement material tag counts for each draw item material tag
+    for (auto const& reprPair : _reprs) {
+        const TfToken &reprToken = reprPair.first;
+        _BasisCurvesReprConfig::DescArray const &descs =
+            _GetReprDesc(reprToken);
+        HdReprSharedPtr repr = reprPair.second;
+        int drawItemIndex = 0;
+        for (size_t descIdx = 0; descIdx < descs.size(); ++descIdx) {
+            if (descs[descIdx].geomStyle == HdBasisCurvesGeomStyleInvalid) {
+                continue;
+            }
+            HdStDrawItem *drawItem = static_cast<HdStDrawItem*>(
+                repr->GetDrawItem(drawItemIndex++));
+            stRenderParam->DecreaseMaterialTagCount(drawItem->GetMaterialTag());
+        }
+    }
+    stRenderParam->DecreaseRenderTagCount(GetRenderTag());
 }
 
 void
@@ -139,50 +168,53 @@ HdStBasisCurves::_UpdateDrawItem(HdSceneDelegate *sceneDelegate,
 
     SdfPath const& id = GetId();
 
-    /* VISIBILITY */
-    _UpdateVisibility(sceneDelegate, dirtyBits);
-
     /* MATERIAL SHADER (may affect subsequent primvar population) */
     if ((*dirtyBits & HdChangeTracker::NewRepr) ||
         HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, id)) {
-        drawItem->SetMaterialShader(HdStGetMaterialShader(this, sceneDelegate));
+        drawItem->SetMaterialNetworkShader(
+                HdStGetMaterialNetworkShader(this, sceneDelegate));
     }
 
     // Reset value of _displayOpacity
-    if (HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, id)) {
-        _displayOpacity = false;
+    if (*dirtyBits & HdChangeTracker::DirtyPrimvar) {
+        _displayOpacityFromPrimvars = false;
     }
 
     /* INSTANCE PRIMVARS */
     _UpdateInstancer(sceneDelegate, dirtyBits);
-    HdStUpdateInstancerData(sceneDelegate->GetRenderIndex(),
-                            renderParam,
-                            this,
-                            drawItem,
-                            &_sharedData,
-                            *dirtyBits);
-
-    _displayOpacity = _displayOpacity ||
-            HdStIsInstancePrimvarExistentAndValid(
-            sceneDelegate->GetRenderIndex(), this, HdTokens->displayOpacity);
+    {
+        // The data members are part of a bitfield, so we can't pass pointers
+        // to them directly. HdStUpdateInstancerData doesn't write to output
+        // params if DirtyInstancer is not set, so we initialize the locals
+        // to current member values to preserve existing state in that case.
+        bool displayOpacityFromInstancer = _displayOpacityFromInstancer;
+        HdStUpdateInstancerData(sceneDelegate->GetRenderIndex(),
+                                renderParam,
+                                this,
+                                drawItem,
+                                &_sharedData,
+                                *dirtyBits,
+                                &displayOpacityFromInstancer);
+        _displayOpacityFromInstancer = displayOpacityFromInstancer;
+    }
 
     /* CONSTANT PRIMVARS, TRANSFORM, EXTENT AND PRIMID */
     if (HdStShouldPopulateConstantPrimvars(dirtyBits, id)) {
-        HdPrimvarDescriptorVector constantPrimvars =
-            HdStGetPrimvarDescriptors(this, drawItem, sceneDelegate,
-                                    HdInterpolationConstant);
 
+        bool hasDisplayOpacity = false;
         HdStPopulateConstantPrimvars(this,
                                      &_sharedData,
                                      sceneDelegate,
                                      renderParam,
                                      drawItem,
                                      dirtyBits,
-                                     constantPrimvars);
+                                     nullptr, HdMeshGeomStyleInvalid, 0, 0,
+                                     nullptr, // hasMirroredTransform
+                                     &hasDisplayOpacity);
 
-        _displayOpacity = _displayOpacity ||
-            HdStIsPrimvarExistentAndValid(this, sceneDelegate, 
-            constantPrimvars, HdTokens->displayOpacity);
+        if (hasDisplayOpacity) {
+            _displayOpacityFromPrimvars = true;
+        }
     }
 
     /* TOPOLOGY */
@@ -199,13 +231,12 @@ HdStBasisCurves::_UpdateDrawItem(HdSceneDelegate *sceneDelegate,
 
     /* PRIMVAR */
     if (HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, id)) {
-        // XXX: curves don't use refined vertex primvars, however,
-        // the refined renderpass masks the dirtiness of non-refined vertex
-        // primvars, so we need to see refined dirty for updating coarse
-        // vertex primvars if there is only refined reprs being updated.
-        // we'll fix the change tracking in order to address this craziness.
         _PopulateVertexPrimvars(
             sceneDelegate, renderParam, drawItem, dirtyBits);
+    }
+    if (*dirtyBits & HdChangeTracker::DirtyNormals ||
+        *dirtyBits & HdChangeTracker::DirtyWidths ||
+        *dirtyBits & HdChangeTracker::DirtyPrimvar) {
         _PopulateVaryingPrimvars(
             sceneDelegate, renderParam, drawItem, dirtyBits);
         _PopulateElementPrimvars(
@@ -251,7 +282,11 @@ HdStBasisCurves::_UpdateDrawItemGeometricShader(
     if (!TF_VERIFY(_topology)) return;
 
     HdRenderIndex &renderIndex = sceneDelegate->GetRenderIndex();
-
+    
+    HdStResourceRegistrySharedPtr resourceRegistry =
+        std::static_pointer_cast<HdStResourceRegistry>(
+            renderIndex.GetResourceRegistry());
+    
     TfToken curveType = _topology->GetCurveType();
     TfToken curveBasis = _topology->GetCurveBasis();
     bool supportsRefinement = _SupportsRefinement(_refineLevel);
@@ -326,22 +361,39 @@ HdStBasisCurves::_UpdateDrawItemGeometricShader(
     bool hasAuthoredTopologicalVisiblity =
         (bool) drawItem->GetTopologyVisibilityRange();
 
+    // Process shadingTerminal (including shadingStyle)
+    TfToken shadingTerminal = desc.shadingTerminal;
+    if (shadingTerminal == HdBasisCurvesReprDescTokens->surfaceShader) {
+        TfToken shadingStyle =
+            sceneDelegate->GetShadingStyle(GetId()).GetWithDefault<TfToken>();
+        if (shadingStyle == HdStTokens->constantLighting) {
+            shadingTerminal = HdBasisCurvesReprDescTokens->surfaceShaderUnlit;
+        }
+    }
+
+    bool const hasMetalTessellation =
+        resourceRegistry->GetHgi()->GetCapabilities()->
+            IsSet(HgiDeviceCapabilitiesBitsMetalTessellation);
+
+    bool const nativeRoundPoints =
+        resourceRegistry->GetHgi()->GetCapabilities()->
+            IsSet(HgiDeviceCapabilitiesBitsRoundPoints);
+
     HdSt_BasisCurvesShaderKey shaderKey(curveType,
                                         curveBasis,
                                         drawStyle,
                                         normalStyle,
                                         _basisWidthInterpolation,
                                         _basisNormalInterpolation,
-                                        desc.shadingTerminal,
-                                        hasAuthoredTopologicalVisiblity);
+                                        shadingTerminal,
+                                        hasAuthoredTopologicalVisiblity,
+                                        _pointsShadingEnabled,
+                                        hasMetalTessellation,
+                                        nativeRoundPoints);
 
     TF_DEBUG(HD_RPRIM_UPDATED).
             Msg("HdStBasisCurves(%s) - Shader Key PrimType: %s\n ",
                 GetId().GetText(), HdSt_PrimTypeToString(shaderKey.primType));
-
-    HdStResourceRegistrySharedPtr resourceRegistry =
-        std::static_pointer_cast<HdStResourceRegistry>(
-            renderIndex.GetResourceRegistry());
 
     HdSt_GeometricShaderSharedPtr geomShader =
         HdSt_GeometricShader::Create(shaderKey, resourceRegistry);
@@ -368,7 +420,8 @@ HdStBasisCurves::_PropagateDirtyBits(HdDirtyBits bits) const
     // propagate scene-based dirtyBits into rprim-custom dirtyBits
     if (bits & HdChangeTracker::DirtyTopology) {
         bits |= _customDirtyBitsInUse &
-            (DirtyIndices|DirtyHullIndices|DirtyPointsIndices);
+            (DirtyIndices|DirtyHullIndices|DirtyPointsIndices|
+                HdChangeTracker::DirtyPrimvar);
     }
 
     return bits;
@@ -480,17 +533,64 @@ HdStBasisCurves::_UpdateRepr(HdSceneDelegate *sceneDelegate,
 void
 HdStBasisCurves::_UpdateShadersForAllReprs(HdSceneDelegate *sceneDelegate,
                                            HdRenderParam *renderParam,
-                                           bool updateMaterialShader,
+                                           bool updateMaterialNetworkShader,
                                            bool updateGeometricShader)
 {
     TF_DEBUG(HD_RPRIM_UPDATED). Msg(
         "(%s) - Updating geometric and material shaders for draw "
         "items of all reprs.\n", GetId().GetText());
 
-    HdStShaderCodeSharedPtr materialShader;
-    if (updateMaterialShader) {
-        materialShader = HdStGetMaterialShader(this, sceneDelegate);
+    HdSt_MaterialNetworkShaderSharedPtr materialNetworkShader;
+    if (updateMaterialNetworkShader) {
+        materialNetworkShader =
+                HdStGetMaterialNetworkShader(this, sceneDelegate);
     }
+
+    const bool materialIsFinal = GetDisplayStyle(sceneDelegate).materialIsFinal;
+    bool materialIsFinalChanged = false;
+    for (auto const& reprPair : _reprs) {
+        const TfToken &reprToken = reprPair.first;
+        _BasisCurvesReprConfig::DescArray const &descs =
+            _GetReprDesc(reprToken);
+        HdReprSharedPtr repr = reprPair.second;
+        int drawItemIndex = 0;
+        for (size_t descIdx = 0; descIdx < descs.size(); ++descIdx) {
+            if (descs[descIdx].geomStyle == HdBasisCurvesGeomStyleInvalid) {
+                continue;
+            }
+
+            HdStDrawItem *drawItem = static_cast<HdStDrawItem*>(
+                repr->GetDrawItem(drawItemIndex++));
+            if (materialIsFinal != drawItem->GetMaterialIsFinal()) {
+                materialIsFinalChanged = true;
+            }
+            drawItem->SetMaterialIsFinal(materialIsFinal);
+
+            if (updateMaterialNetworkShader) {
+                drawItem->SetMaterialNetworkShader(materialNetworkShader);
+            }
+            if (updateGeometricShader) {
+                _UpdateDrawItemGeometricShader(
+                    sceneDelegate, renderParam, drawItem, descs[descIdx]);
+            }
+        }
+    }
+
+    if (materialIsFinalChanged) {
+        HdStMarkDrawBatchesDirty(renderParam);
+        TF_DEBUG(HD_RPRIM_UPDATED).Msg(
+            "%s: Marking all batches dirty to trigger deep validation because "
+            "the materialIsFinal was updated.\n", GetId().GetText());
+    }
+}
+
+void
+HdStBasisCurves::_UpdateMaterialTagsForAllReprs(HdSceneDelegate *sceneDelegate,
+                                                HdRenderParam *renderParam)
+{
+    TF_DEBUG(HD_RPRIM_UPDATED). Msg(
+        "(%s) - Updating material tags for draw items of all reprs.\n", 
+        GetId().GetText());
 
     for (auto const& reprPair : _reprs) {
         const TfToken &reprToken = reprPair.first;
@@ -505,13 +605,10 @@ HdStBasisCurves::_UpdateShadersForAllReprs(HdSceneDelegate *sceneDelegate,
             HdStDrawItem *drawItem = static_cast<HdStDrawItem*>(
                 repr->GetDrawItem(drawItemIndex++));
 
-            if (updateMaterialShader) {
-                drawItem->SetMaterialShader(materialShader);
-            }
-            if (updateGeometricShader) {
-                _UpdateDrawItemGeometricShader(
-                    sceneDelegate, renderParam, drawItem, descs[descIdx]);
-            }
+            HdStSetMaterialTag(sceneDelegate, renderParam, drawItem, 
+                this->GetMaterialId(),
+                _displayOpacityFromPrimvars || _displayOpacityFromInstancer, 
+                _displayInOverlay, _occludedSelectionShowsThrough);
         }
     }
 }
@@ -536,7 +633,9 @@ HdStBasisCurves::_PopulateTopology(HdSceneDelegate *sceneDelegate,
     if (*dirtyBits & HdChangeTracker::DirtyDisplayStyle) {
         HdDisplayStyle ds = GetDisplayStyle(sceneDelegate);
         _refineLevel = ds.refineLevel;
+        _displayInOverlay = ds.displayInOverlay;
         _occludedSelectionShowsThrough = ds.occludedSelectionShowsThrough;
+        _pointsShadingEnabled = ds.pointsShadingEnabled;
     }
 
     // XXX: is it safe to get topology even if it's not dirty?
@@ -550,11 +649,16 @@ HdStBasisCurves::_PopulateTopology(HdSceneDelegate *sceneDelegate,
         // Topological visibility (of points, curves) comes in as DirtyTopology.
         // We encode this information in a separate BAR.
         if (dirtyTopology) {
+            // The points primvar is permitted to be larger than the number of
+            // CVs implied by the topology.  So here we allow for
+            // invisiblePoints being larger as well.
+            size_t minInvisiblePointsCapacity = srcTopology.GetNumPoints();
+
             HdStProcessTopologyVisibility(
                 srcTopology.GetInvisibleCurves(),
                 srcTopology.GetNumCurves(),
                 srcTopology.GetInvisiblePoints(),
-                srcTopology.CalculateNeededNumberOfControlPoints(),
+                minInvisiblePointsCapacity,
                 &_sharedData,
                 drawItem,
                 renderParam,
@@ -628,10 +732,14 @@ HdStBasisCurves::_PopulateTopology(HdSceneDelegate *sceneDelegate,
 
             HdBufferSpec::GetBufferSpecs(sources, &bufferSpecs);
 
+            HdBufferArrayUsageHint usageHint =
+                HdBufferArrayUsageHintBitsIndex |
+                HdBufferArrayUsageHintBitsStorage;
             // Set up the usage hints to mark topology as varying if
             // there is a previously set range.
-            HdBufferArrayUsageHint usageHint;
-            usageHint.bits.sizeVarying = drawItem->GetTopologyRange()? 1 : 0;
+            if (drawItem->GetTopologyRange()) {
+                usageHint |= HdBufferArrayUsageHintBitsSizeVarying;
+            }
 
             // allocate new range
             HdBufferArrayRangeSharedPtr range
@@ -658,86 +766,85 @@ namespace {
 
 template <typename T> 
 void 
-AddVertexOrVaryingPrimvarSource(const TfToken &name, 
+AddVertexOrVaryingPrimvarSource(const SdfPath &id, const TfToken &name, 
     HdInterpolation interpolation, const VtValue &value, 
     HdSt_BasisCurvesTopologySharedPtr topology, 
     HdBufferSourceSharedPtrVector *sources, T fallbackValue) {
     VtArray<T> array = value.Get<VtArray<T>>();
     // Empty primvar arrays are ignored, except for points
     if (!array.empty() || name == HdTokens->points) {
-        sources->push_back(HdBufferSourceSharedPtr(
+        sources->push_back(
             std::make_shared<HdSt_BasisCurvesPrimvarInterpolaterComputation<T>>(
-                topology, array, name, interpolation, fallbackValue, 
-                HdGetValueTupleType(VtValue(array)).type)));
+                topology, array, id, name, interpolation, fallbackValue, 
+                HdGetValueTupleType(VtValue(array)).type));
     }
 }
 
 void ProcessVertexOrVaryingPrimvar(
-    const TfToken &name, HdInterpolation interpolation, 
+    const SdfPath &id, const TfToken &name, HdInterpolation interpolation, 
     const VtValue &value, HdSt_BasisCurvesTopologySharedPtr topology,
     HdBufferSourceSharedPtrVector *sources) {
     if (value.IsHolding<VtHalfArray>()) {
         AddVertexOrVaryingPrimvarSource<GfHalf>(
-            name, interpolation, value, topology, sources, 1);
+            id, name, interpolation, value, topology, sources, 1);
     } else if (value.IsHolding<VtFloatArray>()) {
         AddVertexOrVaryingPrimvarSource<float>(
-            name, interpolation, value, topology, sources, 1);
+            id, name, interpolation, value, topology, sources, 1);
     } else if (value.IsHolding<VtVec2fArray>()) {
         AddVertexOrVaryingPrimvarSource<GfVec2f>(
-            name, interpolation, value, topology, sources, GfVec2f(1, 0));             
+            id, name, interpolation, value, topology, sources, GfVec2f(1, 0));
     } else if (value.IsHolding<VtVec3fArray>()) {
         AddVertexOrVaryingPrimvarSource<GfVec3f>(
-            name, interpolation, value, topology, sources, GfVec3f(1, 0, 0));   
+            id, name, interpolation, value, topology, sources, GfVec3f(1, 0, 0));
     } else if (value.IsHolding<VtVec4fArray>()) {
         AddVertexOrVaryingPrimvarSource<GfVec4f>(
-            name, interpolation, value, topology, sources, GfVec4f(1, 0, 0, 1)); 
+            id, name, interpolation, value, topology, sources, GfVec4f(1, 0, 0, 1)); 
      } else if (value.IsHolding<VtDoubleArray>()) {
         AddVertexOrVaryingPrimvarSource<double>(
-            name, interpolation, value, topology, sources, 1);
+            id, name, interpolation, value, topology, sources, 1);
     } else if (value.IsHolding<VtVec2dArray>()) {
         AddVertexOrVaryingPrimvarSource<GfVec2d>(
-            name, interpolation, value, topology, sources, GfVec2d(1, 0));            
+            id, name, interpolation, value, topology, sources, GfVec2d(1, 0));
     } else if (value.IsHolding<VtVec3dArray>()) {
         AddVertexOrVaryingPrimvarSource<GfVec3d>(
-            name, interpolation, value, topology, sources, GfVec3d(1, 0, 0));
+            id, name, interpolation, value, topology, sources, GfVec3d(1, 0, 0));
     } else if (value.IsHolding<VtVec4dArray>()) {
         AddVertexOrVaryingPrimvarSource<GfVec4d>(
-            name, interpolation, value, topology, sources, GfVec4d(1, 0, 0, 1));                
+            id, name, interpolation, value, topology, sources, GfVec4d(1, 0, 0, 1));
     } else if (value.IsHolding<VtIntArray>()) {
         AddVertexOrVaryingPrimvarSource<int>(
-            name, interpolation, value, topology, sources, 1); 
+            id, name, interpolation, value, topology, sources, 1); 
     } else if (value.IsHolding<VtVec2iArray>()) {
         AddVertexOrVaryingPrimvarSource<GfVec2i>(
-            name, interpolation, value, topology, sources, GfVec2i(1, 0)); 
+            id, name, interpolation, value, topology, sources, GfVec2i(1, 0)); 
     } else if (value.IsHolding<VtVec3iArray>()) {
         AddVertexOrVaryingPrimvarSource<GfVec3i>(
-            name, interpolation, value, topology, sources, GfVec3i(1, 0, 0)); 
+            id, name, interpolation, value, topology, sources, GfVec3i(1, 0, 0)); 
     } else if (value.IsHolding<VtVec4iArray>()) {
         AddVertexOrVaryingPrimvarSource<GfVec4i>(
-            name, interpolation, value, topology, sources, GfVec4i(1, 0, 0, 1)); 
+            id, name, interpolation, value, topology, sources, GfVec4i(1, 0, 0, 1)); 
     } else if (value.IsHolding<VtVec4iArray>()) {
         AddVertexOrVaryingPrimvarSource<GfVec4i>(
-            name, interpolation, value, topology, sources, GfVec4i(1, 0, 0, 1)); 
+            id, name, interpolation, value, topology, sources, GfVec4i(1, 0, 0, 1)); 
     } else if (value.IsHolding<VtVec4iArray>()) {
         AddVertexOrVaryingPrimvarSource<GfVec4i>(
-            name, interpolation, value, topology, sources, GfVec4i(1, 0, 0, 1)); 
+            id, name, interpolation, value, topology, sources, GfVec4i(1, 0, 0, 1)); 
     } else if (value.IsHolding<VtArray<int16_t>>()) {
         AddVertexOrVaryingPrimvarSource<int16_t>(
-            name, interpolation, value, topology, sources, 1);
+            id, name, interpolation, value, topology, sources, 1);
     } else if (value.IsHolding<VtArray<int32_t>>()) {
         AddVertexOrVaryingPrimvarSource<int32_t>(
-            name, interpolation, value, topology, sources, 1);
+            id, name, interpolation, value, topology, sources, 1);
     } else if (value.IsHolding<VtArray<uint16_t>>()) {
         AddVertexOrVaryingPrimvarSource<uint16_t>(
-            name, interpolation, value, topology, sources, 1); 
+            id, name, interpolation, value, topology, sources, 1); 
     } else if (value.IsHolding<VtArray<uint32_t>>()) {
         AddVertexOrVaryingPrimvarSource<uint32_t>(
-            name, interpolation, value, topology, sources, 1); 
+            id, name, interpolation, value, topology, sources, 1); 
     } else {
-        TF_WARN("Type of vertex or varying primvar %s not yet fully supported", 
-                name.GetText());
-        sources->push_back(HdBufferSourceSharedPtr(
-            std::make_shared<HdVtBufferSource>(name, value)));
+        TF_WARN("HdStBasisCurves(%s) - Type of vertex or varying primvar %s"
+                " not yet fully supported", id.GetText(), name.GetText());
+        sources->push_back(std::make_shared<HdVtBufferSource>(name, value));
     }
 }
 } // anonymous namespace
@@ -752,61 +859,140 @@ HdStBasisCurves::_PopulateVertexPrimvars(HdSceneDelegate *sceneDelegate,
     HF_MALLOC_TAG_FUNCTION();
 
     SdfPath const& id = GetId();
+    HdRenderIndex &renderIndex = sceneDelegate->GetRenderIndex();
     HdStResourceRegistrySharedPtr const& resourceRegistry = 
         std::static_pointer_cast<HdStResourceRegistry>(
-        sceneDelegate->GetRenderIndex().GetResourceRegistry());
+        renderIndex.GetResourceRegistry());
 
-    // The "points" attribute is expected to be in this list.
-    HdPrimvarDescriptorVector primvars =
-        HdStGetPrimvarDescriptors(this, drawItem, sceneDelegate,
-                                  HdInterpolationVertex);
-    
-    HdExtComputationPrimvarDescriptorVector compPrimvars =
-        sceneDelegate->GetExtComputationPrimvarDescriptors(id,
-            HdInterpolationVertex);
+    HdPrimvarDescriptorVector primvars;
+    HdExtComputationPrimvarDescriptorVector compPrimvars;
 
     HdBufferSourceSharedPtrVector sources;
     HdBufferSourceSharedPtrVector reserveOnlySources;
     HdBufferSourceSharedPtrVector separateComputationSources;
-    HdStComputationSharedPtrVector computations;
-    sources.reserve(primvars.size());
+    HdStComputationComputeQueuePairVector computations;
 
-    HdSt_GetExtComputationPrimvarsComputations(
-        id,
-        sceneDelegate,
-        compPrimvars,
-        *dirtyBits,
-        &sources,
-        &reserveOnlySources,
-        &separateComputationSources,
-        &computations);
+    if (*dirtyBits & HdChangeTracker::DirtyNormals ||
+        *dirtyBits & HdChangeTracker::DirtyWidths ||
+        *dirtyBits & HdChangeTracker::DirtyPrimvar) {
 
-    for (HdPrimvarDescriptor const& primvar: primvars) {
-        if (!HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, primvar.name))
-            continue;
+        // The "points" attribute is expected to be in these lists.
+        primvars = HdStGetPrimvarDescriptors(this, drawItem, sceneDelegate,
+            HdInterpolationVertex);
+        compPrimvars = sceneDelegate->GetExtComputationPrimvarDescriptors(id,
+            HdInterpolationVertex);
 
-        // TODO: We don't need to pull primvar metadata every time a value
-        // changes, but we need support from the delegate.
+        sources.reserve(primvars.size());
 
-        // Having a null topology is possible, but shouldn't happen when there
-        // are points
-        if (!_topology) {
-            if (primvar.name == HdTokens->points) {
-                TF_CODING_ERROR("No topology set for BasisCurve %s",
-                                id.GetName().c_str());
-                break;
+        // Process computed primvars...
+        HdSt_GetExtComputationPrimvarsComputations(
+            id,
+            sceneDelegate,
+            compPrimvars,
+            *dirtyBits,
+            &sources,
+            &reserveOnlySources,
+            &separateComputationSources,
+            &computations);
+
+        for (HdPrimvarDescriptor const& primvar: primvars) {
+            if (!HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, primvar.name))
+                continue;
+
+            // TODO: We don't need to pull primvar metadata every time a value
+            // changes, but we need support from the delegate.
+
+            // Having a null topology is possible, but shouldn't happen when
+            // there are points
+            if (!_topology) {
+                if (primvar.name == HdTokens->points) {
+                    TF_CODING_ERROR("No topology set for BasisCurve %s",
+                            id.GetName().c_str());
+                    break;
+                }
+                continue;
+            } 
+
+            //assert name not in range.bufferArray.GetResources()
+            VtValue value = GetPrimvar(sceneDelegate, primvar.name);
+            if (!HdStIsPrimvarValidForDrawItem(drawItem, primvar.name, value)) {
+                continue;
             }
-            continue;
-        } 
-
-        //assert name not in range.bufferArray.GetResources()
-        VtValue value = GetPrimvar(sceneDelegate, primvar.name);
-        if (!value.IsEmpty()) {
-            ProcessVertexOrVaryingPrimvar(primvar.name, HdInterpolationVertex, 
-                value, _topology, &sources);
+            ProcessVertexOrVaryingPrimvar(id, primvar.name,
+                    HdInterpolationVertex, value, _topology, &sources);
 
             if (primvar.name == HdTokens->displayOpacity) {
-                _displayOpacity = true;
+                _displayOpacityFromPrimvars = true;
+            }
+        }
+    }
+
+    // Points fastpath; it's possible points was updated above, but if
+    // points is dirty and we skipped the above loops let's handle it here.
+    if (*dirtyBits & HdChangeTracker::DirtyPoints &&
+        !(*dirtyBits & HdChangeTracker::DirtyNormals ||
+          *dirtyBits & HdChangeTracker::DirtyWidths ||
+          *dirtyBits & HdChangeTracker::DirtyPrimvar)) {
+
+        if (!_topology) {
+            TF_CODING_ERROR("No topology set for BasisCurve %s",
+                id.GetName().c_str());
+        }
+
+        // We can't use the scene delegate to check whether points is
+        // provided/computed/has the correct interpolation without pulling the
+        // full primvar descriptor list, so we need to cheat and go straight to
+        // the Hydra 2 scene representation.  Preview of the future!
+        HdSceneIndexBaseRefPtr si = renderIndex.GetTerminalSceneIndex();
+        HdSceneIndexPrim prim = si->GetPrim(id);
+
+        // Check computed primvars
+        HdExtComputationPrimvarsSchema ecPrimvarsSchema =
+            HdExtComputationPrimvarsSchema::GetFromParent(prim.dataSource);
+        HdExtComputationPrimvarSchema ecPointsSchema =
+            ecPrimvarsSchema.GetExtComputationPrimvar(HdTokens->points);
+        if (ecPointsSchema) {
+            HdExtComputationPrimvarDescriptor ecpd =
+                HdExtComputationPrimvarDescriptorFromSchema(
+                    HdTokens->points, ecPointsSchema);
+            compPrimvars.push_back(ecpd);
+
+            // XXX: this is a pretty heavy-handed way to do this @_@.
+            HdSt_GetExtComputationPrimvarsComputations(
+                id,
+                sceneDelegate,
+                compPrimvars,
+                *dirtyBits,
+                &sources,
+                &reserveOnlySources,
+                &separateComputationSources,
+                &computations);
+        }
+
+        // Check primvars
+        HdPrimvarsSchema primvarsSchema =
+            HdPrimvarsSchema::GetFromParent(prim.dataSource);
+        HdPrimvarSchema pointsSchema =
+            primvarsSchema.GetPrimvar(HdTokens->points);
+        if (pointsSchema && ecPointsSchema) {
+            HF_VALIDATION_WARN(id,
+                "'points' specified as both computed and authored "
+                "primvar. Skipping authored value.");
+        } else if (pointsSchema) {
+            HdPrimvarDescriptor pd =
+                HdPrimvarDescriptorFromSchema(
+                    HdTokens->points, pointsSchema);
+            primvars.push_back(pd);
+            VtValue value;
+            HdSampledDataSourceHandle valueDs = pointsSchema.GetPrimvarValue();
+            if (valueDs) {
+                value = valueDs->GetValue(0.0f);
+            }
+            HdBufferSourceSharedPtr source;
+            if (HdStIsPrimvarValidForDrawItem(
+                drawItem, HdTokens->points, value)) {
+                ProcessVertexOrVaryingPrimvar(id, pd.name,
+                    HdInterpolationVertex, value, _topology, &sources);
             }
         }
     }
@@ -819,7 +1005,11 @@ HdStBasisCurves::_PopulateVertexPrimvars(HdSceneDelegate *sceneDelegate,
     }
 
     // XXX: This should be based off the DirtyPrimvarDesc bit.
-    bool hasDirtyPrimvarDesc = (*dirtyBits & HdChangeTracker::DirtyPrimvar);
+    bool hasDirtyPrimvarDesc =
+        (*dirtyBits & HdChangeTracker::DirtyPrimvar ||
+         *dirtyBits & HdChangeTracker::DirtyNormals ||
+         *dirtyBits & HdChangeTracker::DirtyWidths);
+
     HdBufferSpecVector removedSpecs;
     if (hasDirtyPrimvarDesc) {
         TfTokenVector internallyGeneratedPrimvars; // none
@@ -835,7 +1025,7 @@ HdStBasisCurves::_PopulateVertexPrimvars(HdSceneDelegate *sceneDelegate,
     HdBufferArrayRangeSharedPtr range =
         resourceRegistry->UpdateNonUniformBufferArrayRange(
             HdTokens->primvar, bar, bufferSpecs, removedSpecs,
-            HdBufferArrayUsageHint());
+            HdBufferArrayUsageHintBitsVertex);
 
     HdStUpdateDrawItemBAR(
         range,
@@ -859,7 +1049,7 @@ HdStBasisCurves::_PopulateVertexPrimvars(HdSceneDelegate *sceneDelegate,
     }
     // add gpu computations to queue.
     for (auto const& compQueuePair : computations) {
-        HdComputationSharedPtr const& comp = compQueuePair.first;
+        HdStComputationSharedPtr const& comp = compQueuePair.first;
         HdStComputeQueue queue = compQueuePair.second;
         resourceRegistry->AddComputation(
             drawItem->GetVertexPrimvarRange(), comp, queue);
@@ -898,10 +1088,6 @@ HdStBasisCurves::_PopulateVaryingPrimvars(HdSceneDelegate *sceneDelegate,
     // until we get can do a better pass on curve normals.)
     _basisNormalInterpolation = true;
 
-    if (primvars.empty()) {
-        return;
-    }
-    
     HdBufferSourceSharedPtrVector sources;
     sources.reserve(primvars.size());
 
@@ -910,6 +1096,9 @@ HdStBasisCurves::_PopulateVaryingPrimvars(HdSceneDelegate *sceneDelegate,
             _basisWidthInterpolation = false;
         } else if (primvar.name == HdTokens->normals) {
             _basisNormalInterpolation = false;
+        } else if (primvar.name == HdTokens->points) {
+            HF_VALIDATION_WARN(id, "varying-interpolation points!");
+            continue;
         }
 
         if (!HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, primvar.name)) {
@@ -921,13 +1110,14 @@ HdStBasisCurves::_PopulateVaryingPrimvars(HdSceneDelegate *sceneDelegate,
 
         //assert name not in range.bufferArray.GetResources()
         VtValue value = GetPrimvar(sceneDelegate, primvar.name);
-        if (!value.IsEmpty()) {
-            ProcessVertexOrVaryingPrimvar(primvar.name, 
-                HdInterpolationVarying, value, _topology, &sources);
+        if (!HdStIsPrimvarValidForDrawItem(drawItem, primvar.name, value)) {
+            continue;
+        }
+        ProcessVertexOrVaryingPrimvar(id, primvar.name, 
+            HdInterpolationVarying, value, _topology, &sources);
 
-            if (primvar.name == HdTokens->displayOpacity) {
-                _displayOpacity = true;
-            }
+        if (primvar.name == HdTokens->displayOpacity) {
+            _displayOpacityFromPrimvars = true;
         }
     }
  
@@ -938,7 +1128,11 @@ HdStBasisCurves::_PopulateVaryingPrimvars(HdSceneDelegate *sceneDelegate,
     }
 
     // XXX: This should be based off the DirtyPrimvarDesc bit.
-    bool hasDirtyPrimvarDesc = (*dirtyBits & HdChangeTracker::DirtyPrimvar);
+    bool hasDirtyPrimvarDesc =
+        (*dirtyBits & HdChangeTracker::DirtyPrimvar ||
+         *dirtyBits & HdChangeTracker::DirtyNormals ||
+         *dirtyBits & HdChangeTracker::DirtyWidths);
+
     HdBufferSpecVector removedSpecs;
     if (hasDirtyPrimvarDesc) {
         TfTokenVector internallyGeneratedPrimvars; // none
@@ -952,7 +1146,7 @@ HdStBasisCurves::_PopulateVaryingPrimvars(HdSceneDelegate *sceneDelegate,
     HdBufferArrayRangeSharedPtr range =
         resourceRegistry->UpdateNonUniformBufferArrayRange(
             HdTokens->primvar, bar, bufferSpecs, removedSpecs,
-            HdBufferArrayUsageHint());
+            HdBufferArrayUsageHintBitsStorage);
 
     HdStUpdateDrawItemBAR(
         range,
@@ -993,18 +1187,36 @@ HdStBasisCurves::_PopulateElementPrimvars(HdSceneDelegate *sceneDelegate,
     HdBufferSourceSharedPtrVector sources;
     sources.reserve(uniformPrimvars.size());
 
+    const size_t numCurves = _topology ? _topology->GetNumCurves() : 0;
+
     for (HdPrimvarDescriptor const& primvar: uniformPrimvars) {
+        if (primvar.name == HdTokens->points) {
+            HF_VALIDATION_WARN(id, "uniform-interpolation points!");
+            continue;
+        }
         if (!HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, primvar.name))
             continue;
 
         VtValue value = GetPrimvar(sceneDelegate, primvar.name);
-        if (!value.IsEmpty()) {
-            sources.push_back(HdBufferSourceSharedPtr(
-                              new HdVtBufferSource(primvar.name, value)));
-                              
-            if (primvar.name == HdTokens->displayOpacity) {
-                _displayOpacity = true;
-            }
+        if (!HdStIsPrimvarValidForDrawItem(drawItem, primvar.name, value)) {
+            continue;
+        }
+        HdBufferSourceSharedPtr source =
+            std::make_shared<HdVtBufferSource>(primvar.name, value);
+
+        // verify primvar length
+        if (source->GetNumElements() != numCurves) {
+            HF_VALIDATION_WARN(id,
+                "# of curves mismatch (%d != %d) for uniform primvar %s",
+                (int)source->GetNumElements(), (int)numCurves, 
+                primvar.name.GetText());
+            continue;
+        }
+        
+        sources.push_back(source);
+
+        if (primvar.name == HdTokens->displayOpacity) {
+            _displayOpacityFromPrimvars = true;
         }
     }
 
@@ -1015,7 +1227,11 @@ HdStBasisCurves::_PopulateElementPrimvars(HdSceneDelegate *sceneDelegate,
     }
 
     // XXX: This should be based off the DirtyPrimvarDesc bit.
-    bool hasDirtyPrimvarDesc = (*dirtyBits & HdChangeTracker::DirtyPrimvar);
+    bool hasDirtyPrimvarDesc =
+        (*dirtyBits & HdChangeTracker::DirtyPrimvar ||
+         *dirtyBits & HdChangeTracker::DirtyNormals ||
+         *dirtyBits & HdChangeTracker::DirtyWidths);
+
     HdBufferSpecVector removedSpecs;
     if (hasDirtyPrimvarDesc) {
         TfTokenVector internallyGeneratedPrimvars; // none
@@ -1029,7 +1245,7 @@ HdStBasisCurves::_PopulateElementPrimvars(HdSceneDelegate *sceneDelegate,
     HdBufferArrayRangeSharedPtr range =
         resourceRegistry->UpdateNonUniformBufferArrayRange(
             HdTokens->primvar, bar, bufferSpecs, removedSpecs,
-            HdBufferArrayUsageHint());
+            HdBufferArrayUsageHintBitsStorage);
 
     HdStUpdateDrawItemBAR(
         range,
@@ -1054,7 +1270,7 @@ static bool
 HdSt_HasResource(HdStDrawItem* drawItem, const TfToken& resourceToken){
     // Check for authored resource, we could leverage dirtyBits here as an
     // optimization, however the BAR is the ground truth, so until there is a
-    // known peformance issue, we just check them explicitly.
+    // known performance issue, we just check them explicitly.
     bool hasAuthoredResouce = false;
 
     typedef HdBufferArrayRangeSharedPtr HdBarPtr;
@@ -1134,6 +1350,40 @@ HdStBasisCurves::GetInitialDirtyBitsMask() const
         ;
 
     return mask;
+}
+
+/*override*/
+TfTokenVector const &
+HdStBasisCurves::GetBuiltinPrimvarNames() const
+{
+    // screenSpaceWidths toggles the interpretation of widths to be in
+    // screen-space pixels.  We expect this to be useful for implementing guides
+    // or other UI elements drawn with BasisCurves.  The pointsSizeScale primvar
+    // similarly is intended to give clients a way to emphasize or supress
+    // certain  points by scaling their default size.
+
+    // minScreenSpaceWidth gives a minimum screen space width in pixels for
+    // BasisCurves when rendered as tubes or camera-facing ribbons. We expect
+    // this to be useful for preventing thin curves such as hair from 
+    // undesirably aliasing when their screen space width would otherwise dip
+    // below one pixel.
+
+    // pointSizeScale, screenSpaceWidths, and minScreenSpaceWidths are
+    // explicitly claimed here as "builtin" primvar names because they are 
+    // consumed in the low-level baisCurves.glslfx rather than declared as 
+    // inputs in any material shader's metadata.  Mentioning them here means
+    // they will always survive primvar filtering.
+
+    auto _ComputePrimvarNames = [this](){
+        TfTokenVector primvarNames =
+            this->HdBasisCurves::GetBuiltinPrimvarNames();
+        primvarNames.push_back(HdStTokens->pointSizeScale);
+        primvarNames.push_back(HdStTokens->screenSpaceWidths);
+        primvarNames.push_back(HdStTokens->minScreenSpaceWidths);
+        return primvarNames;
+    };
+    static TfTokenVector primvarNames = _ComputePrimvarNames();
+    return primvarNames;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

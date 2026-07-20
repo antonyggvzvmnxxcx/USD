@@ -2,28 +2,13 @@
 #
 # Copyright 2017 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
+
+# pylint: disable=map-builtin-not-iterating
 
 import unittest
-from pxr import Sdf, Usd
+from pxr import Sdf, Tf, Usd
 
 allFormats = ['usd' + x for x in 'ac']
 
@@ -44,15 +29,67 @@ class TestUsdPrimRange(unittest.TestCase):
             x = list(Usd.PrimRange(pseudoRoot))
             self.assertEqual(x, [pseudoRoot, foo, faz])
 
-            # Create a tree iterator and ensure that /Bar and its descendants aren't
-            # traversed by it.
+            # Create a tree iterator and ensure that /Bar and its descendants
+            # aren't traversed by it.
             x = list(Usd.PrimRange(pseudoRoot, Usd.PrimIsDefined))
             self.assertEqual(x, [pseudoRoot, foo, faz])
 
-            # When we ask for undefined prim rooted at /Bar, verify that bar and baz
-            # are returned.
+            # When we ask for undefined prim rooted at /Bar, verify that bar and
+            # baz are returned.
             x = list(Usd.PrimRange(bar, ~Usd.PrimIsDefined))
             self.assertEqual(x, [bar, baz])
+
+    def test_PrimHasClassSpecifier(self):
+        for fmt in allFormats:
+            stageFile = 'testHasClassSpecifier.' + fmt
+            stage = Usd.Stage.Open(stageFile)
+
+            root = stage.GetPrimAtPath('/a1')
+            actual = []
+            expected = [stage.GetPrimAtPath(x) for x in ['/a1/a2']]
+            for prim in Usd.PrimRange.AllPrims(root):
+                if prim.HasClassSpecifier():
+                    actual.append(prim)
+            self.assertEqual(actual, expected)
+
+            root = stage.GetPrimAtPath('/b1')
+            actual = []
+            expected = [stage.GetPrimAtPath(x) for x in 
+                        ['/b1/b2', '/b1/b2/b3/b4/b5/b6']]
+            for prim in Usd.PrimRange(root, Usd.PrimIsActive):
+                if prim.HasClassSpecifier():
+                    actual.append(prim)
+            self.assertEqual(actual, expected)
+
+            # Note that the over is not included in our traversal.
+            root = stage.GetPrimAtPath('/c1')
+            actual = list(Usd.PrimRange(root, Usd.PrimHasClassSpecifier))
+            expected = [stage.GetPrimAtPath(x) for x in 
+                        ['/c1', '/c1/c2', '/c1/c2/c3']]
+            self.assertEqual(actual, expected)
+
+            root = stage.GetPrimAtPath('/b1')
+            actual = list(Usd.PrimRange(
+                root, ~Usd.PrimIsDefined | Usd.PrimHasClassSpecifier))
+            expected = [stage.GetPrimAtPath(x) for x in
+                        ['/b1', '/b1/b2', '/b1/b2/b3', '/b1/b2/b3/b4',
+                         '/b1/b2/b3/b4/b5','/b1/b2/b3/b4/b5/b6']]
+            self.assertEqual(actual, expected)
+                          
+            root = stage.GetPrimAtPath('/b1')
+            actual = list(Usd.PrimRange(root, Usd.PrimHasClassSpecifier))
+            expected = []
+            self.assertEqual(actual, expected)
+
+            root = stage.GetPrimAtPath('/b1/b2')
+            actual = list(Usd.PrimRange(root, Usd.PrimHasClassSpecifier))
+            expected = [stage.GetPrimAtPath('/b1/b2')]
+            self.assertEqual(actual, expected)
+
+            root = stage.GetPrimAtPath('/b1/b2/b3/b4/b5/b6')
+            actual = list(Usd.PrimRange(root, Usd.PrimHasClassSpecifier))
+            expected = [stage.GetPrimAtPath('/b1/b2/b3/b4/b5/b6')]
+            self.assertEqual(actual, expected)
 
     def test_PrimHasDefiningSpecifier(self):
         for fmt in allFormats:
@@ -289,6 +326,28 @@ class TestUsdPrimRange(unittest.TestCase):
             # explicitly specified.
             self.assertEqual(list(Usd.PrimRange(prototype)), 
                              [prototype, prototypeChild])
+
+    def test_PrimIterationOnExpiredStage(self):
+        for fmt in allFormats:
+            rootLayer = Sdf.Layer.CreateAnonymous('.' + fmt)
+            for p in Sdf.Path('/Something/To/Iterate/Over').GetPrefixes():
+                Sdf.PrimSpec(
+                    rootLayer.GetPrimAtPath(p.GetParentPath()), p.name,
+                    Sdf.SpecifierDef)
+
+            # Check that a Usd.PrimRange raises a Python exception when
+            # used with a dead stage.
+            stage = Usd.Stage.Open(rootLayer)
+            primRange = Usd.PrimRange.Stage(stage)
+            del stage
+            with self.assertRaises(RuntimeError):
+                prims = list(primRange)
+
+            with self.assertRaises(RuntimeError):
+                prims = list(Usd.PrimRange.Stage(Usd.Stage.Open(rootLayer)))
+
+            with self.assertRaises(RuntimeError):
+                prims = list(Usd.Stage.Open(rootLayer).Traverse())
 
 if __name__ == "__main__":
     unittest.main()

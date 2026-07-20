@@ -1,33 +1,14 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/imaging/garch/glApi.h"
 
 #include "pxr/imaging/hdSt/unitTestGLDrawing.h"
-#include "pxr/imaging/glf/contextCaps.h"
 #include "pxr/imaging/glf/diagnostic.h"
-#include "pxr/imaging/glf/drawTarget.h"
 #include "pxr/imaging/garch/glDebugWindow.h"
 
 #include "pxr/base/gf/frustum.h"
@@ -54,9 +35,6 @@ public:
 
     void OffscreenTest();
 
-    bool WriteToFile(std::string const & attachment, 
-                     std::string const & filename);
-
     void StartTimer();
 
     // GarchGLDebugWindow overrides
@@ -71,7 +49,6 @@ public:
 
 private:
     HdSt_UnitTestGLDrawing *_unitTest;
-    GlfDrawTargetRefPtr _drawTarget;
     bool _animate;
 };
 
@@ -93,31 +70,18 @@ HdSt_UnitTestWindow::OnInitializeGL()
 {
     GarchGLApiLoad();
     GlfRegisterDefaultDebugOutputMessageCallback();
-    GlfContextCaps::InitInstance();
 
     std::cout << glGetString(GL_VENDOR) << "\n";
     std::cout << glGetString(GL_RENDERER) << "\n";
     std::cout << glGetString(GL_VERSION) << "\n";
 
-    //
-    // Create an offscreen draw target which is the same size as this
-    // widget and initialize the unit test with the draw target bound.
-    //
-    _drawTarget = GlfDrawTarget::New(GfVec2i(GetWidth(), GetHeight()));
-    _drawTarget->Bind();
-    _drawTarget->AddAttachment("color", GL_RGBA, GL_FLOAT, GL_RGBA);
-    _drawTarget->AddAttachment("depth", GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8,
-                               GL_DEPTH24_STENCIL8);
     _unitTest->InitTest();
-
-    _drawTarget->Unbind();
 }
 
 /* virtual */
 void
 HdSt_UnitTestWindow::OnUninitializeGL()
 {
-    _drawTarget = GlfDrawTargetRefPtr();
     _unitTest->UninitTest();
 }
 
@@ -125,42 +89,15 @@ HdSt_UnitTestWindow::OnUninitializeGL()
 void
 HdSt_UnitTestWindow::OnPaintGL()
 {
-    //
-    // Update the draw target's size and execute the unit test with
-    // the draw target bound.
-    //
-    _drawTarget->Bind();
-    _drawTarget->SetSize(GfVec2i(GetWidth(), GetHeight()));
-
+    // Execute the unit test
     _unitTest->DrawTest();
-
-    _drawTarget->Unbind();
-
-    //
-    // Blit the resulting color buffer to the window (this is a noop
-    // if we're drawing offscreen).
-    //
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, _drawTarget->GetFramebufferId());
-
-    glBlitFramebuffer(0, 0, GetWidth(), GetHeight(),
-                      0, 0, GetWidth(), GetHeight(),
-                      GL_COLOR_BUFFER_BIT,
-                      GL_NEAREST);
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    _unitTest->Present(/*framebuffer*/0);
 }
 
 void
 HdSt_UnitTestWindow::OffscreenTest()
 {
-    _drawTarget->Bind();
-    _drawTarget->SetSize(GfVec2i(GetWidth(), GetHeight()));
-
     _unitTest->OffscreenTest();
-
-    _drawTarget->Unbind();
 }
 
 void
@@ -176,16 +113,6 @@ HdSt_UnitTestWindow::OnIdle()
     if (_animate) {
         _unitTest->Idle();
     }
-}
-
-bool
-HdSt_UnitTestWindow::WriteToFile(std::string const & attachment,
-        std::string const & filename)
-{
-    _drawTarget->Unbind();
-    bool ret = _drawTarget->WriteToFile(attachment, filename);
-    _drawTarget->Bind();
-    return ret;
 }
 
 /* virtual */
@@ -249,13 +176,6 @@ HdSt_UnitTestGLDrawing::GetHeight() const
     return _widget->GetHeight();
 }
 
-bool
-HdSt_UnitTestGLDrawing::WriteToFile(std::string const & attachment,
-        std::string const & filename) const
-{
-    return _widget->WriteToFile(attachment, filename);
-}
-
 void
 HdSt_UnitTestGLDrawing::RunTest(int argc, char *argv[])
 {
@@ -277,12 +197,18 @@ HdSt_UnitTestGLDrawing::RunTest(int argc, char *argv[])
 
     if (offscreen) {
         // no GUI mode (automated test)
-        _widget->OffscreenTest();
+        RunOffscreenTest();
     } else {
         // Interactive mode
         if (animate) _widget->StartTimer();
         _widget->Run();
     }
+}
+
+void
+HdSt_UnitTestGLDrawing::RunOffscreenTest()
+{
+    _widget->OffscreenTest();
 }
 
 /* virtual */
@@ -379,6 +305,7 @@ HdSt_UnitTestGLDrawing::GetFrustum() const
     frustum.SetPerspective(45.0, aspectRatio, 1, 100000.0);
     return frustum;
 }
+
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

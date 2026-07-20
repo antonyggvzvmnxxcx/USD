@@ -2,25 +2,8 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 from __future__ import division
 
@@ -168,6 +151,7 @@ class TestGfVec(unittest.TestCase):
 
     def OperatorsTest(self, Vec):
         v1 = Vec()
+        v1_original = v1
         v2 = Vec()
 
         # equality
@@ -187,6 +171,7 @@ class TestGfVec(unittest.TestCase):
         v1 += v2
         self.assertTrue(checkVec( v1, [8, 10, 6, 7] ))
         self.assertTrue(checkVec( v3, [8, 10, 6, 7] ))
+        self.assertTrue(v1 is v1_original)
 
         # component-wise subtraction
         SetVec( v1, [3, 1, 4, 1] )
@@ -195,6 +180,7 @@ class TestGfVec(unittest.TestCase):
         v1 -= v2
         self.assertTrue(checkVec( v1, [-2, -8, 2, -5] ))
         self.assertTrue(checkVec( v3, [-2, -8, 2, -5] ))
+        self.assertTrue(v1 is v1_original)
 
         # component-wise multiplication
         SetVec( v1, [3, 1, 4, 1] )
@@ -205,6 +191,7 @@ class TestGfVec(unittest.TestCase):
         self.assertTrue(checkVec( v1, [30, 10, 40, 10] ))
         self.assertTrue(checkVec( v4, [30, 10, 40, 10] ))
         self.assertTrue(checkVec( v5, [30, 10, 40, 10] ))
+        self.assertTrue(v1 is v1_original)
 
         # component-wise division
         SetVec( v1, [3, 6, 9, 12] )
@@ -212,6 +199,7 @@ class TestGfVec(unittest.TestCase):
         v1 /= 3
         self.assertTrue(checkVec( v1, [1, 2, 3, 4] ))
         self.assertTrue(checkVec( v3, [1, 2, 3, 4] ))
+        self.assertTrue(v1 is v1_original)
 
         # dot product
         SetVec( v1, [3, 1, 4, 1] )
@@ -281,6 +269,12 @@ class TestGfVec(unittest.TestCase):
             # This should fail.  Cannot convert None to vector data
             #
             v[:2] = [None, None]
+
+    def HashTest(self, Vec):
+        v1 = Vec()
+        SetVec(v1, [12, 1, 2, -4])
+        self.assertEqual(hash(v1), hash(v1))
+        self.assertEqual(hash(v1), hash(Vec(v1)))
 
     def MethodsTest(self, Vec):
         v1 = Vec()
@@ -504,7 +498,7 @@ class TestGfVec(unittest.TestCase):
                 v3 = Gf.Slerp(0.75, v1, v2)
                 self.assertTrue(Gf.IsClose(v3, Vec(-.70711, 0, -.70711), eps))
                 v3 = Gf.Slerp(1, v1, v2)
-                self.assertTrue(Gf.IsClose(v3, v3, eps))
+                self.assertTrue(Gf.IsClose(v3, v2, eps))
 
                 # test Slerp w/ opposing vectors
                 SetVec( v1, [0,1,0] )
@@ -519,7 +513,7 @@ class TestGfVec(unittest.TestCase):
                 v3 = Gf.Slerp(0.75, v1, v2)
                 self.assertTrue(Gf.IsClose(v3, Vec(0, -.70711, .70711), eps))
                 v3 = Gf.Slerp(1, v1, v2)
-                self.assertTrue(Gf.IsClose(v3, v3, eps))
+                self.assertTrue(Gf.IsClose(v3, v2, eps))
 
     def test_Types(self):
         vecTypes = [Gf.Vec2d,
@@ -539,6 +533,7 @@ class TestGfVec(unittest.TestCase):
             self.ConstructorsTest( Vec )
             self.OperatorsTest( Vec )
             self.MethodsTest( Vec )
+            self.HashTest( Vec )
 
 
     def test_TupleToVec(self):
@@ -625,14 +620,15 @@ class TestGfVec(unittest.TestCase):
         with self.assertRaises(TypeError):
             Gf.Dot(('a', 'b', 'c', 'd'), (1.0, 1.0, 1.0, 1.0))
 
-        # Bug USD-6284 shows that we erroneously implemented the Python 2.x
-        # buffer protocol 'getcharbuffer' method to expose the binary content,
-        # where really a string is expected.  This tests that we correctly raise
-        # instead of treating the binary object representation as a string.
+        # Some Python 3 builtins like int() will just blindly attempt to treat 
+        # bytes from objects that support the buffer protocol as string 
+        # characters, ignoring what the actual data format is. 
+        # This tests that we correctly raise instead of treating the binary 
+        # object representation as a string.
         
-        # We get different exceptions between Python 2 & 3 here, see Python
+        # For python3 we get ValueError instead of a TypeError, see Python
         # issue 41707 (https://bugs.python.org/issue41707).
-        excType = TypeError if sys.version_info.major < 3 else ValueError
+        excType = ValueError
 
         with self.assertRaises(excType):
             int(Gf.Vec3d(1,2,3))

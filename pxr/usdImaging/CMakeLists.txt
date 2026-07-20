@@ -1,9 +1,11 @@
 set(DIRS
     usdImaging
+    usdExecImaging
     usdImagingGL
-    usdRiImaging
+    usdProcImaging
     usdSkelImaging
     usdVolImaging
+    usdIrImaging
     usdAppUtils
     usdviewq
     bin

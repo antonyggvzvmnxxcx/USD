@@ -1,27 +1,11 @@
 #
 # Copyright 2018 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 
+from __future__ import division
 from __future__ import print_function
 
 from math import atan, radians as rad
@@ -38,9 +22,14 @@ class FreeCamera(QtCore.QObject):
     # its viewed content changes.  For instance, to compute the value
     # to supply for setClosestVisibleDistFromPoint()
     signalFrustumChanged = QtCore.Signal()
+    signalFrustumSettingsChanged = QtCore.Signal()
 
     defaultNear = 1
     defaultFar = 2000000
+    # When some of the scene is behind the camera, this is the largest fraction
+    # of the scene still-in-front-of-the-camera that we are willing to clip
+    # while computing a non-zero near-clipping plane
+    maxAllowableSceneClipFactor = .01
     # Experimentally on Nvidia M6000, if Far/Near is greater than this,
     # then geometry in the back half of the volume will disappear
     maxSafeZResolution = 1e6
@@ -49,15 +38,16 @@ class FreeCamera(QtCore.QObject):
     # is close to camera, when rendering for picking
     maxGoodZResolution = 5e4
 
-    def __init__(self, isZUp, fov=60.0):
+    def __init__(self, isZUp, fov=60.0, aspectRatio=1.0, overrideNear=None,
+                 overrideFar=None):
         """FreeCamera can be either a Z up or Y up camera, based on 'zUp'"""
         super(FreeCamera, self).__init__()
 
         self._camera = Gf.Camera()
         self._camera.SetPerspectiveFromAspectRatioAndFieldOfView(
-            1.0, fov, Gf.Camera.FOVVertical)
-        self._overrideNear = None
-        self._overrideFar = None
+            aspectRatio, fov, Gf.Camera.FOVVertical)
+        self._overrideNear = overrideNear
+        self._overrideFar = overrideFar
         self.resetClippingPlanes()
 
         self._isZUp = isZUp
@@ -195,11 +185,16 @@ class FreeCamera(QtCore.QObject):
             print("Projected bounds near/far: %f, %f" % (minDist, maxDist))
 
         # if part of the bbox is behind the ray origin (i.e. camera),
-        # we clamp minDist to be positive.  Otherwise, reduce minDist by a bit
-        # so that geometry at exactly the edge of the bounds won't be clipped -
-        # do the same for maxDist, also!
-        if minDist < FreeCamera.defaultNear:
-            minDist = FreeCamera.defaultNear
+        # minDist will be zero, which is not usefull as a near-clip
+        # distance.  In this case, give it a non-zero value that is
+        # responsive to the actual scale of the scene.  If the scene
+        # is fully in front of the camera, instead reduce minDist by a
+        # bit so that geometry at exactly the edge of the bounds won't
+        # be clipped - do the same for maxDist, also!
+        if minDist == 0:
+            minDist = min(FreeCamera.defaultNear,
+                          (maxDist - minDist) *
+                          FreeCamera.maxAllowableSceneClipFactor)
         else:
             minDist *= 0.99
         maxDist *= 1.01
@@ -512,6 +507,7 @@ class FreeCamera(QtCore.QObject):
         else:
             self._camera.projection = Gf.Camera.Perspective
         self.signalFrustumChanged.emit()
+        self.signalFrustumSettingsChanged.emit()
 
     @property
     def fov(self):
@@ -533,6 +529,46 @@ class FreeCamera(QtCore.QObject):
             self._camera.SetOrthographicFromAspectRatioAndSize(
                 self._camera.aspectRatio, value, Gf.Camera.FOVVertical)
         self.signalFrustumChanged.emit()
+        self.signalFrustumSettingsChanged.emit()
+
+    @property
+    def aspectRatio(self):
+        return self._camera.aspectRatio
+
+    @aspectRatio.setter
+    def aspectRatio(self, value):
+        """Sets the aspect ratio by adjusting the horizontal aperture."""
+        self.horizontalAperture = value * self.verticalAperture
+
+    @property
+    def horizontalAperture(self):
+        return self._camera.horizontalAperture
+
+    @horizontalAperture.setter
+    def horizontalAperture(self, value):
+        self._camera.horizontalAperture = value
+        self.signalFrustumChanged.emit()
+        self.signalFrustumSettingsChanged.emit()
+
+    @property
+    def verticalAperture(self):
+        return self._camera.verticalAperture
+
+    @verticalAperture.setter
+    def verticalAperture(self, value):
+        self._camera.verticalAperture = value
+        self.signalFrustumChanged.emit()
+        self.signalFrustumSettingsChanged.emit()
+    
+    @property
+    def focalLength(self):
+        return self._camera.focalLength
+
+    @focalLength.setter
+    def focalLength(self, value):
+        self._camera.focalLength = value
+        self.signalFrustumChanged.emit()
+        self.signalFrustumSettingsChanged.emit()
 
     @property
     def near(self):

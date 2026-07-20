@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_SDF_ABSTRACT_DATA_H
 #define PXR_USD_SDF_ABSTRACT_DATA_H
@@ -93,6 +76,27 @@ public:
     /// so would require the full contents of the layer to be loaded.
     SDF_API
     virtual bool StreamsData() const = 0;
+
+    /// Returns true if this data object is detached from its serialized
+    /// data store, false otherwise. A detached data object must not be
+    /// affected by external changes to the serialized data.
+    ///
+    /// Sdf allows clients to specify detached layers to avoid problems
+    /// that may occur if the underlying data is modified by an external
+    /// process. For example, a data object that maintains an open file
+    /// handle or memory mapping to the original layer on disk and reads
+    /// data on demand is not detached. But a data object that pulls all
+    /// of the layer contents into memory is detached.
+    ///
+    /// The default implementation returns !StreamsData(). Non-streaming
+    /// data objects are assumed to be detached from their serialized
+    /// data, while streaming objects are conservatively assumed to
+    /// not be detached. Note that it is possible to have a streaming
+    /// data object that is also detached -- for example, if the data
+    /// object were to make a private copy of the serialized data for
+    /// its own use and streamed data from it.
+    SDF_API
+    virtual bool IsDetached() const;
 
     /// Returns true if this data object has no specs, false otherwise.
     ///
@@ -332,7 +336,8 @@ public:
 
     SDF_API
     virtual bool
-    GetBracketingTimeSamples(double time, double* tLower, double* tUpper) const = 0;
+    GetBracketingTimeSamples(double time, double* tLower, 
+                             double* tUpper) const = 0;
 
     SDF_API
     virtual size_t
@@ -344,6 +349,23 @@ public:
                                     double time,
                                     double* tLower, double* tUpper) const = 0;
 
+    /// Returns the previous time sample authored just before the querying \p 
+    /// time.
+    ///
+    /// If there is no time sample authored just before \p time, this function
+    /// returns false. Otherwise, it returns true and sets \p tPrevious to the
+    /// time of the previous sample.
+    ///
+    /// \note The base class implementation provides an inefficient 
+    /// implementation by searching for bracketing time samples twice, if 
+    /// \p time happens to land on an authored time sample. Its recommended to 
+    /// override this method with a more efficient implementation catering to 
+    /// the specific data representation.
+    SDF_API
+    virtual bool
+    GetPreviousTimeSampleForPath(const SdfPath& path, double time, 
+                                 double* tPrevious) const;
+
     SDF_API
     virtual bool
     QueryTimeSample(const SdfPath& path, double time,
@@ -352,6 +374,17 @@ public:
     virtual bool
     QueryTimeSample(const SdfPath& path, double time,
                     SdfAbstractDataValue *optionalValue) const = 0;
+
+    /// If there is a time sample authored at \p time, return its value's
+    /// typeid(), otherwise return typeid(void).
+    ///
+    /// \note The base class provides an implementation in terms of
+    /// QueryTimeSample(path, time, VtValue *), returning VtValue::GetTypeid().
+    /// Consider overriding this member function if not fetching the VtValue
+    /// would be more performant.
+    SDF_API
+    virtual const std::type_info &
+    QueryTimeSampleTypeid(const SdfPath &path, double time) const;
 
     SDF_API
     virtual void
@@ -394,28 +427,38 @@ inline T SdfAbstractData::GetAs(
 class SdfAbstractDataValue
 {
 public:
-    virtual bool StoreValue(const VtValue& value) = 0;
-    
     template <class T> 
-    bool StoreValue(const T& v) 
+    bool StoreValue(T &&v) 
     {
-        if (TfSafeTypeCompare(typeid(T), valueType)) {
-            *static_cast<T*>(value) = v;
+        // this can be std::remove_cvref_t in c++20.
+        using Type = std::remove_cv_t<std::remove_reference_t<T>>;
+
+        if constexpr (std::is_same_v<Type, VtValue>) {
+            return _StoreVtValue(std::forward<T>(v));
+        }
+        
+        isValueBlock = false;
+        isAnimationBlock = false;
+        typeMismatch = false;
+        if constexpr (std::is_same_v<Type, SdfValueBlock>) {
+            isValueBlock = true;
+            return true;
+        } else if constexpr (std::is_same_v<Type, SdfAnimationBlock>) {
+            isAnimationBlock = true;
+            return true;
+        }
+        if (TfSafeTypeCompare(typeid(Type), valueType)) {
+            *static_cast<Type*>(value) = std::forward<T>(v);
             return true;
         }
         typeMismatch = true;
         return false;
     }
 
-    bool StoreValue(const SdfValueBlock& block)
-    {
-        isValueBlock = true;
-        return true;
-    }
-    
     void* value;
     const std::type_info& valueType;
     bool isValueBlock;
+    bool isAnimationBlock;
     bool typeMismatch;
 
 protected:
@@ -423,8 +466,13 @@ protected:
         : value(value_)
         , valueType(valueType_)
         , isValueBlock(false)
+        , isAnimationBlock(false)
         , typeMismatch(false)
     { }
+
+private:
+    virtual bool _StoreVtValue(const VtValue& value) = 0;
+    virtual bool _StoreVtValue(VtValue &&value) = 0;
 };
 
 /// \class SdfAbstractDataTypedValue
@@ -448,24 +496,53 @@ public:
         : SdfAbstractDataValue(value, typeid(T))
     { }
 
-    virtual bool StoreValue(const VtValue& v)
-    {
-        if (ARCH_LIKELY(v.IsHolding<T>())) {
-            *static_cast<T*>(value) = v.UncheckedGet<T>();
-            if (std::is_same<T, SdfValueBlock>::value) {
+private:
+    T const &_Get(const VtValue &v) {
+        return v.UncheckedGet<T>();
+    }
+
+    T _Get(VtValue &&v) {
+        return v.UncheckedRemove<T>();
+    }
+
+    template <class Value>
+    bool _StoreVtValueImpl(Value &&v) {
+        typeMismatch = false;
+        isValueBlock = false;
+        isAnimationBlock = false;
+        if (ARCH_LIKELY(std::forward<Value>(v).template IsHolding<T>())) {
+            *static_cast<T*>(value) = _Get(std::forward<Value>(v));
+            if constexpr (std::is_same_v<T, SdfValueBlock>) {
                 isValueBlock = true;
+            } else if constexpr (std::is_same_v<T, SdfAnimationBlock>) {
+                isAnimationBlock = true;
             }
             return true;
         }
         
-        if (v.IsHolding<SdfValueBlock>()) {
+        if (std::forward<Value>(v).template IsHolding<SdfValueBlock>()) {
             isValueBlock = true;
+            return true;
+        } 
+        else if (std::forward<Value>(v).template IsHolding<SdfAnimationBlock>()) 
+        {
+            isAnimationBlock = true;
             return true;
         }
 
         typeMismatch = true;
 
         return false;
+    }
+    
+    virtual bool
+    _StoreVtValue(const VtValue& v) override {
+        return _StoreVtValueImpl(v);
+    }
+
+    virtual bool
+    _StoreVtValue(VtValue &&v) override {
+        return _StoreVtValueImpl(v);
     }
 };
 
@@ -492,12 +569,18 @@ public:
 
     const void* value;
     const std::type_info& valueType;
+    const bool isArrayEdit;
+    const std::type_info& elementValueType; // void unless isArrayEdit
 
 protected:
     SdfAbstractDataConstValue(const void* value_, 
-                              const std::type_info& valueType_)
+                              const std::type_info& valueType_,
+                              const bool isArrayEdit_,
+                              const std::type_info& elementValueType_)
         : value(value_)
         , valueType(valueType_)
+        , isArrayEdit(isArrayEdit_)
+        , elementValueType(elementValueType_)
     { 
     }
 };
@@ -519,9 +602,19 @@ template <class T>
 class SdfAbstractDataConstTypedValue : public SdfAbstractDataConstValue
 {
 public:
+    static std::type_info const &_GetElementType() {
+        if constexpr (VtIsArrayEdit<T>::value) {
+            return typeid(typename T::ElementType);
+        }
+        else {
+            return typeid(void);
+        }
+    }
+
     SdfAbstractDataConstTypedValue(const T* value)
-        : SdfAbstractDataConstValue(value, typeid(T))
-    { }
+        : SdfAbstractDataConstValue(
+            value, typeid(T), VtIsArrayEdit<T>::value, this->_GetElementType())
+        {}
     
     virtual bool GetValue(VtValue* v) const
     {

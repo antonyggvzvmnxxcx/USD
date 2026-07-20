@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HGIVULKAN_HGI_H
 #define PXR_IMAGING_HGIVULKAN_HGI_H
@@ -29,6 +12,7 @@
 #include "pxr/imaging/hgi/tokens.h"
 
 #include "pxr/imaging/hgiVulkan/api.h"
+#include "pxr/imaging/hgiVulkan/capabilities.h"
 #include "pxr/imaging/hgiVulkan/commandQueue.h"
 #include "pxr/imaging/hgiVulkan/device.h"
 #include "pxr/imaging/hgiVulkan/vulkan.h"
@@ -56,6 +40,9 @@ public:
     ~HgiVulkan() override;
 
     HGIVULKAN_API
+    bool IsBackendSupported() const override;
+
+    HGIVULKAN_API
     HgiGraphicsCmdsUniquePtr CreateGraphicsCmds(
         HgiGraphicsCmdsDesc const& desc) override;
 
@@ -63,17 +50,16 @@ public:
     HgiBlitCmdsUniquePtr CreateBlitCmds() override;
 
     HGIVULKAN_API
-    HgiComputeCmdsUniquePtr CreateComputeCmds() override;
+    HgiComputeCmdsUniquePtr CreateComputeCmds(
+        HgiComputeCmdsDesc const& desc) override;
 
     HGIVULKAN_API
-    HgiTextureHandle CreateTexture(HgiTextureDesc const & desc) override;
+    HgiTextureHandle CreateTextureForInterop(
+        HgiTextureDesc const & desc,
+        bool optimalTiling);
 
     HGIVULKAN_API
     void DestroyTexture(HgiTextureHandle* texHandle) override;
-
-    HGIVULKAN_API
-    HgiTextureViewHandle CreateTextureView(
-        HgiTextureViewDesc const& desc) override;
 
     HGIVULKAN_API
     void DestroyTextureView(HgiTextureViewHandle* viewHandle) override;
@@ -83,9 +69,6 @@ public:
 
     HGIVULKAN_API
     void DestroySampler(HgiSamplerHandle* smpHandle) override;
-
-    HGIVULKAN_API
-    HgiBufferHandle CreateBuffer(HgiBufferDesc const & desc) override;
 
     HGIVULKAN_API
     void DestroyBuffer(HgiBufferHandle* bufHandle) override;
@@ -105,10 +88,6 @@ public:
     HGIVULKAN_API
     void DestroyShaderProgram(
         HgiShaderProgramHandle* shaderProgramHandle) override;
-
-    HGIVULKAN_API
-    HgiResourceBindingsHandle CreateResourceBindings(
-        HgiResourceBindingsDesc const& desc) override;
 
     HGIVULKAN_API
     void DestroyResourceBindings(HgiResourceBindingsHandle* resHandle) override;
@@ -132,10 +111,19 @@ public:
     TfToken const& GetAPIName() const override;
 
     HGIVULKAN_API
+    HgiVulkanCapabilities const* GetCapabilities() const override;
+
+    HGIVULKAN_API
+    HgiIndirectCommandEncoder* GetIndirectCommandEncoder() const override;
+
+    HGIVULKAN_API
     void StartFrame() override;
 
     HGIVULKAN_API
     void EndFrame() override;
+
+    HGIVULKAN_API
+    void GarbageCollect() override;
 
     //
     // HgiVulkan specific
@@ -163,14 +151,31 @@ public:
     void TrashObject(H* handle, std::vector<T*>* collector)
     {
         T* object = static_cast<T*>(handle->Get());
-        HgiVulkanDevice* device = object->GetDevice();
-        HgiVulkanCommandQueue* queue = device->GetCommandQueue();
-        object->GetInflightBits() = queue->GetInflightCommandBuffersBits();
-        collector->push_back(object);
+        if (object) {
+            HgiVulkanDevice* device = object->GetDevice();
+            HgiVulkanCommandQueue* queue = device->GetCommandQueue();
+            object->GetInflightBits() = queue->GetInflightCommandBuffersBits();
+            collector->push_back(object);
+        }
+
         *handle = H();
     }
 
 protected:
+    HGIVULKAN_API
+    HgiTextureHandle _CreateTexture(HgiTextureDesc const & desc) override;
+
+    HGIVULKAN_API
+    HgiTextureViewHandle _CreateTextureView(
+        HgiTextureViewDesc const& desc) override;
+
+    HGIVULKAN_API
+    HgiBufferHandle _CreateBuffer(HgiBufferDesc const & desc) override;
+
+    HGIVULKAN_API
+    HgiResourceBindingsHandle _CreateResourceBindings(
+        HgiResourceBindingsDesc const& desc) override;
+
     HGIVULKAN_API
     bool _SubmitCmds(HgiCmds* cmds, HgiSubmitWaitType wait) override;
 

@@ -1,26 +1,12 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
-#
+
+# pylint: disable=map-builtin-not-iterating
+
 from .qt import QtCore, QtGui, QtWidgets
 
 
@@ -40,7 +26,7 @@ class _ArrayAttributeModel(QtCore.QAbstractListModel):
     '''This is a data model that represents a slice into some array data.
     '''
 
-    RawDataRole = QtCore.Qt.UserRole + 0
+    RawDataRole = QtCore.Qt.ItemDataRole.UserRole + 0
 
     def __init__(self):
         super(_ArrayAttributeModel, self).__init__()
@@ -93,12 +79,12 @@ class _ArrayAttributeModel(QtCore.QAbstractListModel):
     def columnCount(self, parent=QtCore.QModelIndex()):
         return 1
 
-    def data(self, index, role=QtCore.Qt.DisplayRole):
+    def data(self, index, role=QtCore.Qt.ItemDataRole.DisplayRole):
         start, _, step = self._slice.indices(len(self._arrayData))
         idx = start + index.row() * step
         dataVal = self._arrayData[idx]
 
-        if role == QtCore.Qt.DisplayRole:
+        if role == QtCore.Qt.ItemDataRole.DisplayRole:
             from .scalarTypes import ToString
             return str(idx) + ": " + ToString(
                 dataVal, self._scalarTypeName)
@@ -143,8 +129,8 @@ class ArrayAttributeView(QtWidgets.QWidget):
         self._arrayAttrModel = _ArrayAttributeModel()
         self._listView = QtWidgets.QListView()
         self._listView.setUniformItemSizes(True)
-        self._listView.setViewMode(QtWidgets.QListView.ListMode)
-        self._listView.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self._listView.setViewMode(QtWidgets.QListView.ViewMode.ListMode)
+        self._listView.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self._listView.setModel(self._arrayAttrModel)
         layout.addWidget(self._listView)
 
@@ -162,17 +148,21 @@ class ArrayAttributeView(QtWidgets.QWidget):
     def CanView(self, attr):
         return attr.GetTypeName().isArray
 
+    def Clear(self):
+        self._arrayAttrModel.SetArrayDataAndTypeName(None, "")
+        self._lineEdit.setText("")
+
     def keyPressEvent(self, e):
         # XXX note, this is extremely finicky.  it does not really
         # have keyboard focus.
-        if e.matches(QtGui.QKeySequence.Copy):
+        if e.matches(QtGui.QKeySequence.StandardKey.Copy):
             self.Copy()
         else:
             return super(ArrayAttributeView, self).keyPressEvent(e)
 
     # context menu stuff
     def _SetupContextMenu(self):
-        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._ShowContextMenu)
 
     def _ShowContextMenu(self, point):
@@ -233,9 +223,9 @@ class _SliceLineEdit(QtWidgets.QLineEdit):
             s = s.strip()
             try:
                 _GetSliceFromString(s)
-                return (QtGui.QValidator.Acceptable, s, pos)
+                return (QtGui.QValidator.State.Acceptable, s, pos)
             except:
-                return (QtGui.QValidator.Intermediate, s, pos)
+                return (QtGui.QValidator.State.Intermediate, s, pos)
 
     def setText(self, t):
         super(_SliceLineEdit, self).setText(t)

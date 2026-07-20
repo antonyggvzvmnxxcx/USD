@@ -11,6 +11,7 @@ pxr_library(hgiGL
     LIBRARIES
         arch
         garch
+        hf
         hgi
         tf
         trace
@@ -25,10 +26,12 @@ pxr_library(hgiGL
     PUBLIC_CLASSES
         blitCmds
         buffer
+        capabilities
         computeCmds
         computePipeline
+        contextArena
+        debugCodes
         device
-        framebufferCache
         garbageCollector
         graphicsCmds
         graphicsPipeline
@@ -46,3 +49,62 @@ pxr_library(hgiGL
     RESOURCE_FILES
         plugInfo.json
 )
+
+if (${PXR_HEADLESS_TEST_MODE})
+    message(STATUS "Skipping ${PXR_PACKAGE} tests because PXR_HEADLESS_TEST_MODE is ON")
+    return()
+endif()
+
+if (APPLE)
+    message(STATUS "Skipping ${PXR_PACKAGE} tests because they are currently unsupported on macOS")
+    return()
+endif()
+
+if (WIN32)
+    message(STATUS "Skipping ${PXR_PACKAGE} tests because they are currently unsupported on Windows")
+    return()
+endif()
+
+pxr_build_test(testHgiGL
+    LIBRARIES
+        hgiGL
+        hgi
+        hio
+        tf
+        gf
+        garch
+    CPPFILES
+        testenv/testHgiGL.cpp
+)
+pxr_register_test(testHgiGL
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testHgiGL"
+    TESTENV testenv/testHgiGL
+    DIFF_COMPARE
+        graphicsCmdsDescCache.txt
+    IMAGE_DIFF_COMPARE
+        graphicsCmdsClear.png
+        srgba.png
+        copyTextureToBuffer.png
+        copyBufferToTexture.png
+    FAIL 1
+    FAIL_PERCENT 0.001
+    PERCEPTUAL
+    EXPECTED_RETURN_CODE 0
+)
+
+# This test is not currently supported on static builds as it relies on 
+# testHgiCommand, which is not linked in the static hgiGL library. 
+if (BUILD_SHARED_LIBS)
+
+pxr_register_test(testHgiGLCommand
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testHgiCommand --write testHgiGLCommand_triangle.png"
+    TESTENV testenv/testHgiGLCommand
+    IMAGE_DIFF_COMPARE
+        testHgiGLCommand_triangle.png
+    FAIL 1
+    FAIL_PERCENT 0.001
+    PERCEPTUAL
+    EXPECTED_RETURN_CODE 0
+)
+
+endif() # BUILD_SHARED_LIBS

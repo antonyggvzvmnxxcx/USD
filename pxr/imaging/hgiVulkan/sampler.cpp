@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/base/tf/diagnostic.h"
 
@@ -27,7 +10,9 @@
 #include "pxr/imaging/hgiVulkan/conversions.h"
 #include "pxr/imaging/hgiVulkan/device.h"
 #include "pxr/imaging/hgiVulkan/sampler.h"
+#include "pxr/imaging/hgiVulkan/diagnostic.h"
 
+#include <algorithm>
 #include <float.h>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -51,27 +36,47 @@ HgiVulkanSampler::HgiVulkanSampler(
     sampler.addressModeW =
         HgiVulkanConversions::GetSamplerAddressMode(desc.addressModeW);
 
-    sampler.compareEnable = VK_FALSE; // Eg. Percentage-closer filtering
-    sampler.compareOp = VK_COMPARE_OP_ALWAYS;
+    // Eg. Percentage-closer filtering
+    sampler.compareEnable = desc.enableCompare ? VK_TRUE : VK_FALSE;
+    sampler.compareOp = 
+        HgiVulkanConversions::GetDepthCompareFunction(desc.compareFunction);
 
-    sampler.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+    sampler.borderColor = 
+        HgiVulkanConversions::GetBorderColor(desc.borderColor);
     sampler.mipLodBias = 0.0f;
     sampler.mipmapMode = HgiVulkanConversions::GetMipFilter(desc.mipFilter);
     sampler.minLod = 0.0f;
-    sampler.maxLod = FLT_MAX;
+    sampler.maxLod = desc.mipFilter == HgiMipFilterNotMipmapped
+        ? 0.25 : VK_LOD_CLAMP_NONE;
+    // 0.25 if not mipmapped, to emulate OpenGL
+    // See https://registry.khronos.org/vulkan/specs/latest/man/html/VkSamplerCreateInfo.html#_description
 
-    HgiVulkanCapabilities const& caps = device->GetDeviceCapabilities();
-    sampler.anisotropyEnable = caps.vkDeviceFeatures.samplerAnisotropy;
-    sampler.maxAnisotropy = sampler.anisotropyEnable ?
-        caps.vkDeviceProperties.limits.maxSamplerAnisotropy : 1.0f;
+    if ((desc.minFilter != HgiSamplerFilterNearest ||
+         desc.mipFilter == HgiMipFilterLinear) &&
+         desc.magFilter != HgiSamplerFilterNearest) {
+        HgiVulkanCapabilities const& caps = device->GetDeviceCapabilities();
+        sampler.anisotropyEnable =
+            caps.vkDeviceFeatures2.features.samplerAnisotropy;
+        sampler.maxAnisotropy = sampler.anisotropyEnable ?
+            std::min<float>({
+                caps.vkDeviceProperties2.properties.limits.maxSamplerAnisotropy,
+                static_cast<float>(desc.maxAnisotropy),
+                static_cast<float>(TfGetEnvSetting(HGI_MAX_ANISOTROPY))}) : 1.0f;
+    }
 
-    TF_VERIFY(
+    HGIVULKAN_VERIFY_VK_RESULT(
         vkCreateSampler(
             device->GetVulkanDevice(),
             &sampler,
             HgiVulkanAllocator(),
-            &_vkSampler) == VK_SUCCESS
+            &_vkSampler)
     );
+
+    if (_descriptor.debugName.empty()) {
+        _descriptor.debugName = "UNNAMED";
+    }
+    HgiVulkanSetDebugName(device, (uint64_t)_vkSampler,
+        VK_OBJECT_TYPE_SAMPLER, _descriptor.debugName.c_str());
 }
 
 HgiVulkanSampler::~HgiVulkanSampler()

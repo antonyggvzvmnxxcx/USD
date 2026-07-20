@@ -1,31 +1,16 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
-#include "pxr/base/work/arenaDispatcher.h"
 #include "pxr/base/work/dispatcher.h"
+#include "pxr/base/work/isolatingDispatcher.h"
 
+#include "pxr/base/tf/diagnosticTrap.h"
+#include "pxr/base/tf/errorMark.h"
 #include "pxr/base/tf/iterator.h"
 #include "pxr/base/tf/stopwatch.h"
 
@@ -384,12 +369,75 @@ _TestDispatcherCancellation(Graph *graph)
     DispatcherType parentDispatcher;
 
     parentDispatcher.Run(&_DelayedGraphTask<DispatcherType>, graph);
+    TF_AXIOM(!parentDispatcher.IsCancelled());
     std::this_thread::sleep_for(std::chrono::seconds(1));
     std::cout << "\tCancelling..." << std::endl;
     parentDispatcher.Cancel();
+    TF_AXIOM(parentDispatcher.IsCancelled());
     parentDispatcher.Wait();
+    TF_AXIOM(!parentDispatcher.IsCancelled());
     
     return graph->GetNumNodesRun() == numNodesPerLevel * numLevels;
+}
+
+template <class Dispatcher>
+static bool
+_TestDispatcherDiagnostics()
+{
+    // Check that diagnostics issued during Run() tasks are surfaced by the
+    // Wait() call.
+    {
+        Dispatcher d;
+        d.Run([]() { TF_WARN("warning! 1"); });
+        d.Run([]() { TF_WARN("warning! 2"); });
+        d.Run([]() { TF_WARN("warning! 3"); });
+        d.Run([]() { TF_STATUS("status! 1"); });
+        d.Run([]() { TF_STATUS("status! 2"); });
+        d.Run([]() { TF_RUNTIME_ERROR("error! 1"); });
+
+        // Trap only.
+        TfDiagnosticTrap trap;
+        d.Wait();
+        TF_AXIOM(!trap.IsClean());
+        TF_AXIOM((trap.CountMatching([](TfWarning const &w) {
+            return TfStringContains(w.GetCommentary(), "warning!");
+        }) == 3));
+        TF_AXIOM((trap.CountMatching([](TfStatus const &s) {
+            return TfStringContains(s.GetCommentary(), "status!");
+        }) == 2));
+        TF_AXIOM((trap.CountMatching([](TfError const &e) {
+            return TfStringContains(e.GetCommentary(), "error!");
+        }) == 1));
+        trap.Clear();
+    }
+
+    {
+        Dispatcher d;
+        d.Run([]() { TF_RUNTIME_ERROR("error! 1"); });
+        d.Run([]() { TF_WARN("warning! 1"); });
+        d.Run([]() { TF_RUNTIME_ERROR("error! 2"); });
+        d.Run([]() { TF_WARN("warning! 2"); });
+        d.Run([]() { TF_RUNTIME_ERROR("error! 3"); });
+        d.Run([]() { TF_STATUS("status! 1"); });
+
+        // Trap and Mark interaction.
+        TfErrorMark mark;
+        TfDiagnosticTrap trap;
+        d.Wait();
+        TF_AXIOM(!mark.IsClean());
+        TF_AXIOM(!trap.IsClean());
+        TF_AXIOM(!trap.HasErrors());
+        TF_AXIOM((trap.CountMatching([](TfWarning const &w) {
+            return TfStringContains(w.GetCommentary(), "warning!");
+        }) == 2));
+        TF_AXIOM((trap.CountMatching([](TfStatus const &s) {
+            return TfStringContains(s.GetCommentary(), "status!");
+        }) == 1));
+        mark.Clear();
+        trap.Clear();
+    }
+    
+    return true;
 }
 
 int
@@ -423,16 +471,25 @@ main(int argc, char **argv)
         }
     }
 
-    // Test the arena dispatcher.
+    // Test the isolating dispatcher.
     {
-        std::cout << "Using the arena dispatcher" << std::endl;
-        if (!_TestDispatcher<WorkArenaDispatcher>(graph.get())) {
+        std::cout << "Using the isolating dispatcher" << std::endl;
+        if (!_TestDispatcher<WorkIsolatingDispatcher>(graph.get())) {
             return 1;
         }
 
-        if (!_TestDispatcherCancellation<WorkArenaDispatcher>(graph.get())) {
+        if (!_TestDispatcherCancellation<WorkIsolatingDispatcher>(
+                graph.get())) {
             return 1;
         }
+    }
+
+    // Test diagnostic propagation.
+    if (!_TestDispatcherDiagnostics<WorkDispatcher>()) {
+        return 1;
+    }
+    if (!_TestDispatcherDiagnostics<WorkIsolatingDispatcher>()) {
+        return 1;
     }
 
     return 0;

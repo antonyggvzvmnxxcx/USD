@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 //
 // FileIO_Common.cpp
@@ -27,10 +10,17 @@
 #include "pxr/pxr.h"
 #include "pxr/usd/sdf/fileIO.h"
 #include "pxr/usd/sdf/fileIO_Common.h"
+#include "pxr/usd/sdf/pathExpression.h"
 
 #include "pxr/base/tf/stringUtils.h"
+#include "pxr/base/ts/valueTypeDispatch.h"
+#include "pxr/base/vt/array.h"
+#include "pxr/base/vt/arrayEdit.h"
+#include "pxr/base/vt/value.h"
 
 #include <cctype>
+#include <functional>
+#include <sstream>
 
 using std::map;
 using std::ostream;
@@ -41,36 +31,101 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 static const char *_IndentString = "    ";
 
-// Helper for creating string representation of an asset path
+// Check if 'cp' points to a valid UTF-8 multibyte sequence.  If so, return its
+// length (either 2, 3, or 4).  If not return 0.
+static inline int
+_IsUTF8MultiByte(char const *cp) {
+    // Return a byte with the high `n` bits set, rest clear.
+    auto highBits = [](int n) {
+        return static_cast<unsigned char>(((1 << n) - 1) << (8 - n));
+    }; 
+    
+    // Return true if `ch` is a continuation byte.
+    auto isContinuation = [&highBits](unsigned char ch) {
+        return (ch & highBits(2)) == highBits(1);
+    };
+    
+    // Check for 2, 3, or 4-byte code.
+    for (int i = 2; i <= 4; ++i) {
+        // This is an N-byte code if the high-order N+1 bytes are N 1s
+        // followed by a single 0.
+        if ((*cp & highBits(i + 1)) == highBits(i)) {
+            // If that's the case then the following N-1 bytes must be
+            // "continuation bytes".
+            for (int j = 1; j != i; ++j) {
+                if (!isContinuation(cp[j])) {
+                    return 0;
+                }
+            }
+            return i;
+        }
+    }
+    return 0;
+}
+
+// Return true if 'ch' is a printable ASCII character, independent of the
+// current locale.
+static inline bool
+_IsASCIIPrintable(unsigned char ch)
+{
+    // Locale-independent ascii printable is 32-126.
+    return 32 <= ch && ch <= 126;
+}
+
+// Append 'ch' to 'out' as an escaped 2-digit hex code (e.g. \x3f).
+static inline void
+_WriteHexEscape(unsigned char ch, string *out)
+{
+    const char* hexdigit = "0123456789abcdef";
+    char buf[] = "\\x__";
+    buf[2] = hexdigit[(ch >> 4) & 15];
+    buf[3] = hexdigit[ch & 15];
+    out->append(buf);
+}
+
+// Helper for creating string representation of an asset path.  Caller is
+// assumed to have validated \p assetPath (e.g. by having obtained it from an
+// SdfAssetPath, SdfReference, or SdfPayload).
 static string
 _StringFromAssetPath(const string& assetPath)
 {
     // See Sdf_EvalAssetPath for the code that reads asset paths at parse time.
 
-    // We want to avoid writing asset paths with escape sequences in them
-    // so that it's easy for users to copy and paste these paths into other
-    // apps without having to clean up those escape sequences.
+    // We want to avoid writing asset paths with escape sequences in them so
+    // that it's easy for users to copy and paste these paths into other apps
+    // without having to clean up those escape sequences, and so that asset
+    // resolvers are as free as possible to determine their own syntax.
     //
     // We use "@"s as delimiters so that asset paths are easily identifiable.
     // but use "@@@" if the path already has an "@" in it rather than escaping
     // it. If the path has a "@@@", then we'll escape that, but hopefully that's
-    // a rarer case. We'll also strip out non-printable characters. so we don't
-    // have to escape those.
-    static const string singleDelim = "@";
-    static const string tripleDelim = "@@@";
-    const string* delim = (assetPath.find('@') == std::string::npos) ? 
-        &singleDelim : &tripleDelim;
+    // a rarer case.
+    const char delim = '@';
+    bool useTripleDelim = assetPath.find(delim) != std::string::npos;
 
-    string s = assetPath;
-    s.erase(std::remove_if(s.begin(), s.end(), 
-                           [](char s) { return !std::isprint(s); }),
-            s.end());
+    string s;
+    s.reserve(assetPath.size() + (useTripleDelim ? 6 : 2));
+    s.append(useTripleDelim ? 3 : 1, delim);
 
-    if (delim == &tripleDelim) {
-        s = TfStringReplace(s, tripleDelim, "\\@@@");
+    for (char const *cp = assetPath.c_str(); *cp; ++cp) {
+        // If we're using triple delimiters and we encounter a triple delimiter
+        // in the asset path, we must escape it.
+        if (useTripleDelim && 
+            cp[0] == delim && cp[1] == delim && cp[2] == delim) {
+            s.push_back('\\');
+            s.append(3, delim);
+            cp += 2; // account for next loop increment.
+            continue;
+        }
+        // Otherwise we can just emit the bytes since callers are required to
+        // have validated the asset path content.
+        s.push_back(*cp);
     }
 
-    return *delim + s + *delim;
+    // Tack on the final delimiter.
+    s.append(useTripleDelim ? 3 : 1, delim);
+
+    return s;
 }
 
 static string
@@ -88,7 +143,13 @@ _StringFromValue(const TfToken& s)
 static string
 _StringFromValue(const SdfAssetPath& assetPath)
 {
-    return _StringFromAssetPath(assetPath.GetAssetPath());
+    return _StringFromAssetPath(assetPath.GetAuthoredPath());
+}
+
+static string
+_StringFromValue(const SdfPathExpression& pathExpr)
+{
+    return Sdf_FileIOUtility::Quote(pathExpr.GetText());
 }
 
 template <class T>
@@ -110,11 +171,24 @@ _StringFromVtArray(
     valueStr->append("]");
 }
 
+template <class T>
+static void
+_StringFromVtArrayEdit(
+    string *valueStr,
+    const VtArrayEdit<T> &arrayEdit)
+{
+    std::stringstream sstr;
+    arrayEdit.StreamCustom(
+        sstr, [&](T const &elem) { return _StringFromValue(elem); });
+    *valueStr = sstr.str();
+}
+
 // Helper for creating strings for VtValues holding certain types
 // that can't use TfStringify, and arrays of those types.
-template <class T>
+template <class T, class UpgradeFn>
 static bool
-_StringFromVtValueHelper(string* valueStr, const VtValue& value)
+_StringFromVtValueHelper(string* valueStr, const VtValue& value,
+                         UpgradeFn &&requestUpgrade)
 {
     if (value.IsHolding<T>()) {
         *valueStr = _StringFromValue(value.UncheckedGet<T>());
@@ -125,7 +199,27 @@ _StringFromVtValueHelper(string* valueStr, const VtValue& value)
         _StringFromVtArray(valueStr,valArray);
         return true;
     }
+    else if (value.IsHolding<VtArrayEdit<T>>()) {
+        std::forward<UpgradeFn>(requestUpgrade)(
+            SdfFileVersion(1,2,0),
+            "A VtArrayEdit instance was detected which requires usda "
+            "version 1.2.");
+        const VtArrayEdit<T> &arrayEdit = value.UncheckedGet<VtArrayEdit<T>>();
+        _StringFromVtArrayEdit(valueStr, arrayEdit);
+        return true;
+    }
     return false;
+}
+
+template <class T>
+static bool
+_StringFromVtValueHelper(Sdf_TextOutput &out,
+                         string* valueStr, const VtValue& value)
+{
+    return _StringFromVtValueHelper<T>(
+        valueStr, value, [&out](SdfFileVersion ver, char const *msg) {
+            out.RequestWriteVersionUpgrade(ver, msg);
+        });
 }
 
 // ------------------------------------------------------------
@@ -204,7 +298,7 @@ struct _ListOpWriter<SdfReference>
     {
         bool multiLineRefMetaData = !ref.GetCustomData().empty();
     
-        Sdf_FileIOUtility::Write(out, indent, "");
+        Sdf_FileIOUtility::Puts(out, indent, "");
 
         if (!ref.GetAssetPath().empty()) {
             Sdf_FileIOUtility::WriteAssetPath(out, 0, ref.GetAssetPath());
@@ -245,7 +339,7 @@ struct _ListOpWriter<SdfPayload>
     static void Write(
         Sdf_TextOutput& out, size_t indent, const SdfPayload& payload)
     {
-        Sdf_FileIOUtility::Write(out, indent, "");
+        Sdf_FileIOUtility::Puts(out, indent, "");
 
         if (!payload.GetAssetPath().empty()) {
             Sdf_FileIOUtility::WriteAssetPath(out, 0, payload.GetAssetPath());
@@ -401,19 +495,23 @@ void
 Sdf_FileIOUtility::WriteDefaultValue(
     Sdf_TextOutput &out, size_t indent, VtValue value)
 {
-    // ---
     // Special case for SdfPath value types
-    // ---
-
     if (value.IsHolding<SdfPath>()) {
         WriteSdfPath(out, indent, value.Get<SdfPath>() );
         return;
     }
 
-    // ---
+    // We never write opaque values to layers; SetDefault and other high-level
+    // APIs should prevent us from ever having an opaque value set on an
+    // attribute, but low-level methods like SetField can still be used to sneak
+    // one in, so we guard against authoring them here as well.
+    if (value.IsHolding<SdfOpaqueValue>()) {
+        TF_CODING_ERROR("Tried to write opaque value to layer");
+        return;
+    }
+
     // General case value to string conversion and write-out.
-    // ---
-    std::string valueString = Sdf_FileIOUtility::StringFromVtValue(value);
+    std::string valueString = Sdf_FileIOUtility::StringFromVtValue(value, out);
     Sdf_FileIOUtility::Write(out, 0, " = %s", valueString.c_str());
 }
 
@@ -471,7 +569,7 @@ Sdf_FileIOUtility::WriteTimeSamples(
             if (i->second.IsHolding<SdfPath>()) {
                 WriteSdfPath(out, 0, i->second.Get<SdfPath>() );
             } else {
-                Puts(out, 0, StringFromVtValue( i->second ));
+                Puts(out, 0, StringFromVtValue(i->second, out));
             }
             Puts(out, 0, ",\n");
         }
@@ -484,32 +582,257 @@ Sdf_FileIOUtility::WriteTimeSamples(
     return true;
 }
 
+static void _WriteSplineExtrapolation(
+    Sdf_TextOutput &out,
+    size_t indent,
+    const char *label,
+    const TsExtrapolation &extrap)
+{
+    // Examples:
+    //   pre: linear,
+    //   post: sloped(0.57),
+    //   post: repeat,
+    //   post: repeat(5.1),
+    if (extrap == TsExtrapolation()) {
+        return;
+    }
+
+    if (extrap.mode == TsExtrapSloped) {
+        Sdf_FileIOUtility::Write(out, indent + 1, "%s: %s(%s),\n",
+            label,
+            Sdf_FileIOUtility::Stringify(extrap.mode),
+            TfStringify(extrap.slope).c_str());
+    } else if (extrap.IsLooping() && extrap.loopBoundaryTime.has_value()) {
+        out.RequestWriteVersionUpgrade(
+            SdfFileVersion(1,3,0),
+            "loopBoundaryTime parameter on spline looping extrapolation"
+            " was detected which requires version 1.3.");
+        Sdf_FileIOUtility::Write(out, indent + 1, "%s: %s(%s),\n",
+            label,
+            Sdf_FileIOUtility::Stringify(extrap.mode),
+            TfStringify(extrap.loopBoundaryTime.value()).c_str());
+    } else {
+        Sdf_FileIOUtility::Write(out, indent + 1, "%s: %s,\n",
+            label,
+            Sdf_FileIOUtility::Stringify(extrap.mode));
+    }
+}
+
+namespace
+{
+    template <typename T>
+    struct _SplineKnotWriter
+    {
+        void operator()(
+            Sdf_TextOutput &out,
+            const size_t indent,
+            const TsKnotMap &knotMap,
+            const TsCurveType curveType)
+        {
+            // On the pre-side of the first knot, there is no segment and no
+            // interpolation.  But start with Curve just so that if there's a
+            // pre-tangent on the first knot, we record it.
+            TsInterpMode interp = TsInterpCurve;
+
+            for (const TsKnot &knot : knotMap) {
+                // Time.
+                Sdf_FileIOUtility::Write(out, indent + 1, "%s:",
+                    TfStringify(knot.GetTime()).c_str());
+
+                // Pre-value, if any.
+                if (knot.IsDualValued()) {
+                    T preValue = 0;
+                    knot.GetPreValue(&preValue);
+                    Sdf_FileIOUtility::Write(out, 0, " %s &",
+                        TfStringify(preValue).c_str());
+                }
+
+                // Value.
+                T value = 0;
+                knot.GetValue(&value);
+                Sdf_FileIOUtility::Write(out, 0, " %s",
+                    TfStringify(value).c_str());
+
+                // We write tangents even when they're not significant due to
+                // facing an extrapolation region.  If more knots are added,
+                // these tangents may become significant, so we record them.
+
+                // Pre-tangent, if any.
+                if (interp == TsInterpCurve) {
+                    const bool isBez = (curveType == TsCurveTypeBezier);
+
+                    T slope = 0;
+                    knot.GetPreTanSlope(&slope);
+                    TsTime width = knot.GetPreTanWidth();
+                    TsTangentAlgorithm algo = knot.GetPreTanAlgorithm();
+
+                    _WriteTangent(
+                        out, "pre", isBez, width, slope, algo);
+                }
+
+                // Pre-segment finished.  Switch to post-segment.
+                interp = knot.GetNextInterpolation();
+
+                // Post-tangent, if any.
+                if (interp == TsInterpCurve) {
+                    const bool isBez = (curveType == TsCurveTypeBezier);
+
+                    T slope = 0;
+                    knot.GetPostTanSlope(&slope);
+                    TsTime width = knot.GetPostTanWidth();
+                    TsTangentAlgorithm algo = knot.GetPostTanAlgorithm();
+
+                    _WriteTangent(
+                        out, "post curve", isBez, width, slope, algo);
+                }
+
+                // If no post-tangent, write next segment interp method.
+                else {
+                    Sdf_FileIOUtility::Write(out, 0, "; post %s",
+                        Sdf_FileIOUtility::Stringify(interp));
+                }
+
+                // Custom data.
+                const VtDictionary customData = knot.GetCustomData();
+                if (!customData.empty()) {
+                    Sdf_FileIOUtility::Write(out, 0, "; ");
+                    Sdf_FileIOUtility::WriteDictionary(
+                        out, 0, /* multiline = */ false, customData,
+                        /* stringValuesOnly = */ false);
+                }
+
+                Sdf_FileIOUtility::Write(out, 0, ",\n");
+            }
+        }
+
+        void _WriteTangent(
+            Sdf_TextOutput &out,
+            const char* const label,
+            const bool isBez,
+            const TsTime width,
+            const T slope,
+            const TsTangentAlgorithm algo)
+        {
+            if (isBez) {
+                // Bezier, standard form: width and slope.
+                Sdf_FileIOUtility::Write(
+                    out, 0, "; %s (%s, %s",
+                    label,
+                    TfStringify(width).c_str(),
+                    TfStringify(slope).c_str());
+            } else {
+                // Hermite, standard form: slope.
+                Sdf_FileIOUtility::Write(
+                    out, 0, "; %s (%s",
+                    label,
+                    TfStringify(slope).c_str());
+            }
+            if (algo != TsTangentAlgorithmNone) {
+                out.RequestWriteVersionUpgrade(
+                    SdfFileVersion(1,1,0),
+                    "A tangent algorithm was detected which requires usda"
+                    " version 1.1.");
+                Sdf_FileIOUtility::Write(
+                    out, 0, ", %s)", Sdf_FileIOUtility::Stringify(algo));
+            } else {
+                Sdf_FileIOUtility::Write(out, 0, ")");
+            }
+        }
+    };
+}
+
+void
+Sdf_FileIOUtility::WriteSpline(
+    Sdf_TextOutput &out, const size_t indent, const TsSpline &spline)
+{
+    // Example:
+    //
+    //   varying double myAttr.spline = {
+    //       bezier,
+    //       pre: linear,
+    //       post: sloped(0.57),
+    //       loop: (15, 25, 0, 2, 11.7),
+    //       7: 5.5 & 7.21; post held,
+    //       15: 8.18; post curve (2.49, 1.17); { string comment = "climb!" },
+    //       20: 14.72; pre (3.77, -1.4); post curve (1.1, -1.4),
+    //   }
+
+    const TsKnotMap knotMap = spline.GetKnots();
+
+    // Spline type, if significant.
+    if (knotMap.HasCurveSegments() ||
+        spline.GetCurveType() == TsCurveTypeHermite)
+    {
+        Write(out, indent + 1, "%s,\n",
+            Stringify(spline.GetCurveType()));
+    }
+
+    // Extrapolations, if different from default (held).
+    _WriteSplineExtrapolation(
+        out, indent, "pre", spline.GetPreExtrapolation());
+    _WriteSplineExtrapolation(
+        out, indent, "post", spline.GetPostExtrapolation());
+
+    // Inner loop params, if present.
+    if (spline.GetInnerLoopParams() != TsLoopParams()) {
+        const TsLoopParams lp = spline.GetInnerLoopParams();
+        Write(out, indent + 1, "loop: (%s, %s, %d, %d, %s),\n",
+            TfStringify(lp.protoStart).c_str(),
+            TfStringify(lp.protoEnd).c_str(),
+            lp.numPreLoops,
+            lp.numPostLoops,
+            TfStringify(lp.valueOffset).c_str());
+    }
+
+    // Knots.
+    TsDispatchToValueTypeTemplate<_SplineKnotWriter>(
+        spline.GetValueType(),
+        std::ref(out), indent, std::ref(knotMap), spline.GetCurveType());
+}
+
+template <class RelocatesContainer> 
+bool 
+_WriteRelocates(
+    Sdf_TextOutput &out, size_t indent, bool multiLine,
+    const RelocatesContainer &relocates) 
+{
+    Sdf_FileIOUtility::Write(out, indent, "relocates = %s", multiLine ? "{\n" : "{ ");
+    size_t itemCount = relocates.size();
+    TF_FOR_ALL(it, relocates) {
+        Sdf_FileIOUtility::WriteSdfPath(out, indent+1, it->first);
+        Sdf_FileIOUtility::Puts(out, 0, ": ");
+        Sdf_FileIOUtility::WriteSdfPath(out, 0, it->second);
+        if (--itemCount > 0) {
+            Sdf_FileIOUtility::Puts(out, 0, ", ");
+        }
+        if (multiLine) {
+            Sdf_FileIOUtility::Puts(out, 0, "\n");
+        }
+    }
+    if (multiLine) {
+        Sdf_FileIOUtility::Puts(out, indent, "}\n");
+    }
+    else {
+        Sdf_FileIOUtility::Puts(out, 0, " }");
+    }
+    
+    return true;
+}
+
+bool 
+Sdf_FileIOUtility::WriteRelocates(
+    Sdf_TextOutput &out, size_t indent, bool multiLine,
+    const SdfRelocates &relocates)
+{
+    return _WriteRelocates(out, indent, multiLine, relocates);
+}
+
 bool 
 Sdf_FileIOUtility::WriteRelocates(
     Sdf_TextOutput &out, size_t indent, bool multiLine,
     const SdfRelocatesMap &reloMap)
 {
-    Write(out, indent, "relocates = %s", multiLine ? "{\n" : "{ ");
-    size_t itemCount = reloMap.size();
-    TF_FOR_ALL(it, reloMap) {
-        WriteSdfPath(out, indent+1, it->first);
-        Puts(out, 0, ": ");
-        WriteSdfPath(out, 0, it->second);
-        if (--itemCount > 0) {
-            Puts(out, 0, ", ");
-        }
-        if (multiLine) {
-            Puts(out, 0, "\n");
-        }
-    }
-    if (multiLine) {
-        Puts(out, indent, "}\n");
-    }
-    else {
-        Puts(out, 0, " }");
-    }
-    
-    return true;
+    return _WriteRelocates(out, indent, multiLine, reloMap);
 }
 
 void
@@ -545,7 +868,7 @@ Sdf_FileIOUtility::_WriteDictionary(
             // Put quotes around the keyName if it is not a valid identifier
             string keyName = *(i->first);
             if (!TfIsValidIdentifier(keyName)) {
-                keyName = "\"" + keyName + "\"";
+                keyName = Quote(keyName);
             }
             if (value.IsHolding<VtDictionary>()) {
                 Write(out, multiLine ? indent+1 : 0, "dictionary %s = ",
@@ -567,9 +890,9 @@ Sdf_FileIOUtility::_WriteDictionary(
                 // XXX: The logic here is very similar to that in
                 //      WriteDefaultValue. WBN to refactor.
                 string str;
-                if (_StringFromVtValueHelper<string>(&str, value) || 
-                    _StringFromVtValueHelper<TfToken>(&str, value) ||
-                    _StringFromVtValueHelper<SdfAssetPath>(&str, value)) {
+                if (_StringFromVtValueHelper<string>(out, &str, value) || 
+                    _StringFromVtValueHelper<TfToken>(out, &str, value) ||
+                    _StringFromVtValueHelper<SdfAssetPath>(out, &str, value)) {
                     Puts(out, 0, str);
                 } else {
                     Puts(out, 0, TfStringify(value));
@@ -679,11 +1002,8 @@ Sdf_FileIOUtility::WriteLayerOffset(
 }
 
 string
-Sdf_FileIOUtility::Quote(const string &str)
+Sdf_FileIOUtility::Quote(const string &str, const bool allowTripleQuotes)
 {
-    static const char* hexdigit = "0123456789abcdef";
-    static const bool allowTripleQuotes = true;
-
     string result;
 
     // Choose quotes, double quote preferred.
@@ -703,74 +1023,94 @@ Sdf_FileIOUtility::Quote(const string &str)
     }
     result += quote;
 
-    // Escape string.
-    TF_FOR_ALL(i, str) {
-        switch (*i) {
+    // Write `ch` as a regular ascii character, an escaped control character
+    // (like \n, \t, etc.) or a hex byte code (\xa8).
+    auto writeASCIIorHex = [&result, quote, tripleQuotes](char ch) {
+        switch (ch) {
         case '\n':
             // Pass newline as-is if using triple quotes, otherwise escape.
             if (tripleQuotes) {
-                result += *i;
+                result += ch;
             }
             else {
                 result += "\\n";
             }
             break;
-
+        
         case '\r':
             result += "\\r";
             break;
-
+        
         case '\t':
             result += "\\t";
             break;
-
+        
         case '\\':
             result += "\\\\";
             break;
-
+                
         default:
-            if (*i == quote) {
+            if (ch == quote) {
                 // Always escape the character we're using for quoting.
                 result += '\\';
                 result += quote;
             }
-            else if (!std::isprint(*i)) {
+            else if (!_IsASCIIPrintable(ch)) {
                 // Non-printable;  use two digit hex form.
-                result += "\\x";
-                result += hexdigit[(*i >> 4) & 15];
-                result += hexdigit[*i & 15];
+                _WriteHexEscape(ch, &result);
             }
             else {
                 // Printable, non-special.
-                result += *i;
+                result += ch;
             }
             break;
+        }
+    };
+
+    // Escape string.
+    for (char const *i = str.c_str(); *i; ++i) {
+        // Check UTF-8 sequence.
+        int nBytes = _IsUTF8MultiByte(i);
+        if (nBytes) {
+            result.append(i, i + nBytes);
+            i += nBytes - 1; // account for next loop increment.
+        }
+        else {
+            writeASCIIorHex(*i);
         }
     }
 
     // End quote.
-    result += quote;
-    if (tripleQuotes) {
-        result += quote;
-        result += quote;
-    }
+    result.append(tripleQuotes ? 3 : 1, quote);
 
     return result;
 }
 
 string 
-Sdf_FileIOUtility::Quote(const TfToken &token)
+Sdf_FileIOUtility::Quote(const TfToken &token, const bool allowTripleQuotes)
 {
-    return Quote(token.GetString());
+    return Quote(token.GetString(), allowTripleQuotes);
 }
 
 string
-Sdf_FileIOUtility::StringFromVtValue(const VtValue &value)
+Sdf_FileIOUtility::QuoteAssetPath(const string &path)
+{
+    return _StringFromAssetPath(path);
+}
+
+template <class Fn>
+static string
+_StringFromVtValueImpl(const VtValue &value, Fn &&upgrade)
 {
     string s;
-    if (_StringFromVtValueHelper<string>(&s, value) || 
-        _StringFromVtValueHelper<TfToken>(&s, value) ||
-        _StringFromVtValueHelper<SdfAssetPath>(&s, value)) {
+    if (_StringFromVtValueHelper<string>(
+            &s, value, std::forward<Fn>(upgrade)) || 
+        _StringFromVtValueHelper<TfToken>(
+            &s, value, std::forward<Fn>(upgrade)) ||
+        _StringFromVtValueHelper<SdfAssetPath>(
+            &s, value, std::forward<Fn>(upgrade)) ||
+        _StringFromVtValueHelper<SdfPathExpression>(
+            &s, value, std::forward<Fn>(upgrade))) {
         return s;
     }
     
@@ -785,6 +1125,28 @@ Sdf_FileIOUtility::StringFromVtValue(const VtValue &value)
     }
 
     return TfStringify(value);
+}
+
+string
+Sdf_FileIOUtility::StringFromVtValue(
+    const VtValue &value,
+    Sdf_TextOutput &eventualOutput)
+{
+    return _StringFromVtValueImpl(
+        value,
+        [&eventualOutput](SdfFileVersion ver, char const *msg) {
+            eventualOutput.RequestWriteVersionUpgrade(ver, msg);
+        });
+}
+
+string
+Sdf_FileIOUtility::StringFromVtValue(const VtValue &value)
+{
+    return _StringFromVtValueImpl(
+        value,
+        [](SdfFileVersion, char const *) {
+            /* do nothing */
+        });
 }
 
 const char* Sdf_FileIOUtility::Stringify( SdfPermission val )
@@ -827,6 +1189,58 @@ const char* Sdf_FileIOUtility::Stringify( SdfVariability val )
         TF_CODING_ERROR("unknown value");
         return "";
     }
+}
+
+const char* Sdf_FileIOUtility::Stringify(TsExtrapMode mode)
+{
+    switch (mode) {
+        case TsExtrapValueBlock: return "none";
+        case TsExtrapHeld: return "held";
+        case TsExtrapLinear: return "linear";
+        case TsExtrapSloped: return "sloped";
+        case TsExtrapLoopRepeat: return "loop repeat";
+        case TsExtrapLoopReset: return "loop reset";
+        case TsExtrapLoopOscillate: return "loop oscillate";
+    }
+
+    TF_CODING_ERROR("unknown value");
+    return "";
+}
+
+const char* Sdf_FileIOUtility::Stringify(TsCurveType curveType)
+{
+    switch (curveType) {
+        case TsCurveTypeBezier: return "bezier";
+        case TsCurveTypeHermite: return "hermite";
+    }
+
+    TF_CODING_ERROR("unknown value");
+    return "";
+}
+
+const char* Sdf_FileIOUtility::Stringify(TsInterpMode interp)
+{
+    switch (interp) {
+        case TsInterpValueBlock: return "none";
+        case TsInterpHeld: return "held";
+        case TsInterpLinear: return "linear";
+        case TsInterpCurve: return "curve";
+    }
+
+    TF_CODING_ERROR("unknown value");
+    return "";
+}
+
+const char* Sdf_FileIOUtility::Stringify(TsTangentAlgorithm algorithm)
+{
+    switch (algorithm) {
+      case TsTangentAlgorithmNone: return "none";
+      case TsTangentAlgorithmCustom: return "custom";
+      case TsTangentAlgorithmAutoEase: return "autoEase";
+    }
+
+    TF_CODING_ERROR("unknown tangent algorithm value");
+    return "";
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

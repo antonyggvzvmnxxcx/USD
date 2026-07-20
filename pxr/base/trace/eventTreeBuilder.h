@@ -1,25 +1,8 @@
 //
 // Copyright 2018 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #ifndef PXR_BASE_TRACE_EVENT_TREE_BUILDER_H
@@ -78,18 +61,18 @@ private:
         using TimeStamp = TraceEvent::TimeStamp;
 
         struct AttributeData {
-            TimeStamp time;
             TfToken key;
             TraceEventNode::AttributeData data;
         };
 
-        _PendingEventNode( const TfToken& key, 
+        inline _PendingEventNode(const TfToken& key, 
                                  TraceCategoryId category,
                                  TimeStamp start,
                                  TimeStamp end,
                                  bool separateEvents,
                                  bool isComplete);
-        TraceEventNodeRefPtr Close();
+        
+        inline TraceEventNodeRefPtr Close();
 
         // Can move this, but not copy it
         _PendingEventNode(const _PendingEventNode&) = delete;
@@ -98,29 +81,28 @@ private:
         _PendingEventNode(_PendingEventNode&&) = default;
         _PendingEventNode& operator= (_PendingEventNode&&) = default;
 
-        TfToken key;
-        TraceCategoryId category;
-        TimeStamp start;
-        TimeStamp end;
-        bool separateEvents;
+        TraceEventNodeRefPtr node;
         bool isComplete;
-        std::vector<TraceEventNodeRefPtr> children;
-        std::vector<AttributeData> attributes;
     };
 
-    void _OnBegin(const TraceThreadId&, const TfToken&, const TraceEvent&);
-    void _OnEnd(const TraceThreadId&, const TfToken&, const TraceEvent&);
-    void _OnData(const TraceThreadId&, const TfToken&, const TraceEvent&);
-    void _OnTimespan(const TraceThreadId&, const TfToken&, const TraceEvent&);
-    void _OnMarker(const TraceThreadId&, const TfToken&, const TraceEvent&);
+    inline void _OnBegin(
+        const TraceThreadId&, const TfToken&, const TraceEvent&);
+    inline void _OnEnd(
+        const TraceThreadId&, const TfToken&, const TraceEvent&);
+    inline void _OnData(
+        const TraceThreadId&, const TfToken&, const TraceEvent&);
+    inline void _OnTimespan(
+        const TraceThreadId&, const TfToken&, const TraceEvent&);
+    inline void _OnMarker(
+        const TraceThreadId&, const TfToken&, const TraceEvent&);
 
     using _PendingNodeStack = std::vector<_PendingEventNode>;
     using _ThreadStackMap = std::map<TraceThreadId, _PendingNodeStack>;
 
-    void _PopAndClose(_PendingNodeStack& stack); 
+    inline void _PopAndClose();
 
     TraceEventNodeRefPtr _root;
-    _ThreadStackMap _threadStacks;
+    _PendingNodeStack _curStack;
     TraceEventTreeRefPtr _tree;
 
     class _CounterAccumulator : public TraceCounterAccumulator {

@@ -1,41 +1,27 @@
 //
 // Copyright 2017 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usdImaging/usdImaging/lightFilterAdapter.h"
+
+#include "pxr/usdImaging/usdImaging/dataSourceMaterial.h"
+#include "pxr/usdImaging/usdImaging/dataSourcePrim.h"
 #include "pxr/usdImaging/usdImaging/delegate.h"
 #include "pxr/usdImaging/usdImaging/indexProxy.h"
 #include "pxr/usdImaging/usdImaging/lightAdapter.h"
 #include "pxr/usdImaging/usdImaging/materialParamUtils.h"
 #include "pxr/usdImaging/usdImaging/tokens.h"
-
+#include "pxr/imaging/hd/materialSchema.h"
+#include "pxr/imaging/hd/overlayContainerDataSource.h"
+#include "pxr/imaging/hd/retainedDataSource.h"
 #include "pxr/imaging/hd/tokens.h"
-
 #include "pxr/imaging/hd/light.h"
 #include "pxr/imaging/hd/material.h"
 #include "pxr/usd/ar/resolverScopedCache.h"
 #include "pxr/usd/ar/resolverContextBinder.h"
 #include "pxr/usd/usdLux/lightFilter.h"
-
 #include "pxr/base/tf/envSetting.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -48,7 +34,7 @@ TF_REGISTRY_FUNCTION(TfType)
     t.SetFactory< UsdImagingPrimAdapterFactory<Adapter> >();
 }
 
-UsdImagingLightFilterAdapter::~UsdImagingLightFilterAdapter() 
+UsdImagingLightFilterAdapter::~UsdImagingLightFilterAdapter()
 {
 }
 
@@ -60,7 +46,7 @@ UsdImagingLightFilterAdapter::IsSupported(UsdImagingIndexProxy const* index) con
 }
 
 SdfPath
-UsdImagingLightFilterAdapter::Populate(UsdPrim const& prim, 
+UsdImagingLightFilterAdapter::Populate(UsdPrim const& prim,
                             UsdImagingIndexProxy* index,
                             UsdImagingInstancerContext const* instancerContext)
 {
@@ -77,11 +63,11 @@ UsdImagingLightFilterAdapter::_RemovePrim(SdfPath const& cachePath,
     index->RemoveSprim(HdPrimTypeTokens->lightFilter, cachePath);
 }
 
-void 
+void
 UsdImagingLightFilterAdapter::TrackVariability(UsdPrim const& prim,
                                         SdfPath const& cachePath,
                                         HdDirtyBits* timeVaryingBits,
-                                        UsdImagingInstancerContext const* 
+                                        UsdImagingInstancerContext const*
                                             instancerContext) const
 {
     // Discover time-varying transforms.
@@ -91,17 +77,17 @@ UsdImagingLightFilterAdapter::TrackVariability(UsdPrim const& prim,
         timeVaryingBits);
 
     // Determine if the light filter material network is time varying.
-    if (UsdImaging_IsHdMaterialNetworkTimeVarying(prim)) {
+    if (UsdImagingIsHdMaterialNetworkTimeVarying(prim)) {
         *timeVaryingBits |= HdLight::DirtyBits::DirtyResource;
     }
 
-    // If any of the light attributes is time varying 
+    // If any of the light attributes is time varying
     // we will assume all light params are time-varying.
     const std::vector<UsdAttribute> &attrs = prim.GetAttributes();
     for (UsdAttribute const& attr : attrs) {
         // Don't double-count transform attrs.
         if (UsdGeomXformable::IsTransformationAffectedByAttrNamed(
-                attr.GetBaseName())) {
+                attr.GetName())) {
             continue;
         }
         if (attr.GetNumTimeSamples()>1){
@@ -115,6 +101,12 @@ UsdImagingLightFilterAdapter::TrackVariability(UsdPrim const& prim,
         UsdImaging_CollectionCache &collectionCache = _GetCollectionCache();
         collectionCache.UpdateCollection(
                                 lightFilter.GetFilterLinkCollectionAPI());
+        // Not all light filters have a shadow link collection.
+        if (const auto shadowLinkCollectionAPI =
+                UsdCollectionAPI(prim, UsdLuxTokens->shadowLink)) {
+            collectionCache.UpdateCollection(shadowLinkCollectionAPI);
+        }
+                
         // TODO: When collections change we need to invalidate affected
         // prims with the DirtyCollections flag.
     }
@@ -122,19 +114,19 @@ UsdImagingLightFilterAdapter::TrackVariability(UsdPrim const& prim,
 
 // Thread safe.
 //  * Populate dirty bits for the given \p time.
-void 
+void
 UsdImagingLightFilterAdapter::UpdateForTime(UsdPrim const& prim,
-                               SdfPath const& cachePath, 
+                               SdfPath const& cachePath,
                                UsdTimeCode time,
                                HdDirtyBits requestedBits,
-                               UsdImagingInstancerContext const* 
+                               UsdImagingInstancerContext const*
                                    instancerContext) const
 {
 }
 
 HdDirtyBits
 UsdImagingLightFilterAdapter::ProcessPropertyChange(UsdPrim const& prim,
-                                      SdfPath const& cachePath, 
+                                      SdfPath const& cachePath,
                                       TfToken const& propertyName)
 {
     if (UsdGeomXformable::IsTransformationAffectedByAttrNamed(propertyName)) {
@@ -167,14 +159,19 @@ UsdImagingLightFilterAdapter::MarkVisibilityDirty(UsdPrim const& prim,
                                             SdfPath const& cachePath,
                                             UsdImagingIndexProxy* index)
 {
-    // TBD
+    // "DirtyParam" is the catch-all bit for light params.
+    index->MarkSprimDirty(cachePath, HdLight::DirtyBits::DirtyParams);
 }
 
-VtValue 
+VtValue
 UsdImagingLightFilterAdapter::GetMaterialResource(UsdPrim const &prim,
-                                                  SdfPath const& cachePath, 
+                                                  SdfPath const& cachePath,
                                                   UsdTimeCode time) const
 {
+    if (!_GetSceneLightsEnabled()) {
+        return VtValue();
+    }
+
     UsdLuxLightFilter lightFilter(prim);
     if (!lightFilter) {
         TF_RUNTIME_ERROR("Expected light filter prim at <%s> to be a subclass of type "
@@ -190,14 +187,114 @@ UsdImagingLightFilterAdapter::GetMaterialResource(UsdPrim const &prim,
 
     HdMaterialNetworkMap networkMap;
 
-    UsdImaging_BuildHdMaterialNetworkFromTerminal(
-        prim, 
+    UsdImagingBuildHdMaterialNetworkFromTerminal(
+        prim,
         HdMaterialTerminalTokens->lightFilter,
         _GetShaderSourceTypes(),
+        _GetMaterialRenderContexts(),
         &networkMap,
         time);
 
     return VtValue(networkMap);
+}
+
+TfTokenVector
+UsdImagingLightFilterAdapter::GetImagingSubprims(UsdPrim const& prim)
+{
+    return { TfToken() };
+}
+
+TfToken
+UsdImagingLightFilterAdapter::GetImagingSubprimType(UsdPrim const& prim,
+    TfToken const& subprim)
+{
+    if (subprim.IsEmpty()) {
+        return HdPrimTypeTokens->lightFilter;
+    }
+
+    return TfToken();
+}
+
+HdContainerDataSourceHandle
+UsdImagingLightFilterAdapter::GetImagingSubprimData(
+        UsdPrim const& prim,
+        TfToken const& subprim,
+        const UsdImagingDataSourceStageGlobals &stageGlobals)
+{
+    if (!subprim.IsEmpty()) {
+        return nullptr;
+    }
+
+    // Overlay the material data source, which computes the node
+    // network, over the base prim data source, which provides
+    // other needed data like xform and visibility.
+    return HdOverlayContainerDataSource::New(
+        HdRetainedContainerDataSource::New(
+            HdMaterialSchema::GetSchemaToken(),
+            UsdImagingDataSourceMaterial::New(
+                prim,
+                stageGlobals,
+                HdMaterialTerminalTokens->lightFilter)
+            ),
+        UsdImagingDataSourcePrim::New(
+            prim.GetPath(), prim, stageGlobals));
+}
+
+HdDataSourceLocatorSet
+UsdImagingLightFilterAdapter::InvalidateImagingSubprim(
+        UsdPrim const& prim,
+        TfToken const& subprim,
+        TfTokenVector const& properties,
+        const UsdImagingPropertyInvalidationType invalidationType)
+{
+    HdDataSourceLocatorSet result = UsdImagingDataSourcePrim::Invalidate(
+        prim, subprim, properties, invalidationType);
+
+    if (!subprim.IsEmpty()) {
+        return result;
+    }
+
+    for (const TfToken &propertyName : properties) {
+        if (TfStringStartsWith(propertyName.GetString(), "inputs:")) {
+            // NOTE: since we don't have access to the prim itself and our
+            //       lightFilter terminal is currently named for the USD path,
+            //       we cannot be specific to the individual parameter.
+            // TODO: Consider whether we want to make the terminal node
+            //       in the material network have a fixed name for the
+            //       lightFilter case so that we could.
+            result.insert(HdMaterialSchema::GetDefaultLocator());
+            break;
+        }
+    }
+
+    return result;
+}
+
+UsdImagingPrimAdapter::PopulationMode
+UsdImagingLightFilterAdapter::GetPopulationMode()
+{
+    return RepresentsSelfAndDescendents;
+}
+
+HdDataSourceLocatorSet
+UsdImagingLightFilterAdapter::InvalidateImagingSubprimFromDescendent(
+        UsdPrim const& prim,
+        UsdPrim const& descendentPrim,
+        TfToken const& subprim,
+        TfTokenVector const& properties,
+        const UsdImagingPropertyInvalidationType invalidationType)
+{
+    HdDataSourceLocatorSet result;
+
+    UsdLuxLightFilter filter(prim);
+    if (!filter) {
+        return result;
+    }
+
+    // TODO: perhaps enable more selective dirtying, as is done in UsdImagingMaterialAdapter
+    result.insert(HdMaterialSchema::GetDefaultLocator());
+
+    return result;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

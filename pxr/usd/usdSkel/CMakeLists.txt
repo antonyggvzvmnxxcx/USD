@@ -2,6 +2,8 @@ set(PXR_PREFIX pxr/usd)
 set(PXR_PACKAGE usdSkel)
 
 pxr_library(usdSkel
+    INCLUDE_SCHEMA_FILES
+
     LIBRARIES
         arch
         gf
@@ -12,30 +14,18 @@ pxr_library(usdSkel
         sdf
         usd
         usdGeom
-        ${Boost_PYTHON_LIBRARY}
-        ${TBB_tbb_LIBRARY}
-
-    INCLUDE_DIRS
-        ${Boost_INCLUDE_DIRS}
-        ${TBB_INCLUDE_DIRS}
+        TBB::tbb
 
     PUBLIC_CLASSES
-        animation
         animMapper
         animQuery
         bakeSkinning
-        bindingAPI
-        blendShape
         blendShapeQuery
         cache
         debugCodes
         inbetweenShape
-        packedJointAnimation
-        root
-        skeleton
         skeletonQuery
         skinningQuery
-        tokens
         topology
         utils
 
@@ -48,37 +38,21 @@ pxr_library(usdSkel
         cacheImpl
         skelDefinition
 
-    PYTHON_CPPFILES
-        moduleDeps.cpp    
-
     PYMODULE_FILES
         __init__.py
 
     PYMODULE_CPPFILES
-        module.cpp
-        wrapAnimation.cpp
         wrapAnimMapper.cpp
         wrapAnimQuery.cpp
         wrapBakeSkinning.cpp
         wrapBlendShapeQuery.cpp
         wrapBinding.cpp
-        wrapBindingAPI.cpp
-        wrapBlendShape.cpp
         wrapCache.cpp
         wrapInbetweenShape.cpp
-        wrapPackedJointAnimation.cpp
-        wrapRoot.cpp
-        wrapSkeleton.cpp
         wrapSkeletonQuery.cpp
         wrapSkinningQuery.cpp
-        wrapTokens.cpp
         wrapTopology.cpp
         wrapUtils.cpp
-
-    RESOURCE_FILES
-        generatedSchema.usda
-        plugInfo.json
-        schema.usda:usdSkel/schema.usda
 
     DOXYGEN_FILES
         overview.dox
@@ -89,8 +63,13 @@ pxr_library(usdSkel
         doxygen/objectModel.dox
         doxygen/schemaOverview.dox
         doxygen/schemas.dox
+        doxygen/skinnedArm.usda
+        images/blendshapes.svg
+        images/blendshapesWithInbetweens.svg
+        images/influencesPrimvarLayout.svg
+        images/unboundedInterpolationExample.svg
 )
-   
+
 pxr_test_scripts(
     testenv/testUsdSkelAnimMapper.py
     testenv/testUsdSkelAnimQuery.py 
@@ -103,26 +82,6 @@ pxr_test_scripts(
     testenv/testUsdSkelSkinningQuery.py
     testenv/testUsdSkelTopology.py
     testenv/testUsdSkelUtils.py
-)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdSkelBakeSkinning
-    DEST testUsdSkelBakeSkinning
-)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdSkelCache
-    DEST testUsdSkelCache
-)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdSkelRoot
-    DEST testUsdSkelRoot
-)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdSkelSkinningQuery
-    DEST testUsdSkelSkinningQuery
 )
 
 pxr_register_test(testUsdSkelAnimMapper
@@ -140,7 +99,9 @@ pxr_register_test(testUsdSkelAnimQuery
 pxr_register_test(testUsdSkelBakeSkinning
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdSkelBakeSkinning"
+    TESTENV testenv/testUsdSkelBakeSkinning
     EXPECTED_RETURN_CODE 0
+    DIFF_COMPARE blendshapes.baked.usda blendshapesWithNormals.baked.usda lbs.baked.usda lbs.bakedInterval.usda
 )
 
 pxr_register_test(testUsdSkelBindingAPI
@@ -152,13 +113,16 @@ pxr_register_test(testUsdSkelBindingAPI
 pxr_register_test(testUsdSkelCache
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdSkelCache"
+    TESTENV testenv/testUsdSkelCache
     EXPECTED_RETURN_CODE 0
 )
 
 pxr_register_test(testUsdSkelRoot
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdSkelRoot"
+    TESTENV testenv/testUsdSkelRoot
     EXPECTED_RETURN_CODE 0
+    DIFF_COMPARE root.computedExtents.usda
 )
 
 pxr_register_test(testUsdSkelSkeletonQuery
@@ -170,6 +134,7 @@ pxr_register_test(testUsdSkelSkeletonQuery
 pxr_register_test(testUsdSkelSkinningQuery
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdSkelSkinningQuery"
+    TESTENV testenv/testUsdSkelSkinningQuery
     EXPECTED_RETURN_CODE 0
 )
 
@@ -184,3 +149,4 @@ pxr_register_test(testUsdSkelUtils
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdSkelUtils"
     EXPECTED_RETURN_CODE 0
 )
+

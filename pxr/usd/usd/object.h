@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_USD_OBJECT_H
 #define PXR_USD_USD_OBJECT_H
@@ -34,6 +17,9 @@
 
 #include "pxr/usd/sdf/abstractData.h"
 #include "pxr/usd/sdf/path.h"
+
+#include "pxr/base/tf/hash.h"
+#include "pxr/base/vt/valueRef.h"
 
 #include <type_traits>
 
@@ -180,8 +166,15 @@ public:
     }
 
     // hash_value overload for std/boost hash.
-    USD_API
-    friend size_t hash_value(const UsdObject &obj);
+    friend size_t hash_value(const UsdObject &obj) {
+        return TfHash()(obj);
+    }
+
+    // TfHash support
+    template <class HashState>
+    friend void TfHashAppend(HashState &h, const UsdObject &obj) {
+        h.Append(obj._type, obj._prim, obj._proxyPrimPath, obj._propName);
+    }
 
     /// Return the stage that owns the object, and to whose state and lifetime
     /// this object's validity is tied.
@@ -297,11 +290,8 @@ public:
     /// for \p key.
     ///
     /// \sa \ref Usd_OM_Metadata
-    template<typename T>
-    bool SetMetadata(const TfToken& key, const T& value) const;
-    /// \overload
     USD_API
-    bool SetMetadata(const TfToken& key, const VtValue& value) const;
+    bool SetMetadata(const TfToken& key, VtValueRef value) const;
 
     /// Clears the authored \a key's value at the current EditTarget,
     /// returning false on error.
@@ -357,13 +347,9 @@ public:
     /// otherwise.
     ///
     /// \sa \ref Usd_Dictionary_Type
-    template<typename T>
-    bool SetMetadataByDictKey(
-        const TfToken& key, const TfToken &keyPath, const T& value) const;
-    /// \overload
     USD_API
     bool SetMetadataByDictKey(
-        const TfToken& key, const TfToken &keyPath, const VtValue& value) const;
+        const TfToken& key, const TfToken &keyPath, VtValueRef value) const;
 
     /// Clear any authored value identified by \p key and \p keyPath
     /// at the current EditTarget.  The \p keyPath is a ':'-separated path
@@ -399,18 +385,18 @@ public:
     /// Resolve and return all metadata (including both authored and
     /// fallback values) on this object, sorted lexicographically.
     ///
-    /// \note This method does not return field keys for composition arcs,
-    /// such as references, inherits, payloads, sublayers, variants, or
-    /// primChildren, nor does it return the default value or timeSamples.
+    /// \note This method does not return field keys for composition arcs, such
+    /// as references, inherits, payloads, sublayers, variants, or primChildren,
+    /// nor does it return the default value, timeSamples, or spline.
     USD_API
     UsdMetadataValueMap GetAllMetadata() const;
 
     /// Resolve and return all user-authored metadata on this object,
     /// sorted lexicographically.
     ///
-    /// \note This method does not return field keys for composition arcs,
-    /// such as references, inherits, payloads, sublayers, variants, or
-    /// primChildren, nor does it return the default value or timeSamples.
+    /// \note This method does not return field keys for composition arcs, such
+    /// as references, inherits, payloads, sublayers, variants, or primChildren,
+    /// nor does it return the default value, timeSamples, or spline.
     USD_API
     UsdMetadataValueMap GetAllAuthoredMetadata() const;
 
@@ -626,6 +612,42 @@ public:
     USD_API
     bool HasAuthoredDocumentation() const;
 
+    /// Return this object's display name (metadata).  This returns the
+    /// empty string if no display name has been set.
+    /// \sa SetDisplayName()
+    ///
+    /// \deprecated
+    /// See UsdUIObjectHints.
+    USD_API
+    std::string GetDisplayName() const;
+
+    /// Sets this object's display name (metadata).  Returns true on success.
+    ///
+    /// DisplayName is meant to be a descriptive label, not necessarily an
+    /// alternate identifier; therefore there is no restriction on which
+    /// characters can appear in it.
+    ///
+    /// \deprecated
+    /// See UsdUIObjectHints.
+    USD_API
+    bool SetDisplayName(const std::string& name) const;
+
+    /// Clears this object's display name (metadata) in the current EditTarget
+    /// (only).  Returns true on success.
+    ///
+    /// \deprecated
+    /// See UsdUIObjectHints.
+    USD_API
+    bool ClearDisplayName() const;
+
+    /// Returns true if displayName was explicitly authored and GetMetadata()
+    /// will return a meaningful value for displayName. 
+    ///
+    /// \deprecated
+    /// See UsdUIObjectHints.
+    USD_API
+    bool HasAuthoredDisplayName() const;
+
     // --------------------------------------------------------------------- //
     /// @}
     // --------------------------------------------------------------------- //
@@ -644,13 +666,7 @@ private:
                           VtValue* value,
                           const TfToken &keyPath=TfToken()) const;
 
-    template <class T>
-    bool _SetMetadataImpl(const TfToken& key,
-                          const T& value,
-                          const TfToken &keyPath=TfToken()) const;
-
-    bool _SetMetadataImpl(const TfToken& key,
-                          const VtValue& value,
+    bool _SetMetadataImpl(const TfToken& key, VtValueRef value,
                           const TfToken &keyPath=TfToken()) const;
 
 protected:
@@ -725,14 +741,6 @@ UsdObject::GetMetadata(const TfToken& key, T* value) const
     return _GetMetadataImpl(key, value);
 }
 
-template<typename T>
-inline
-bool 
-UsdObject::SetMetadata(const TfToken& key, const T& value) const
-{
-    return _SetMetadataImpl(key, value);
-}
-
 template <typename T>
 inline
 bool
@@ -743,16 +751,6 @@ UsdObject::GetMetadataByDictKey(const TfToken& key,
     return _GetMetadataImpl(key, value, keyPath);
 }
 
-template <typename T>
-inline
-bool
-UsdObject::SetMetadataByDictKey(const TfToken& key, 
-                                const TfToken &keyPath, 
-                                const T& value) const
-{
-    return _SetMetadataImpl(key, value, keyPath);
-}
-
 template <class T>
 bool 
 UsdObject::_GetMetadataImpl(const TfToken& key,
@@ -761,15 +759,6 @@ UsdObject::_GetMetadataImpl(const TfToken& key,
 {
     return _GetStage()->_GetMetadata(
         *this, key, keyPath, /*useFallbacks=*/true, value);
-}
-
-template <class T>
-bool 
-UsdObject::_SetMetadataImpl(const TfToken& key,
-                            const T& value,
-                            const TfToken &keyPath) const
-{
-    return _GetStage()->_SetMetadata(*this, key, keyPath, value);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

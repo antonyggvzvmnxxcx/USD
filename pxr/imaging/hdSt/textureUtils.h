@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_ST_TEXTURE_UTILS_H
 #define PXR_IMAGING_HD_ST_TEXTURE_UTILS_H
@@ -27,13 +10,19 @@
 #include "pxr/pxr.h"
 #include "pxr/imaging/hdSt/api.h"
 
-#include "pxr/imaging/hio/types.h"
 #include "pxr/imaging/hio/image.h"
+
+#include "pxr/imaging/hgi/handle.h"
 #include "pxr/imaging/hgi/types.h"
+
+#include "pxr/base/arch/align.h"
 
 #include <memory>
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+class Hgi;
+using HgiTextureHandle = HgiHandle<class HgiTexture>;
 
 /// \class HdStTextureUtils
 ///
@@ -110,7 +99,66 @@ public:
         const HgiMipInfo &mipInfo,
         size_t layer,
         void * bufferStart);
+
+    // Because the underlying graphics API may have alignment
+    // restrictions we use this wrapper class to manage the
+    // allocation of the returned buffer data, and expose a
+    // restricted subset of underlyling pointer's access methods.
+    template <typename T>
+    class AlignedBuffer
+    {
+    public:
+        AlignedBuffer()
+            : AlignedBuffer(nullptr)
+            { }
+
+        T *get() const {
+            return _alignedPtr.get();
+        }
+
+    private:
+        friend class HdStTextureUtils;
+
+        explicit AlignedBuffer(T * alignedPtr)
+            : _alignedPtr(alignedPtr, ArchAlignedFree)
+            { }
+
+        T *release() {
+            return _alignedPtr.release();
+        }
+
+        std::unique_ptr<T[], decltype(ArchAlignedFree)*> _alignedPtr;
+    };
+
+    /// Returns an unsigned byte buffer with data read back from \p texture.
+    HDST_API
+    static
+    AlignedBuffer<uint8_t>
+    HgiTextureReadback(Hgi * const hgi,
+                       HgiTextureHandle const & texture,
+                       size_t * bufferSize);
+
+    /// Returns a buffer with data of type T read back from \p texture.
+    template <typename T>
+    static
+    AlignedBuffer<T>
+    HgiTextureReadback(Hgi * const hgi,
+                       HgiTextureHandle const & texture,
+                       size_t * bufferSize);
 };
+
+template <typename T>
+HdStTextureUtils::AlignedBuffer<T>
+HdStTextureUtils::HgiTextureReadback(Hgi * const hgi,
+                                     HgiTextureHandle const & texture,
+                                     size_t * bufferSize)
+{
+    HdStTextureUtils::AlignedBuffer<uint8_t> buffer =
+        HdStTextureUtils::HgiTextureReadback(hgi, texture, bufferSize);
+
+    T * typedData = reinterpret_cast<T *>(buffer.release());
+    return HdStTextureUtils::AlignedBuffer<T>(typedData);
+}
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

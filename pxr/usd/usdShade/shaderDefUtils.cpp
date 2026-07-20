@@ -1,25 +1,8 @@
 //
 // Copyright 2018 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usd/usdShade/shaderDefUtils.h"
 
@@ -29,7 +12,10 @@
 
 #include "pxr/usd/ar/resolver.h"
 
+#include "pxr/usd/sdr/filesystemDiscoveryHelpers.h"
+
 #include "pxr/usd/sdf/assetPath.h"
+#include "pxr/usd/sdf/schema.h"
 #include "pxr/usd/sdf/types.h"
 
 #include "pxr/usd/sdr/shaderMetadataHelpers.h"
@@ -49,79 +35,13 @@ TF_DEFINE_PRIVATE_TOKENS(
     (implementationName)
 );
 
-static bool _IsNumber(const std::string& s)
-{
-    return !s.empty() && 
-        std::find_if(s.begin(), s.end(), 
-                     [](unsigned char c) { return !std::isdigit(c); })
-        == s.end();
-}
-
-/* static */ 
-bool
-UsdShadeShaderDefUtils::SplitShaderIdentifier(
-    const TfToken &identifier, 
-    TfToken *familyName,
-    TfToken *implementationName,
-    NdrVersion *version)
-{
-   std::vector<std::string> tokens = TfStringTokenize(identifier.GetString(), 
-        "_");
-
-    if (tokens.empty()) {
-        return false;
-    }
-
-    *familyName = TfToken(tokens[0]);
-
-    if (tokens.size() == 1) {
-        *familyName = identifier;
-        *implementationName = identifier;
-        *version = NdrVersion();
-    } else if (tokens.size() == 2) {
-        if (_IsNumber(tokens[tokens.size()-1])) {
-            int major = std::stoi(*tokens.rbegin());
-            *version = NdrVersion(major);
-            *implementationName = *familyName;
-        } else {
-            *version = NdrVersion();
-            *implementationName = identifier;
-        }
-    } else if (tokens.size() > 2) {
-        bool lastTokenIsNumber = _IsNumber(tokens[tokens.size()-1]);
-        bool penultimateTokenIsNumber = _IsNumber(tokens[tokens.size()-2]);
-
-        if (penultimateTokenIsNumber && !lastTokenIsNumber) {
-            TF_WARN("Invalid shader identifier '%s'.", identifier.GetText()); 
-            return false;
-        }
-
-        if (lastTokenIsNumber && penultimateTokenIsNumber) {
-            *version = NdrVersion(std::stoi(tokens[tokens.size()-2]), 
-                                  std::stoi(tokens[tokens.size()-1]));
-            *implementationName = TfToken(TfStringJoin(tokens.begin(), 
-                tokens.begin() + (tokens.size() - 2), "_"));
-        } else if (lastTokenIsNumber) {
-            *version = NdrVersion(std::stoi(tokens[tokens.size()-1]));
-            *implementationName  = TfToken(TfStringJoin(tokens.begin(), 
-                tokens.begin() + (tokens.size() - 1), "_"));
-        } else {
-            // No version information is available. 
-            *implementationName = identifier;
-            *version = NdrVersion();
-        }
-    }
-
-    return true;
-}
-
 /* static */
-NdrNodeDiscoveryResultVec 
-UsdShadeShaderDefUtils::GetNodeDiscoveryResults(
+SdrShaderNodeDiscoveryResultVec 
+UsdShadeShaderDefUtils::GetDiscoveryResults(
     const UsdShadeShader &shaderDef,
     const std::string &sourceUri)
 {
-    NdrNodeDiscoveryResultVec result;
+    SdrShaderNodeDiscoveryResultVec result;
 
     // Implementation source must be sourceAsset for the shader to represent 
     // nodes in Sdr.
@@ -131,13 +51,13 @@ UsdShadeShaderDefUtils::GetNodeDiscoveryResults(
     const UsdPrim shaderDefPrim = shaderDef.GetPrim();
     const TfToken &identifier = shaderDefPrim.GetName();
 
-    // Get the family name, shader name and version information from the 
+    // Get the function name, shader name and version information from the 
     // identifier.
-    TfToken family;
+    TfToken function;
     TfToken name; 
-    NdrVersion version; 
-    if (!SplitShaderIdentifier(shaderDefPrim.GetName(), 
-                &family, &name, &version)) {
+    SdrVersion version; 
+    if (!SdrFsHelpersSplitShaderIdentifier(shaderDefPrim.GetName(), 
+                &function, &name, &version)) {
         // A warning has already been issued by SplitShaderIdentifier.
         return result;
     }
@@ -188,7 +108,7 @@ UsdShadeShaderDefUtils::GetNodeDiscoveryResults(
                     identifier,
                     version.GetAsDefault(),
                     name,
-                    family, 
+                    function, 
                     discoveryType,
                     sourceType,
                     /* uri */ sourceUri, 
@@ -290,7 +210,7 @@ static
 std::pair<TfToken, size_t>
 _GetShaderPropertyTypeAndArraySize(
     const SdfValueTypeName &typeName,
-    const NdrTokenMap& metadata,
+    const SdrTokenMap& metadata,
     VtValue* defaultValue)
 {
     // XXX Note that the shaderDefParser does not currently parse 'struct' or
@@ -314,6 +234,15 @@ _GetShaderPropertyTypeAndArraySize(
         _ConformIntTypeDefaultValue(typeName, defaultValue);
         return std::make_pair(SdrPropertyTypes->Int,
                               _GetArraySize(defaultValue));
+    } else if (typeName == SdfValueTypeNames->Int2 || 
+               typeName == SdfValueTypeNames->Int2Array) {
+        return std::make_pair(SdrPropertyTypes->Int, 2);
+    } else if (typeName == SdfValueTypeNames->Int3 || 
+               typeName == SdfValueTypeNames->Int3Array) {
+        return std::make_pair(SdrPropertyTypes->Int, 3);
+    } else if (typeName == SdfValueTypeNames->Int4 || 
+               typeName == SdfValueTypeNames->Int4Array) {
+        return std::make_pair(SdrPropertyTypes->Int, 4);
     } else if (typeName == SdfValueTypeNames->String ||
                typeName == SdfValueTypeNames->Token ||
                typeName == SdfValueTypeNames->Asset || 
@@ -339,6 +268,10 @@ _GetShaderPropertyTypeAndArraySize(
     } else if (typeName == SdfValueTypeNames->Color3f || 
                typeName == SdfValueTypeNames->Color3fArray) {
         return std::make_pair(SdrPropertyTypes->Color,
+                              _GetArraySize(defaultValue));
+    } else if (typeName == SdfValueTypeNames->Color4f || 
+               typeName == SdfValueTypeNames->Color4fArray) {
+        return std::make_pair(SdrPropertyTypes->Color4,
                               _GetArraySize(defaultValue));
     } else if (typeName == SdfValueTypeNames->Point3f || 
                typeName == SdfValueTypeNames->Point3fArray) {
@@ -370,19 +303,45 @@ _CreateSdrShaderProperty(
     const ShaderProperty& shaderProperty,
     bool isOutput,
     const VtValue& shaderDefaultValue,
-    const NdrTokenMap& shaderMetadata)
+    const SdrTokenMap& shaderMetadata)
 {
     const std::string propName = shaderProperty.GetBaseName();
     VtValue defaultValue = shaderDefaultValue;
-    NdrTokenMap metadata = shaderMetadata;
-    NdrTokenMap hints;
-    NdrOptionVec options;
+    SdrTokenMap metadata = shaderMetadata;
+    SdrTokenMap hints;
+    SdrOptionVec options;
 
     // Update metadata if string should represent a SdfAssetPath
     if (shaderProperty.GetTypeName() == SdfValueTypeNames->Asset ||
         shaderProperty.GetTypeName() == SdfValueTypeNames->AssetArray) {
         metadata[SdrPropertyMetadata->IsAssetIdentifier] = "1";
     }
+
+    // look for sdrMetadata options field first (which overrides a schema's
+    // allowedTokens list)
+    auto optionsMetadata = shaderMetadata.find(SdrPropertyMetadata->Options);
+    if (optionsMetadata != shaderMetadata.end()) {
+        options = ShaderMetadataHelpers::OptionVecVal(
+                shaderMetadata.at(SdrPropertyMetadata->Options));
+    }
+
+    if (options.empty()) {
+        // No options were found in sdrMetadata, look for allowedTokens on the
+        // schema attr.
+        VtTokenArray attrAllowedTokens;
+        shaderProperty.GetAttr().GetMetadata(SdfFieldKeys->AllowedTokens, 
+                &attrAllowedTokens);
+        for (const TfToken &token : attrAllowedTokens.AsConst()) {
+            options.emplace_back(std::make_pair(token, TfToken()));
+        }
+    }
+
+    // Since sdr types are a subset of SdfValueTypeNames, we save the original
+    // types defined in the usdShadeShaderDef representation in the
+    // SdrUsdDefinitionType metadata, which can then be used by
+    // SdrShaderProperty::GetTypeAsSdfType.
+    metadata[SdrPropertyMetadata->SdrUsdDefinitionType] = 
+        shaderProperty.GetTypeName().GetAliasesAsTokens()[0].GetString();
 
     TfToken propertyType;
     size_t arraySize;
@@ -399,17 +358,17 @@ _CreateSdrShaderProperty(
 }
 
 /*static*/
-NdrPropertyUniquePtrVec 
-UsdShadeShaderDefUtils::GetShaderProperties(
+SdrShaderPropertyUniquePtrVec 
+UsdShadeShaderDefUtils::GetProperties(
     const UsdShadeConnectableAPI &shaderDef)
 {
-    NdrPropertyUniquePtrVec result;
+    SdrShaderPropertyUniquePtrVec result;
     for (auto &shaderInput : shaderDef.GetInputs(/* onlyAuthored */ false)) {
         // Only inputs will have default value provided
         VtValue defaultValue;
         shaderInput.Get(&defaultValue);
 
-        NdrTokenMap metadata = shaderInput.GetSdrMetadata();
+        SdrTokenMap metadata = shaderInput.GetSdrMetadata();
 
         // Only inputs might have this metadata key
         auto iter = metadata.find(_tokens->defaultInput);
@@ -453,13 +412,21 @@ UsdShadeShaderDefUtils::GetShaderProperties(
 /*static*/
 std::string 
 UsdShadeShaderDefUtils::GetPrimvarNamesMetadataString(
-    const NdrTokenMap metadata,
+    const SdrTokenMap metadata,
     const UsdShadeConnectableAPI &shaderDef)
 {
     // If there's an existing value in the definition, we must append to it.
     std::vector<std::string> primvarNames; 
     if (metadata.count(SdrNodeMetadata->Primvars)) {
-        primvarNames.push_back(metadata.at(SdrNodeMetadata->Primvars));
+        auto& existingValue = metadata.at(SdrNodeMetadata->Primvars);
+        // Only append if it's non-empty - calling code may do, ie,
+        //    metadata["primvars"] = this_function()
+        // ...and on some compilers / architectures, that will result in a
+        // default empty string being inserted into metadata BEFORE this
+        // function is called
+        if (!existingValue.empty()) {
+            primvarNames.push_back(existingValue);
+        }
     }
 
     for (auto &shdInput : shaderDef.GetInputs(/* onlyAuthored */ false)) {

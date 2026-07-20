@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HGIVULKAN_COMMAND_QUEUE_H
 #define PXR_IMAGING_HGIVULKAN_COMMAND_QUEUE_H
@@ -30,11 +13,15 @@
 #include "pxr/imaging/hgiVulkan/api.h"
 #include "pxr/imaging/hgiVulkan/vulkan.h"
 
+#include "pxr/base/tf/span.h"
+
 #include <atomic>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <deque>
 #include <vector>
+#include <optional>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -70,6 +57,7 @@ public:
     /// After submission the command buffer must not be re-used by client.
     /// Thread safety: Submission must be externally synchronized. Clients
     /// should call HgiVulkan::SubmitToQueue.
+    HGIVULKAN_API
     void SubmitToQueue(
         HgiVulkanCommandBuffer* cmdBuffer,
         HgiSubmitWaitType wait = HgiSubmitWaitTypeNoWait);
@@ -108,7 +96,21 @@ public:
     /// Thread safety: This call is not thread safe. This function should be
     /// called once from main thread while no other threads are recording.
     HGIVULKAN_API
-    void ResetConsumedCommandBuffers();
+    void ResetConsumedCommandBuffers(
+        HgiSubmitWaitType wait = HgiSubmitWaitTypeNoWait);
+
+    /// Flushes the buffered commands in the queue. Ideally this wouldn't be
+    /// necessary, but Hgi's current structure makes this necessary.
+    /// Additionally we must support passing a semaphore for interop signaling
+    HGIVULKAN_API
+    void Flush(
+        HgiSubmitWaitType wait,
+        TfSpan<const std::pair<VkSemaphore, uint64_t>> signalSemaphores = {});
+
+    /// Checks if the timeline semaphore has passed the desiredValue,
+    /// and can optionally force a wait on this. This may cause a flush.
+    HGIVULKAN_API
+    bool IsTimelinePastValue(uint64_t desiredValue, bool wait = false);
 
 private:
     HgiVulkanCommandQueue() = delete;
@@ -120,14 +122,21 @@ private:
     HgiVulkan_CommandPool* _AcquireThreadCommandPool(
         std::thread::id const& threadId);
 
-    // Returns an id-bit that uniquely identifies the cmd buffer amongst all
-    // in-flight cmd buffers.
-    // Thread safety: This call is thread safe..
-    uint8_t _AcquireInflightIdBit();
+    // Adds the _resourceCommandBuffer to _queuedBuffers, ensuring that
+    // resource commands not encapsulated by HgiCmds are submitted before
+    // HgiCmds and are included in calls to 'Flush'.
+    void _FlushResourceCommandBuffer();
 
-    // Set if a command buffer is in-flight (enabled=true) or not.
+    // Returns an id-bit that uniquely identifies the cmd buffer amongst all
+    // in-flight cmd buffers. Returns an empty result if all bits have been
+    // acquired, in which case the existing buffers must have their bit released
+    // if no longer in flight.
+    // Thread safety: This call is thread safe..
+    std::optional<uint8_t> _AcquireInflightIdBit();
+
+    // Set a command buffer as not in-flight.
     // Thread safety: This call is thread safe.
-    void _SetInflightBit(uint8_t inflightId, bool enabled);
+    void _ReleaseInflightBit(uint8_t inflightId);
 
     HgiVulkanDevice* _device;
     VkQueue _vkGfxQueue;
@@ -139,6 +148,12 @@ private:
 
     std::thread::id _threadId;
     HgiVulkanCommandBuffer* _resourceCommandBuffer;
+
+    std::deque<HgiVulkanCommandBuffer*> _queuedBuffers;
+
+    VkSemaphore _timelineSemaphore;
+    uint64_t _timelineNextVal;
+    uint64_t _timelineCachedVal;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

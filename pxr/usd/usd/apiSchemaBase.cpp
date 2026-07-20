@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usd/usd/apiSchemaBase.h"
 #include "pxr/usd/usd/schemaRegistry.h"
@@ -45,13 +28,9 @@ UsdAPISchemaBase::~UsdAPISchemaBase()
 
 
 /* virtual */
-UsdSchemaKind UsdAPISchemaBase::_GetSchemaKind() const {
+UsdSchemaKind UsdAPISchemaBase::_GetSchemaKind() const
+{
     return UsdAPISchemaBase::schemaKind;
-}
-
-/* virtual */
-UsdSchemaKind UsdAPISchemaBase::_GetSchemaType() const {
-    return UsdAPISchemaBase::schemaType;
 }
 
 /* static */
@@ -106,6 +85,30 @@ PXR_NAMESPACE_CLOSE_SCOPE
 
 PXR_NAMESPACE_OPEN_SCOPE
 
+/* static */
+TfTokenVector
+UsdAPISchemaBase::_GetMultipleApplyInstanceNames(const UsdPrim &prim,
+                                                 const TfType &schemaType)
+{
+    TfTokenVector instanceNames;
+
+    auto appliedSchemas = prim.GetAppliedSchemas();
+    if (appliedSchemas.empty()) {
+        return instanceNames;
+    }
+    
+    TfToken schemaTypeName = UsdSchemaRegistry::GetAPISchemaTypeName(schemaType);
+
+    for (const auto &appliedSchema : appliedSchemas) {
+        std::pair<TfToken, TfToken> typeNameAndInstance =
+                UsdSchemaRegistry::GetTypeNameAndInstance(appliedSchema);
+        if (typeNameAndInstance.first == schemaTypeName) {
+            instanceNames.emplace_back(typeNameAndInstance.second);
+        }
+    }
+    
+    return instanceNames;
+}
 
 /* virtual */
 bool 
@@ -117,14 +120,17 @@ UsdAPISchemaBase::_IsCompatible() const
     // This virtual function call tells us whether we're an applied 
     // API schema. For applied API schemas, we'd like to check whether 
     // the API schema has been applied properly on the prim.
-    if (IsAppliedAPISchema() && 
-        ! GetPrim()._HasAPI(_GetTfType(), /*validateSchemaType*/ false, 
-                            _instanceName)) {
-        return false;
-    }
-
-    if (IsMultipleApplyAPISchema() && _instanceName.IsEmpty()) {
-        return false;
+    if (IsAppliedAPISchema()) {
+        if (IsMultipleApplyAPISchema()) {
+            if (_instanceName.IsEmpty() ||
+                !GetPrim().HasAPI(_GetTfType(), _instanceName)) {
+                return false;
+            }
+        } else {
+            if (!GetPrim().HasAPI(_GetTfType())) {
+                return false;
+            }
+        }
     }
 
     return true;

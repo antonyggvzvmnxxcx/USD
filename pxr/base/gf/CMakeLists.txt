@@ -12,6 +12,11 @@ pxr_library(gf
     PUBLIC_CLASSES
         bbox3d
         camera
+        color
+        colorSpace
+        dualQuatd
+        dualQuatf
+        dualQuath
         frustum
         gamma
         half
@@ -47,6 +52,8 @@ pxr_library(gf
         rotation
         size2
         size3
+        timeCode
+        traits
         transform
         vec2d
         vec2f
@@ -69,22 +76,29 @@ pxr_library(gf
         declare.h
         ilmbase_halfLimits.h
         limits.h
-        traits.h
+        numericCast.h
+
+    CPPFILES
+        nc/nanocolor.c
 
     PRIVATE_CLASSES
         ostreamHelpers
 
     PRIVATE_HEADERS
+        colorSpace_data.h
         ilmbase_eLut.h
         ilmbase_toFloat.h
-
-    PYTHON_CPPFILES
-        moduleDeps.cpp
+        nc/nanocolor.h
 
     PYMODULE_CPPFILES
         module.cpp
         wrapBBox3d.cpp
         wrapCamera.cpp
+        wrapColor.cpp
+        wrapColorSpace.cpp
+        wrapDualQuatd.cpp
+        wrapDualQuatf.cpp
+        wrapDualQuath.cpp
         wrapFrustum.cpp
         wrapGamma.cpp
         wrapHalf.cpp
@@ -117,6 +131,8 @@ pxr_library(gf
         wrapRotation.cpp
         wrapSize2.cpp
         wrapSize3.cpp
+        wrapTimeCode.cpp
+        wrapTraits.cpp
         wrapTransform.cpp
         wrapVec2d.cpp
         wrapVec2f.cpp
@@ -163,12 +179,29 @@ pxr_build_test(testGfHardToReach
         gf
     CPPFILES
         testenv/testGfHardToReach.cpp
-) 
+)
+
+pxr_build_test(testGfColorCpp
+    LIBRARIES
+        gf
+    CPPFILES
+        testenv/testGfColorCpp.cpp
+)
+
+pxr_build_test(testGfIsFloatingPoint
+    LIBRARIES
+        gf
+        tf
+    CPPFILES
+        testenv/testGfIsFloatingPoint.cpp
+)
 
 pxr_test_scripts(
     testenv/testGfBBox3d.py
     testenv/testGfCamera.py
+    testenv/testGfColorPy.py
     testenv/testGfDecomposeRotation.py
+    testenv/testGfDualQuaternion.py
     testenv/testGfFrustum.py
     testenv/testGfGamma.py
     testenv/testGfHomogeneous.py
@@ -185,6 +218,8 @@ pxr_test_scripts(
     testenv/testGfRect2i.py
     testenv/testGfRotation.py
     testenv/testGfSize.py
+    testenv/testGfTimeCode.py
+    testenv/testGfTraits.py
     testenv/testGfTransform.py
     testenv/testGfVec.py
 )
@@ -193,9 +228,20 @@ pxr_register_test(testGfBBox3d
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testGfBBox3d"
 )
+pxr_register_test(testGfColorPy
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testGfColorPy"
+)
+pxr_register_test(testGfColorCpp
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testGfColorCpp"
+)
 pxr_register_test(testGfDecomposeRotation
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testGfDecomposeRotation"
+)
+pxr_register_test(testGfDualQuaternion
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testGfDualQuaternion"
 )
 if (NOT APPLE)
     pxr_register_test(testGfFrustum
@@ -209,6 +255,9 @@ pxr_register_test(testGfGamma
 )
 pxr_register_test(testGfHardToReach
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testGfHardToReach"
+)
+pxr_register_test(testGfIsFloatingPoint
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testGfIsFloatingPoint"
 )
 pxr_register_test(testGfHomogeneous
     PYTHON
@@ -265,6 +314,14 @@ pxr_register_test(testGfRotation
 pxr_register_test(testGfSize
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testGfSize"
+)
+pxr_register_test(testGfTimeCode
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testGfTimeCode"
+)
+pxr_register_test(testGfTraits
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testGfTraits"
 )
 pxr_register_test(testGfTransform
     PYTHON

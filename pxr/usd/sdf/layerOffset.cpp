@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 ///
 /// LayerOffset.cpp
@@ -29,9 +12,8 @@
 #include "pxr/usd/sdf/timeCode.h"
 #include "pxr/base/gf/math.h"
 
+#include "pxr/base/tf/hash.h"
 #include "pxr/base/tf/type.h"
-
-#include <boost/functional/hash/hash.hpp>
 
 #include <climits>
 #include <limits>
@@ -45,23 +27,6 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_REGISTRY_FUNCTION(TfType) {
     TfType::Define<SdfLayerOffset>();
     TfType::Define<std::vector<SdfLayerOffset>>();
-}
-
-bool 
-SdfLayerOffset::IsIdentity() const
-{
-    // Construct a static instance to avoid a default construction on every call
-    // to SdfLayerOffset::IsIdentity().
-    static SdfLayerOffset identityOffset;
-
-    // Use operator==() for fuzzy compare (i.e. GfIsClose).
-    return *this == identityOffset;
-}
-
-SdfLayerOffset::SdfLayerOffset(double offset, double scale) :
-    _offset(offset),
-    _scale(scale)
-{
 }
 
 bool
@@ -98,19 +63,24 @@ SdfLayerOffset::operator*(double rhs) const
     return ( rhs * _scale + _offset );
 }
 
-SdfTimeCode
-SdfLayerOffset::operator*(const SdfTimeCode &rhs) const
+GfTimeCode
+SdfLayerOffset::operator*(const GfTimeCode &rhs) const
 {
-    return SdfTimeCode( (*this) * double(rhs) );
+    return GfTimeCode( (*this) * double(rhs) );
 }
 
 bool
 SdfLayerOffset::operator==(const SdfLayerOffset &rhs) const
 {
-    // Use EPSILON so that 0 == -0, for example.
-    return (!IsValid() && !rhs.IsValid()) ||
-           (GfIsClose(_offset, rhs._offset, EPSILON) &&
-            GfIsClose(_scale, rhs._scale, EPSILON));
+    const bool lhsIsValid = IsValid();
+    const bool rhsIsValid = rhs.IsValid();
+
+    if (lhsIsValid && rhsIsValid) {
+        return
+            GfIsClose(_offset, rhs._offset, EPSILON) &&
+            GfIsClose(_scale, rhs._scale, EPSILON);
+    }
+    return !lhsIsValid && !rhsIsValid;
 }
 
 bool
@@ -138,10 +108,10 @@ SdfLayerOffset::operator<(const SdfLayerOffset &rhs) const
 size_t
 SdfLayerOffset::GetHash() const
 {
-    size_t hash = 0;
-    boost::hash_combine(hash, _offset);
-    boost::hash_combine(hash, _scale);
-    return hash;
+    return TfHash::Combine(
+        _offset,
+        _scale
+    );
 }
 
 std::ostream & operator<<( std::ostream &out,

@@ -1,41 +1,29 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
+#include "pxr/usd/sdf/debugCodes.h"
 #include "pxr/usd/sdf/listOp.h"
 #include "pxr/usd/sdf/path.h"
 #include "pxr/usd/sdf/payload.h"
 #include "pxr/usd/sdf/reference.h"
 #include "pxr/usd/sdf/types.h"
+#include "pxr/base/tf/debug.h"
+#include "pxr/base/tf/denseHashSet.h"
 #include "pxr/base/tf/diagnostic.h"
+#include "pxr/base/tf/error.h"
 #include "pxr/base/tf/iterator.h"
 #include "pxr/base/tf/registryManager.h"
-#include "pxr/base/tf/type.h"
+#include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/tf/token.h"
+#include "pxr/base/tf/type.h"
+#include "pxr/base/tf/pxrTslRobinMap/robin_set.h"
 #include "pxr/base/trace/trace.h"
-
-#include <boost/optional.hpp>
+#include "pxr/base/vt/valueComposeOver.h"
 
 #include <ostream>
 
@@ -80,6 +68,64 @@ TF_REGISTRY_FUNCTION(TfEnum)
     TF_ADD_ENUM_NAME(SdfListOpTypeOrdered);
 }
 
+template <class ListOp>
+static inline std::string _TruncateListOpString(ListOp const &listOp, 
+                                                size_t displayWidth){
+    std::string res = TfStringify(listOp);
+    // Shows displayWidth - 3 to ensure that the ellipsis is replacing at least
+    // 2 chars.
+    if (res.length() > displayWidth && displayWidth > 3) {
+        res = res.substr(0, displayWidth - 3) + "...";
+    }
+    return res;
+}
+
+template <class ListOp>
+static void _RegisterVtComposeOver() {
+    VtRegisterComposeOver(
+        +[](ListOp const &strong, ListOp const &weak) {
+            // Here "weak" is "inner", "strong" is "outer".  If we fail to
+            // compose (because either strong or weak use 'ordered' or 'added'
+            // lists) we issue a warning and return "strong" only.
+            if (auto optComposed = strong.ApplyOperations(weak)) {
+                return *optComposed;
+            }
+            std::string failedComposeMsg = TfStringPrintf(
+                "Failed to compose %s over %s because one or both use 'ordered'" 
+                " or 'added' operations.  Returning the stronger.",
+                _TruncateListOpString(strong, 100).c_str(),
+                _TruncateListOpString(weak, 100).c_str());
+            if (TfDebug::IsEnabled(SDF_ERROR_ON_FAILED_LISTOP_COMPOSE)) {
+                TF_RUNTIME_ERROR(failedComposeMsg);
+            } else {
+                TF_WARN(failedComposeMsg);
+            }
+            return strong;
+        });
+
+    VtRegisterComposeOver(
+        +[](ListOp const &strong, VtBackgroundType const &) {
+            // To finalize a listop, we call ApplyOperations over an empty list
+            // and return a list op with the result as explicit items.
+            typename ListOp::ItemVector items;
+            strong.ApplyOperations(&items);
+            return ListOp::CreateExplicit(std::move(items));
+        });
+}
+
+TF_REGISTRY_FUNCTION(VtValue)
+{
+    _RegisterVtComposeOver<SdfTokenListOp>();
+    _RegisterVtComposeOver<SdfPathListOp>();
+    _RegisterVtComposeOver<SdfStringListOp>();
+    _RegisterVtComposeOver<SdfReferenceListOp>();
+    _RegisterVtComposeOver<SdfPayloadListOp>();
+    _RegisterVtComposeOver<SdfIntListOp>();
+    _RegisterVtComposeOver<SdfUIntListOp>();
+    _RegisterVtComposeOver<SdfInt64ListOp>();
+    _RegisterVtComposeOver<SdfUInt64ListOp>();
+    _RegisterVtComposeOver<SdfUnregisteredValueListOp>();
+}
 
 template <typename T>
 SdfListOp<T>::SdfListOp()
@@ -170,11 +216,95 @@ SdfListOp<T>::GetItems(SdfListOpType type) const
 }
 
 template <typename T>
-void 
-SdfListOp<T>::SetExplicitItems(const ItemVector &items)
+typename SdfListOp<T>::ItemVector 
+SdfListOp<T>::GetAppliedItems() const
+{
+    ItemVector result;
+    ApplyOperations(&result);
+    return result;
+}
+
+template <typename T>
+bool
+SdfListOp<T>::_MakeUnique(std::vector<T>& items, bool reverse, std::string* errMsg)
+{
+    // Many of the vectors we see here are either just a few elements long
+    // (references, payloads) or are already sorted and unique (topology
+    // indexes, etc).
+    if (items.size() <= 1) {
+        return true;
+    }
+
+    // Many are of small size, just check all pairs.
+    if (items.size() <= 10) {
+        bool isUnique = true;
+        using iter = typename std::vector<T>::const_iterator;
+        iter iend = std::prev(items.end()), jend = items.end();
+        for (iter i = items.begin(); i != iend; ++i) {
+            for (iter j = std::next(i); j != jend; ++j) {
+                if (*i == *j) {
+                    isUnique = false;
+                }
+            }
+        }
+        if (isUnique) {
+            return true;
+        }
+    }
+
+    // Check for strictly sorted order.
+    auto comp = _ItemComparator();
+    if (std::adjacent_find(items.begin(), items.end(),
+                        [comp](T const &l, T const &r) {
+                            return !comp(l, r);
+                        }) == items.end()) {
+        return true;
+    } 
+
+    // Otherwise do a more expensive copy & sort to check for dupes.
+    std::vector<T> copy(items);
+    std::sort(copy.begin(), copy.end(), _ItemComparator());
+    auto duplicate = std::adjacent_find(copy.begin(), copy.end());
+    
+    if (duplicate == copy.end()) 
+    {
+        return true; 
+    }
+
+    // If duplicates are present, remove them
+    pxr_tsl::robin_set<T, TfHash> existingSet;
+    std::vector<T> uniqueItems;
+    uniqueItems.reserve(items.size());
+
+    if (reverse) {
+        for (auto it = items.rbegin(); it != items.rend(); it++) {
+            if (existingSet.insert(*it).second) {
+                uniqueItems.push_back(*it);
+            }
+        }
+        std::reverse(uniqueItems.begin(), uniqueItems.end());
+    } else {
+        for (auto it = items.cbegin(); it != items.cend(); it++) {
+            if (existingSet.insert(*it).second) {
+                uniqueItems.push_back(*it);
+            }
+        }
+    }
+        
+    items = uniqueItems;
+    if (errMsg) {
+        *errMsg = "Duplicate item found in SdfListOp: %s.", TfStringify(*duplicate);
+    }
+    return false;
+}
+
+template <typename T>
+bool 
+SdfListOp<T>::SetExplicitItems(const ItemVector &items, std::string *errMsg)
 {
     _SetExplicit(true);
     _explicitItems = items;
+    return _MakeUnique(_explicitItems, false, errMsg);
 }
 
 template <typename T>
@@ -186,27 +316,30 @@ SdfListOp<T>::SetAddedItems(const ItemVector &items)
 }
 
 template <typename T>
-void 
-SdfListOp<T>::SetPrependedItems(const ItemVector &items)
+bool 
+SdfListOp<T>::SetPrependedItems(const ItemVector &items, std::string *errMsg)
 {
     _SetExplicit(false);
     _prependedItems = items;
+    return _MakeUnique(_prependedItems, false, errMsg);
 }
 
 template <typename T>
-void 
-SdfListOp<T>::SetAppendedItems(const ItemVector &items)
+bool 
+SdfListOp<T>::SetAppendedItems(const ItemVector &items, std::string *errMsg)
 {
     _SetExplicit(false);
     _appendedItems = items;
+    return _MakeUnique(_appendedItems, true, errMsg);
 }
 
 template <typename T>
-void 
-SdfListOp<T>::SetDeletedItems(const ItemVector &items)
+bool 
+SdfListOp<T>::SetDeletedItems(const ItemVector &items, std::string *errMsg)
 {
     _SetExplicit(false);
     _deletedItems = items;
+    return _MakeUnique(_deletedItems, false, errMsg);
 }
 
 template <typename T>
@@ -218,29 +351,26 @@ SdfListOp<T>::SetOrderedItems(const ItemVector &items)
 }
 
 template <typename T>
-void
-SdfListOp<T>::SetItems(const ItemVector &items, SdfListOpType type)
+bool
+SdfListOp<T>::SetItems(const ItemVector &items, SdfListOpType type, std::string *errMsg)
 {
     switch(type) {
     case SdfListOpTypeExplicit:
-        SetExplicitItems(items);
-        break;
+        return SetExplicitItems(items, errMsg);
     case SdfListOpTypeAdded:
         SetAddedItems(items);
         break;
     case SdfListOpTypePrepended:
-        SetPrependedItems(items);
-        break;
+        return SetPrependedItems(items, errMsg);
     case SdfListOpTypeAppended:
-        SetAppendedItems(items);
-        break;
+        return SetAppendedItems(items, errMsg);
     case SdfListOpTypeDeleted:
-        SetDeletedItems(items);
-        break;
+        return SetDeletedItems(items, errMsg);
     case SdfListOpTypeOrdered:
         SetOrderedItems(items);
         break;
     }
+    return true;
 }
 
 template <typename T>
@@ -303,6 +433,7 @@ SdfListOp<T>::ApplyOperations(ItemVector* vec, const ApplyCallback& cb) const
         size_t numToAppend = _appendedItems.size();
         size_t numToOrder = _orderedItems.size();
 
+
         if (!cb &&
             ((numToDelete+numToAdd+numToPrepend+numToAppend+numToOrder) == 0)) {
             // nothing to do, so avoid copying vectors
@@ -321,11 +452,11 @@ SdfListOp<T>::ApplyOperations(ItemVector* vec, const ApplyCallback& cb) const
             search[*i] = i;
         }
 
-        _DeleteKeys (SdfListOpTypeDeleted, cb, &result, &search);
+        _DeleteKeys (cb, &result, &search);
         _AddKeys(SdfListOpTypeAdded, cb, &result, &search);
-        _PrependKeys(SdfListOpTypePrepended, cb, &result, &search);
-        _AppendKeys(SdfListOpTypeAppended, cb, &result, &search);
-        _ReorderKeys(SdfListOpTypeOrdered, cb, &result, &search);
+        _PrependKeys(cb, &result, &search);
+        _AppendKeys(cb, &result, &search);
+        _ReorderKeys(cb, &result, &search);
     }
 
     // Copy the result back to vec.
@@ -334,7 +465,7 @@ SdfListOp<T>::ApplyOperations(ItemVector* vec, const ApplyCallback& cb) const
 }
 
 template <typename T>
-boost::optional<SdfListOp<T>>
+std::optional<SdfListOp<T>>
 SdfListOp<T>::ApplyOperations(const SdfListOp<T> &inner) const
 {
     if (IsExplicit()) {
@@ -412,7 +543,7 @@ SdfListOp<T>::ApplyOperations(const SdfListOp<T> &inner) const
     // and there is no way to express the relative order dependency
     // between 0 and 1.
     //
-    return boost::optional<SdfListOp<T>>();
+    return std::optional<SdfListOp<T>>();
 }
 
 template <class ItemType, class ListType, class MapType>
@@ -458,7 +589,7 @@ SdfListOp<T>::_AddKeys(
 {
     TF_FOR_ALL(i, GetItems(op)) {
         if (callback) {
-            if (boost::optional<T> item = callback(op, *i)) {
+            if (std::optional<T> item = callback(op, *i)) {
                 // Only append if the item isn't already present.
                 _InsertIfUnique(*item, result, search);
             }
@@ -472,15 +603,14 @@ SdfListOp<T>::_AddKeys(
 template <class T>
 void
 SdfListOp<T>::_PrependKeys(
-    SdfListOpType op,
     const ApplyCallback& callback,
     _ApplyList* result,
     _ApplyMap* search) const
 {
-    const ItemVector& items = GetItems(op);
+    const ItemVector& items = GetItems(SdfListOpTypePrepended);
     if (callback) {
         for (auto i = items.rbegin(), iEnd = items.rend(); i != iEnd; ++i) {
-            if (boost::optional<T> mappedItem = callback(op, *i)) {
+            if (std::optional<T> mappedItem = callback(SdfListOpTypePrepended, *i)) {
                 _InsertOrMove(*mappedItem, result->begin(), result, search);
             }
         }
@@ -494,16 +624,14 @@ SdfListOp<T>::_PrependKeys(
 template <class T>
 void
 SdfListOp<T>::_AppendKeys(
-    SdfListOpType op,
     const ApplyCallback& callback,
     _ApplyList* result,
     _ApplyMap* search) const
 {
-    const ItemVector& items = GetItems(op);
-    typename _ApplyList::iterator insertPos = result->begin();
+    const ItemVector& items = GetItems(SdfListOpTypeAppended);
     if (callback) {
         for (const T& item: items) {
-            if (boost::optional<T> mappedItem = callback(op, item)) {
+            if (std::optional<T> mappedItem = callback(SdfListOpTypeAppended, item)) {
                 _InsertOrMove(*mappedItem, result->end(), result, search);
             }
         }
@@ -517,14 +645,13 @@ SdfListOp<T>::_AppendKeys(
 template <class T>
 void
 SdfListOp<T>::_DeleteKeys(
-    SdfListOpType op,
     const ApplyCallback& callback,
     _ApplyList* result,
     _ApplyMap* search) const
 {
-    TF_FOR_ALL(i, GetItems(op)) {
+    TF_FOR_ALL(i, GetItems(SdfListOpTypeDeleted)) {
         if (callback) {
-            if (boost::optional<T> item = callback(op, *i)) {
+            if (std::optional<T> item = callback(SdfListOpTypeDeleted, *i)) {
                 _RemoveIfPresent(*item, result, search);
             }
         }
@@ -537,29 +664,36 @@ SdfListOp<T>::_DeleteKeys(
 template <class T>
 void
 SdfListOp<T>::_ReorderKeys(
-    SdfListOpType op,
     const ApplyCallback& callback,
     _ApplyList* result,
     _ApplyMap* search) const
 {
+    _ReorderKeysHelper(GetItems(SdfListOpTypeOrdered), callback, result, search);
+}
+
+template <class T>
+void
+SdfListOp<T>::_ReorderKeysHelper(ItemVector order, const ApplyCallback& callback,
+    _ApplyList* result, _ApplyMap* search) {
+    
     // Make a vector and set of the source items.
-    ItemVector order;
+    ItemVector uniqueOrder;
     std::set<ItemType, _ItemComparator> orderSet;
-    TF_FOR_ALL(i, GetItems(op)) {
+    TF_FOR_ALL(i, order) {
         if (callback) {
-            if (boost::optional<T> item = callback(op, *i)) {
+            if (std::optional<T> item = callback(SdfListOpTypeOrdered, *i)) {
                 if (orderSet.insert(*item).second) {
-                    order.push_back(*item);
+                    uniqueOrder.push_back(*item);
                 }
             }
         }
         else {
             if (orderSet.insert(*i).second) {
-                order.push_back(*i);
+                uniqueOrder.push_back(*i);
             }
         }
     }
-    if (order.empty()) {
+    if (uniqueOrder.empty()) {
         return;
     }
 
@@ -569,9 +703,9 @@ SdfListOp<T>::_ReorderKeys(
 
     // Find each item from the order vector in the scratch list.
     // Then find the next item in the scratch list that's also in
-    // in the order vector.  All of these items except the last
+    // in the uniqueOrder vector.  All of these items except the last
     // form the next continuous sequence in the result.
-    TF_FOR_ALL(i, order) {
+    TF_FOR_ALL(i, uniqueOrder) {
         typename _ApplyMap::const_iterator j = search->find(*i);
         if (j != search->end()) {
             // Find the next item in both scratch and order.
@@ -600,16 +734,25 @@ _ModifyCallbackHelper(const typename SdfListOp<T>::ModifyCallback& cb,
     bool didModify = false;
 
     std::vector<T> modifiedVector;
-    TF_FOR_ALL(item, *itemVector) {
-        boost::optional<T> modifiedItem = cb(*item);
+    modifiedVector.reserve(itemVector->size());
+    TfDenseHashSet<T, TfHash> existingSet;
+
+    for (const T& item : *itemVector) {
+        std::optional<T> modifiedItem = cb(item);
+        if (modifiedItem) {
+            if (!existingSet.insert(*modifiedItem).second) {
+                modifiedItem = std::nullopt;
+            }
+        }
+
         if (!modifiedItem) {
             didModify = true;
         }
-        else if (*modifiedItem != *item) {
-            modifiedVector.push_back(*modifiedItem);
+        else if (*modifiedItem != item) {
+            modifiedVector.push_back(std::move(*modifiedItem));
             didModify = true;
         } else {
-            modifiedVector.push_back(*item);
+            modifiedVector.push_back(item);
         }
     }
 
@@ -627,15 +770,29 @@ SdfListOp<T>::ModifyOperations(const ModifyCallback& callback)
     bool didModify = false;
 
     if (callback) {
-        didModify |= _ModifyCallbackHelper(callback, &_explicitItems);
-        didModify |= _ModifyCallbackHelper(callback, &_addedItems);
-        didModify |= _ModifyCallbackHelper(callback, &_prependedItems);
-        didModify |= _ModifyCallbackHelper(callback, &_appendedItems);
-        didModify |= _ModifyCallbackHelper(callback, &_deletedItems);
-        didModify |= _ModifyCallbackHelper(callback, &_orderedItems);
+        didModify |= _ModifyCallbackHelper(
+            callback, &_explicitItems);
+        didModify |= _ModifyCallbackHelper(
+            callback, &_addedItems);
+        didModify |= _ModifyCallbackHelper(
+            callback, &_prependedItems);
+        didModify |= _ModifyCallbackHelper(
+            callback, &_appendedItems);
+        didModify |= _ModifyCallbackHelper(
+            callback, &_deletedItems);
+        didModify |= _ModifyCallbackHelper(
+            callback, &_orderedItems);
     }
 
     return didModify;
+}
+
+template <typename T>
+bool 
+SdfListOp<T>::ModifyOperations(const ModifyCallback& callback,
+                               bool unusedRemoveDuplicates)
+{
+    return ModifyOperations(callback);
 }
 
 template <typename T>
@@ -708,7 +865,7 @@ SdfListOp<T>::ComposeOperations(const SdfListOp<T>& stronger, SdfListOpType op)
         if (op == SdfListOpTypeOrdered) {
             stronger._AddKeys(op, ApplyCallback(), 
                                  &weakerList, &weakerSearch);
-            stronger._ReorderKeys(op, ApplyCallback(), 
+            stronger._ReorderKeys(ApplyCallback(), 
                                   &weakerList, &weakerSearch);
         } else if (op == SdfListOpTypeAdded) {
             stronger._AddKeys(op,
@@ -721,13 +878,11 @@ SdfListOp<T>::ComposeOperations(const SdfListOp<T>& stronger, SdfListOpType op)
                                  &weakerList,
                                  &weakerSearch);
         } else if (op == SdfListOpTypePrepended) {
-            stronger._PrependKeys(op,
-                                 ApplyCallback(),
+            stronger._PrependKeys(ApplyCallback(),
                                  &weakerList,
                                  &weakerSearch);
         } else if (op == SdfListOpTypeAppended) {
-            stronger._AppendKeys(op,
-                                 ApplyCallback(),
+            stronger._AppendKeys(ApplyCallback(),
                                  &weakerList,
                                  &weakerSearch);
         }
@@ -744,10 +899,24 @@ void SdfApplyListOrdering(std::vector<ItemType>* v,
                          const std::vector<ItemType>& order)
 {
     if (!order.empty() && !v->empty()) {
-        // XXX: This is lame, but just for now...
-        SdfListOp<ItemType> tmp;
-        tmp.SetOrderedItems(order);
-        tmp.ApplyOperations(v);
+        // Make a list of the inputs.  We can efficiently (O(1)) splice
+        // these elements later.
+        typename SdfListOp<ItemType>::_ApplyList result;
+        result.insert(result.end(), v->begin(), v->end());
+
+        // Make a map of keys to list iterators.  This avoids O(n)
+        // searches within O(n) loops below.
+        typename SdfListOp<ItemType>::_ApplyMap search;
+        typename SdfListOp<ItemType>::_ApplyList::iterator i = result.begin();
+        for (;
+             i != result.end(); ++i) {
+            search[*i] = i;
+        }
+        SdfListOp<ItemType>::_ReorderKeysHelper(order, nullptr, &result, &search);
+
+        // Copy the result back to vec.
+        v->clear();
+        v->insert(v->end(), result.begin(), result.end());
     }
 }
 

@@ -2,25 +2,9 @@
 #
 # Copyright 2018 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
+from __future__ import print_function
 
 from pxr import Plug
 from pxr import Sdf
@@ -35,70 +19,79 @@ testRoot = os.path.join(os.path.dirname(__file__), 'SdrPlugins')
 testPluginsDsoSearch = testRoot + '/lib/*/Resources/'
 
 class TestShaderNode(unittest.TestCase):
+    # The following source types are what we expect to discover from
+    # _SdrTestDiscoveryPlugin and _SdrTestDiscoveryPlugin2.  Note that there
+    # is no glslfx parser plugin provided in this test.
+    argsType = "RmanCpp"
+    oslType = "OSL"
+    glslfxType = "glslfx"
+
+    @classmethod
+    def setUpClass(cls):
+        """
+        Load the test modules for discovery and parsing and check basic type
+        registration
+        """
+
+        # Register test plugins and verify they have been found
+        cls.pr = Plug.Registry()
+        plugins = cls.pr.RegisterPlugins(testPluginsDsoSearch)
+
+        # Verify the test plugins have been found.  When building monolithic
+        # we should find at least these derived types.
+        assert len(plugins) == 1
+        cls.tdpType  = Tf.Type.FindByName('_SdrTestDiscoveryPlugin')
+        cls.tdp2Type = Tf.Type.FindByName('_SdrTestDiscoveryPlugin2')
+
+        cls.tppType = Tf.Type.FindByName('_SdrArgsTestParserPlugin')
+        cls.tpp2Type = Tf.Type.FindByName('_SdrOslTestParserPlugin')
+
+        # We don't check for all the derived types of SdrDiscoveryPlugin
+        # because this test only uses the discovery and parser plugins
+        # that are defined in this testenv
+        assert {cls.tdpType, cls.tdp2Type}.issubset(
+            set(cls.pr.GetAllDerivedTypes('SdrDiscoveryPlugin')))
+        assert {cls.tppType, cls.tpp2Type}.issubset(
+            set(cls.pr.GetAllDerivedTypes('SdrParserPlugin')))
+
+            # Instantiating the registry will kick off the discovery process.
+        # This test assumes the PXR_SDR_SKIP_DISCOVERY_PLUGIN_DISCOVERY
+        # and PXR_SDR_SKIP_PARSER_PLUGIN_DISCOVERY has been set prior to
+        # being run to ensure built-in plugins are not found. Instead
+        # we'll list the plugins we want explicitly.
+
+        # Setting this from within the script does not work on Windows.
+        # os.environ["PXR_SDR_SKIP_DISCOVERY_PLUGIN_DISCOVERY"] = ""
+        # os.environ["PXR_SDR_SKIP_PARSER_PLUGIN_DISCOVERY"] = ""
+        cls.reg = Sdr.Registry()
+
+        # Set up the test parser plugins.
+        cls.reg.SetExtraParserPlugins([cls.tppType, cls.tpp2Type])
+
+        # We will register the discovery plugins one by one so that we can check
+        # source types are not duplicated in the registry if we have plugins
+        # that discover nodes of the same source type
+
+        # The _SdrTestDiscoveryPlugin should find discovery results that have
+        # source types of RmanCpp and OSL
+        cls.reg.SetExtraDiscoveryPlugins([cls.tdpType])
+        assert sorted(cls.reg.GetAllShaderNodeSourceTypes()) == \
+            [cls.oslType, cls.argsType]
+
+        # The _SdrTestDiscoveryPlugin2 should find discovery results that have
+        # source types of RmanCpp and glslfx
+        cls.reg.SetExtraDiscoveryPlugins([cls.tdp2Type])
+
     def test_Registry(self):
         """
         Test basic registry operations. Also ensures that the discovery process
         works correctly.
         """
 
-        # Register test plugins and verify they have been found
-        pr = Plug.Registry()
-        plugins = pr.RegisterPlugins(testPluginsDsoSearch)
-
-        # Verify the test plugins have been found.  When building monolithic
-        # we should find at least these derived types.
-        self.assertEqual(len(plugins), 1)
-        tdpType  = Tf.Type.FindByName('_NdrTestDiscoveryPlugin')
-        tdp2Type = Tf.Type.FindByName('_NdrTestDiscoveryPlugin2')
-
-        tppType = Tf.Type.FindByName('_NdrArgsTestParserPlugin')
-        tpp2Type = Tf.Type.FindByName('_NdrOslTestParserPlugin')
-
-        # We don't check for all the derived types of NdrDiscoveryPlugin
-        # because this test only uses the discovery and parser plugins 
-        # that are defined in this testenv
-        assert {tdpType, tdp2Type}.issubset(
-            set(pr.GetAllDerivedTypes('NdrDiscoveryPlugin')))
-        assert {tppType, tpp2Type}.issubset(
-            set(pr.GetAllDerivedTypes('NdrParserPlugin')))
-
-        # The following source types are what we expect to discover from
-        # _NdrTestDiscoveryPlugin and _NdrTestDiscoveryPlugin2.  Note that there
-        # is no glslfx parser plugin provided in this test.
-        argsType = "RmanCpp"
-        oslType = "OSL"
-        glslfxType = "glslfx"
-
-        # Instantiating the registry will kick off the discovery process.
-        # This test assumes the PXR_NDR_SKIP_DISCOVERY_PLUGIN_DISCOVERY 
-        # and PXR_NDR_SKIP_PARSER_PLUGIN_DISCOVERY has been set prior to 
-        # being run to ensure built-in plugins are not found. Instead 
-        # we'll list the plugins we want explicitly.
-
-        # Setting this from within the script does not work on Windows.
-        # os.environ["PXR_NDR_SKIP_DISCOVERY_PLUGIN_DISCOVERY"] = ""
-        # os.environ["PXR_NDR_SKIP_PARSER_PLUGIN_DISCOVERY"] = ""
-        reg = Sdr.Registry()
-
-        # Set up the test parser plugins.
-        reg.SetExtraParserPlugins([tppType, tpp2Type])
-
-        # We will register the discovery plugins one by one so that we can check
-        # source types are not duplicated in the registry if we have plugins
-        # that discover nodes of the same source type
-
-        # The _NdrTestDiscoveryPlugin should find discovery results that have
-        # source types of RmanCpp and OSL
-        reg.SetExtraDiscoveryPlugins([tdpType])
-        assert reg.GetAllNodeSourceTypes() == [oslType, argsType]
-
-        # The _NdrTestDiscoveryPlugin2 should find discovery results that have
-        # source types of RmanCpp and glslfx
-        reg.SetExtraDiscoveryPlugins([tdp2Type])
-
         # Test that the registry does not see 'RmanCpp' twice as a source type,
         # and that it finds 'glslfx' as a source type
-        assert reg.GetAllNodeSourceTypes() == [oslType, argsType, glslfxType]
+        assert sorted(self.reg.GetAllShaderNodeSourceTypes()) == \
+            [self.oslType, self.argsType, self.glslfxType]
 
         # Calling SdrRegistry::GetShaderNodesByFamily() will actually parse the
         # discovery results.
@@ -107,7 +100,7 @@ class TestShaderNode(unittest.TestCase):
         # have the same name.
         # Notice that we do not see 'TestNodeGLSLFX' because we don't have a
         # parser plugin to support it
-        nodes = reg.GetShaderNodesByFamily()
+        nodes = self.reg.GetShaderNodesByFamily()
         shaderNodeNames = [node.GetName() for node in nodes]
         assert set(shaderNodeNames) == {
             "TestNodeARGS",
@@ -117,26 +110,27 @@ class TestShaderNode(unittest.TestCase):
             "TestNodeSameName"
         }
 
-        assert reg.GetSearchURIs() == ["/TestSearchPath", "/TestSearchPath2"]
+        assert self.reg.GetSearchURIs() == ["/TestSearchPath", "/TestSearchPath2"]
 
-        # Calling SdrRegistry::GetNodeNames only looks at discovery results
-        # without parsing them.
+        # Calling SdrRegistry::GetShaderNodeNames only looks at discovery
+        # results without parsing them.
         # Notice that we get 'TestNodeSameName' only once because we only show
         # unique names.
         # Notice that we see 'TestNodeGLSLFX' because it is in our discovery
         # results even though we do not have a parser plugin that supports its
         # source type.
-        assert set(reg.GetNodeNames()) == {
+        assert set(self.reg.GetShaderNodeNames()) == {
             "TestNodeARGS",
             "TestNodeARGS2",
             "TestNodeOSL",
             "TestNodeSameName",
             "TestNodeGLSLFX"
         }
-        # Verify that GetNodeIdentifiers follows the same rules as GetNodeNames.
+        # Verify that GetShaderNodeIdentifiers follows the same rules as
+        # GetShaderNodeNames.
         # Note that the names and identifiers do happen to be the same in this
         # test case which is common.
-        assert set(reg.GetNodeIdentifiers()) == {
+        assert set(self.reg.GetShaderNodeIdentifiers()) == {
             "TestNodeARGS",
             "TestNodeARGS2",
             "TestNodeOSL",
@@ -144,71 +138,38 @@ class TestShaderNode(unittest.TestCase):
             "TestNodeGLSLFX"
         }
 
-        assert id(reg.GetShaderNodeByName(nodes[0].GetName())) == id(nodes[0])
+        assert id(self.reg.GetShaderNodeByName(nodes[0].GetName())) == id(nodes[0])
 
         nodeName = "TestNodeSameName"
         nodeIdentifier = "TestNodeSameName"
-        nodeAlias = "Alias_TestNodeSameName"
 
         # Ensure that the registry can retrieve two nodes of the same name but
         # different source types
-        assert len(reg.GetShaderNodesByName(nodeName)) == 2
-        node = reg.GetShaderNodeByNameAndType(nodeName, oslType)
+        assert len(self.reg.GetShaderNodesByName(nodeName)) == 2
+        node = self.reg.GetShaderNodeByNameAndType(nodeName, self.oslType)
         assert node is not None
-        node = reg.GetShaderNodeByNameAndType(nodeName, argsType) 
+        node = self.reg.GetShaderNodeByNameAndType(nodeName, self.argsType)
         assert node is not None
-        node = reg.GetShaderNodeByName(nodeName, [oslType, argsType])
-        assert node.GetSourceType() == oslType
-        node = reg.GetShaderNodeByName(nodeName, [argsType, oslType])
-        assert node.GetSourceType() == argsType
+        node = self.reg.GetShaderNodeByName(nodeName, [self.oslType, self.argsType])
+        assert node.GetSourceType() == self.oslType
+        node = self.reg.GetShaderNodeByName(nodeName, [self.argsType, self.oslType])
+        assert node.GetSourceType() == self.argsType
 
         # Ensure that the registry can retrieve these same nodes via identifier,
         # which, in these cases, are the same as the node names.
-        assert len(reg.GetShaderNodesByIdentifier(nodeIdentifier)) == 2
-        node = reg.GetShaderNodeByIdentifierAndType(nodeIdentifier, oslType) 
+        assert len(self.reg.GetShaderNodesByIdentifier(nodeIdentifier)) == 2
+        node = self.reg.GetShaderNodeByIdentifierAndType(nodeIdentifier, self.oslType)
         assert node is not None
-        node = reg.GetShaderNodeByIdentifierAndType(nodeIdentifier, argsType) 
+        node = self.reg.GetShaderNodeByIdentifierAndType(nodeIdentifier, self.argsType)
         assert node is not None
-        node = reg.GetShaderNodeByIdentifier(nodeIdentifier, [oslType, argsType])
-        assert node.GetSourceType() == oslType
-        node = reg.GetShaderNodeByIdentifier(nodeIdentifier, [argsType, oslType])
-        assert node.GetSourceType() == argsType
-
-        # Test aliases. The discovery result for the args type 
-        # "TestNodeSameName" has been given an alias by its discovery plugin
-        # (see TestSdrPlugin_discoveryPlugin.cpp).
-        # The args type node can be found by its alias through the 
-        # GetShaderNodeByIdentifier APIs. The osl type node is not found 
-        # by this alias
-        assert len(reg.GetShaderNodesByIdentifier(nodeAlias)) == 1
-        node = reg.GetShaderNodeByIdentifierAndType(nodeAlias, oslType)
-        assert node is None
-        node = reg.GetShaderNodeByIdentifierAndType(nodeAlias, argsType)
-        assert node is not None
-        assert node.GetIdentifier() == nodeIdentifier 
-        assert node.GetSourceType() == argsType
-        node = reg.GetShaderNodeByIdentifier(nodeAlias, [oslType, argsType])
-        assert node.GetIdentifier() == nodeIdentifier 
-        assert node.GetSourceType() == argsType
-        node = reg.GetShaderNodeByIdentifier(nodeAlias, [argsType, oslType])
-        assert node.GetIdentifier() == nodeIdentifier 
-        assert node.GetSourceType() == argsType
-
-        # Ensure that GetShaderNodeByName APIs are NOT able to find nodes using 
-        # aliases.
-        assert len(reg.GetShaderNodesByName(nodeAlias)) == 0
-        node = reg.GetShaderNodeByNameAndType(nodeAlias, oslType)
-        assert node is None
-        node = reg.GetShaderNodeByNameAndType(nodeAlias, argsType) 
-        assert node is None
-        node = reg.GetShaderNodeByName(nodeAlias, [oslType, argsType])
-        assert node is None
-        node = reg.GetShaderNodeByName(nodeAlias, [argsType, oslType])
-        assert node is None
+        node = self.reg.GetShaderNodeByIdentifier(nodeIdentifier, [self.oslType, self.argsType])
+        assert node.GetSourceType() == self.oslType
+        node = self.reg.GetShaderNodeByIdentifier(nodeIdentifier, [self.argsType, self.oslType])
+        assert node.GetSourceType() == self.argsType
 
         # Test GetShaderNodeFromAsset to check that a subidentifier is part of
         # the node's identifier if one is specified
-        node = reg.GetShaderNodeFromAsset(
+        node = self.reg.GetShaderNodeFromAsset(
             Sdf.AssetPath('TestNodeSourceAsset.oso'),   # shaderAsset
             {},                                         # metadata
             "mySubIdentifier")                          # subIdentifier
@@ -217,13 +178,79 @@ class TestShaderNode(unittest.TestCase):
 
         # Test GetShaderNodeFromAsset to check that a sourceType is part of
         # the node's identifier if one is specified
-        node = reg.GetShaderNodeFromAsset(
+        node = self.reg.GetShaderNodeFromAsset(
             Sdf.AssetPath('TestNodeSourceAsset.oso'),   # shaderAsset
             {},                                         # metadata
             "mySubIdentifier",                          # subIdentifier
             "OSL")                                      # sourceType
         assert node.GetIdentifier().endswith("<mySubIdentifier><OSL>")
 
+    def test_UsdEncoding(self):
+        # The two nodes have the same set of properties, as defined in the mock
+        # OSL parser plugin of this test. But `TestNodeSameName` has been tagged
+        # with sdrUsdEncodingVersion=0 in the mock discovery plugin and hence
+        # should produce a different mapping from Sdr to Sdf types
+        nodeNew = self.reg.GetShaderNodeByNameAndType("TestNodeOSL", self.oslType)
+        assert nodeNew is not None
+        nodeOld = self.reg.GetShaderNodeByNameAndType("TestNodeSameName", self.oslType)
+        assert nodeOld is not None
+        assert nodeOld.GetMetadata()['sdrUsdEncodingVersion'] == "0"
+
+        def _CheckTypes(node, expectedTypes):
+            for inputName in node.GetShaderInputNames():
+                prop = node.GetShaderInput(inputName)
+                sdrType = prop.GetType()
+                sdfType = prop.GetTypeAsSdfType().GetSdfType()
+                expectedSdrType, expectedSdfType = expectedTypes[prop.GetName()]
+                print("  ", prop.GetName(), sdrType, str(sdfType), 'vs expected', \
+                      expectedSdrType, str(expectedSdfType))
+                if not (sdrType == expectedSdrType and sdfType == expectedSdfType):
+                    print("     MISMATCH")
+                assert sdrType == expectedSdrType and sdfType == expectedSdfType
+
+        print("Current USD encoding:")
+        expectedTypes = {
+           'IntProperty': (Sdr.PropertyTypes.Int, Sdf.ValueTypeNames.Int),
+           'StringProperty': (Sdr.PropertyTypes.String, Sdf.ValueTypeNames.String),
+           'FloatProperty': (Sdr.PropertyTypes.Float, Sdf.ValueTypeNames.Float),
+           'ColorProperty': (Sdr.PropertyTypes.Color, Sdf.ValueTypeNames.Color3f),
+           'PointProperty': (Sdr.PropertyTypes.Point, Sdf.ValueTypeNames.Point3f),
+           'NormalProperty': (Sdr.PropertyTypes.Normal, Sdf.ValueTypeNames.Normal3f),
+           'VectorProperty': (Sdr.PropertyTypes.Vector, Sdf.ValueTypeNames.Vector3f),
+           'MatrixProperty': (Sdr.PropertyTypes.Matrix, Sdf.ValueTypeNames.Matrix4d),
+           'StructProperty': (Sdr.PropertyTypes.Struct, Sdf.ValueTypeNames.Token),
+           'TerminalProperty': (Sdr.PropertyTypes.Terminal, Sdf.ValueTypeNames.Token),
+           'VstructProperty': (Sdr.PropertyTypes.Vstruct, Sdf.ValueTypeNames.Token),
+           'Vstruct_ArrayProperty': (Sdr.PropertyTypes.Vstruct, Sdf.ValueTypeNames.TokenArray),
+           'Float_VstructProperty': (Sdr.PropertyTypes.Vstruct, Sdf.ValueTypeNames.TokenArray),
+           'Float_Vec2Property': (Sdr.PropertyTypes.Float, Sdf.ValueTypeNames.Float2),
+           'Float_Vec3Property': (Sdr.PropertyTypes.Float, Sdf.ValueTypeNames.Float3),
+           'Float_Vec4Property': (Sdr.PropertyTypes.Float, Sdf.ValueTypeNames.Float4),
+           'String_AssetProperty': (Sdr.PropertyTypes.String, Sdf.ValueTypeNames.Asset),
+        }
+        _CheckTypes(nodeNew, expectedTypes)
+
+        print("Version 0 USD encoding:")
+        # These are the differences relative to the public encoding
+        expectedTypes.update({
+           'StructProperty': (Sdr.PropertyTypes.Struct, Sdf.ValueTypeNames.String),
+           'VstructProperty': (Sdr.PropertyTypes.Vstruct, Sdf.ValueTypeNames.Float),
+           'Vstruct_ArrayProperty': (Sdr.PropertyTypes.Vstruct, Sdf.ValueTypeNames.FloatArray),
+           'Float_Vec2Property': (Sdr.PropertyTypes.Float, Sdf.ValueTypeNames.FloatArray),
+           'Float_Vec3Property': (Sdr.PropertyTypes.Float, Sdf.ValueTypeNames.FloatArray),
+           'Float_Vec4Property': (Sdr.PropertyTypes.Float, Sdf.ValueTypeNames.FloatArray),
+           'String_AssetProperty': (Sdr.PropertyTypes.String, Sdf.ValueTypeNames.String),
+           'Float_VstructProperty': (Sdr.PropertyTypes.Vstruct, Sdf.ValueTypeNames.FloatArray),
+        })
+        _CheckTypes(nodeOld, expectedTypes)
+
+    def test_ParseValue(self):
+        # Sanity check that the metadata helpers python api executes correctly
+        nodeNew = self.reg.GetShaderNodeByNameAndType("TestNodeOSL", self.oslType)
+        intProp = nodeNew.GetShaderInput("IntProperty")
+        val, err = Sdr.MetadataHelpers.ParseSdfValue("3", intProp)
+        assert val == 3
+        assert err == ""
 
 if __name__ == '__main__':
     unittest.main()

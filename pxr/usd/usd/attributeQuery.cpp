@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 #include "pxr/usd/usd/attributeQuery.h"
@@ -29,22 +12,31 @@
 
 #include "pxr/usd/sdf/types.h"
 #include "pxr/base/trace/trace.h"
-
-#include <boost/preprocessor/seq/for_each.hpp>
+#include "pxr/base/tf/preprocessorUtilsLite.h"
+#include "pxr/base/ts/spline.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 
 UsdAttributeQuery::UsdAttributeQuery(
-    const UsdAttribute& attr)
+    const UsdAttribute& attr) : 
+    _attr(attr)
 {
-    _Initialize(attr);
+    _Initialize();
 }
 
 UsdAttributeQuery::UsdAttributeQuery(
     const UsdPrim& prim, const TfToken& attrName)
     : UsdAttributeQuery(prim.GetAttribute(attrName))
 {
+}
+
+UsdAttributeQuery::UsdAttributeQuery(
+    const UsdAttribute &attr, 
+    const UsdResolveTarget &resolveTarget) : 
+    _attr(attr)
+{
+    _Initialize(resolveTarget);
 }
 
 std::vector<UsdAttributeQuery>
@@ -64,17 +56,68 @@ UsdAttributeQuery::UsdAttributeQuery()
 {
 }
 
+UsdAttributeQuery::UsdAttributeQuery(const UsdAttributeQuery &other) :
+    _attr(other._attr),
+    _resolveInfo(other._resolveInfo)
+{
+    if (other._resolveTarget) {
+        _resolveTarget = std::make_unique<UsdResolveTarget>(
+            *(other._resolveTarget));
+    }
+}
+
+UsdAttributeQuery &
+UsdAttributeQuery::operator=(const UsdAttributeQuery &other)
+{
+    _attr = other._attr;
+    _resolveInfo = other._resolveInfo;
+    if (other._resolveTarget) {
+        _resolveTarget = std::make_unique<UsdResolveTarget>(
+            *(other._resolveTarget));
+    }
+    return *this;
+}
+
 void
-UsdAttributeQuery::_Initialize(const UsdAttribute& attr)
+UsdAttributeQuery::_Initialize()
 {
     TRACE_FUNCTION();
 
-    if (attr) {
-        const UsdStage* stage = attr._GetStage();
-        stage->_GetResolveInfo(attr, &_resolveInfo);
+    if (_attr) {
+        const UsdStage* stage = _attr._GetStage();
+        stage->_GetResolveInfo(_attr, &_resolveInfo);
+    }
+}
+
+void 
+UsdAttributeQuery::_Initialize(
+    const UsdResolveTarget &resolveTarget)
+{
+    TRACE_FUNCTION();
+
+    if (resolveTarget.IsNull()) {
+        _Initialize();
+        return;
     }
 
-    _attr = attr;
+    if (!_attr) {
+        return;
+    }
+
+    // Validate that the resolve target is for this attribute's prim path.
+    if (_attr.GetPrimPath() != resolveTarget.GetPrimIndex()->GetPath()) {
+        TF_CODING_ERROR("Invalid resolve target for attribute '%s'. The "
+            "given resolve target is only valid for attributes on the prim "
+            "'%s'.",
+            _attr.GetPrimPath().GetText(), 
+            resolveTarget.GetPrimIndex()->GetPath().GetText());
+        return;
+    }
+
+    const UsdStage* stage = _attr._GetStage();
+    stage->_GetResolveInfoWithResolveTarget(_attr, resolveTarget, &_resolveInfo);
+
+    _resolveTarget = std::make_unique<UsdResolveTarget>(resolveTarget);
 }
 
 const UsdAttribute& 
@@ -88,30 +131,83 @@ USD_API
 bool 
 UsdAttributeQuery::_Get(T* value, UsdTimeCode time) const
 {
+    SdfAbstractDataTypedValue<T> result(value);
+    
+    // If the requested time is default but the resolved value source is time
+    // varying, then the stored resolve info won't give us the correct value 
+    // for default time. In this case we have to get the resolve info at default
+    // time and query the value from that.
+    if (time.IsDefault() && 
+            _resolveInfo.ValueSourceMightBeTimeVarying()) {
+
+        static const UsdTimeCode defaultTime = UsdTimeCode::Default();
+        UsdResolveInfo defaultResolveInfo;
+        if (_resolveTarget && TF_VERIFY(!_resolveTarget->IsNull())) {
+            _attr._GetStage()->_GetResolveInfoWithResolveTarget(
+                _attr, *_resolveTarget, &defaultResolveInfo, &defaultTime);
+        } else {
+            _attr._GetStage()->_GetResolveInfo(
+                _attr, &defaultResolveInfo, &defaultTime);
+        }
+        return _attr._GetStage()->_GetValueFromResolveInfo(
+            defaultResolveInfo, defaultTime, _attr, &result);
+    }
+
     return _attr._GetStage()->_GetValueFromResolveInfo(
-        _resolveInfo, time, _attr, value);
+        _resolveInfo, time, _attr, &result, _resolveTarget.get());
 }
 
 bool 
 UsdAttributeQuery::Get(VtValue* value, UsdTimeCode time) const
 {
+    // If the requested time is default but the resolved value source is time
+    // varying, then the stored resolve info won't give us the correct value 
+    // for default time. In this case we have to get the resolve info at default
+    // time and query the value from that.
+    if (time.IsDefault() && 
+            _resolveInfo.ValueSourceMightBeTimeVarying()) {
+
+        static const UsdTimeCode defaultTime = UsdTimeCode::Default();
+        UsdResolveInfo defaultResolveInfo;
+        if (_resolveTarget && TF_VERIFY(!_resolveTarget->IsNull())) {
+            _attr._GetStage()->_GetResolveInfoWithResolveTarget(
+                _attr, *_resolveTarget, &defaultResolveInfo, &defaultTime);
+        } else {
+            _attr._GetStage()->_GetResolveInfo(
+                _attr, &defaultResolveInfo, &defaultTime);
+        }
+        return _attr._GetStage()->_GetValueFromResolveInfo(
+            defaultResolveInfo, defaultTime, _attr, value);
+    }
+
     return _attr._GetStage()->_GetValueFromResolveInfo(
-        _resolveInfo, time, _attr, value);
+        _resolveInfo, time, _attr, value, _resolveTarget.get());
 }
 
 bool 
 UsdAttributeQuery::GetTimeSamples(std::vector<double>* times) const
 {
-    return _attr._GetStage()->_GetTimeSamplesInIntervalFromResolveInfo(
-        _resolveInfo, _attr, GfInterval::GetFullInterval(), times);
+    return _attr._GetStage()->_GetTimeSamplesInInterval(
+        _attr, GfInterval::GetFullInterval(), times,
+        &_resolveInfo, _resolveTarget.get());
+}
+
+TsSpline
+UsdAttributeQuery::GetSpline() const
+{
+    TsSpline spline;
+    _attr._GetStage()->_GetSplineFromResolveInfo(
+        _resolveInfo, _attr, _resolveTarget.get(), &spline);
+    return spline;
 }
 
 bool
 UsdAttributeQuery::GetTimeSamplesInInterval(const GfInterval& interval,
                                             std::vector<double>* times) const
 {
-    return _attr._GetStage()->_GetTimeSamplesInIntervalFromResolveInfo(
-        _resolveInfo, _attr, interval, times);
+    return _attr._GetStage()->
+        _GetTimeSamplesInInterval(_attr, interval, times,
+                                  &_resolveInfo, _resolveTarget.get());
 }
 
 /* static */
@@ -153,9 +249,9 @@ UsdAttributeQuery::GetUnionedTimeSamplesInInterval(
 
         // This will work even if the attributes belong to different 
         // USD stages.
-        success = attr.GetStage()->_GetTimeSamplesInIntervalFromResolveInfo(
-                attrQuery._resolveInfo, attr, interval, &attrSampleTimes) 
-                && success;
+        success = attr.GetStage()->_GetTimeSamplesInInterval(
+            attr, interval, &attrSampleTimes, &attrQuery._resolveInfo,
+            attrQuery._resolveTarget.get()) && success;
 
         // Merge attrSamplesTimes into the times vector.
         Usd_MergeTimeSamples(times, attrSampleTimes, &tempUnionSampleTimes);
@@ -167,8 +263,8 @@ UsdAttributeQuery::GetUnionedTimeSamplesInInterval(
 size_t
 UsdAttributeQuery::GetNumTimeSamples() const
 {
-    return _attr._GetStage()->_GetNumTimeSamplesFromResolveInfo(
-        _resolveInfo, _attr);
+    return _attr._GetStage()->_GetNumTimeSamples(
+        _attr, &_resolveInfo, _resolveTarget.get());
 }
 
 bool 
@@ -177,15 +273,22 @@ UsdAttributeQuery::GetBracketingTimeSamples(double desiredTime,
                                             double* upper, 
                                             bool* hasTimeSamples) const
 {
-    return _attr._GetStage()->_GetBracketingTimeSamplesFromResolveInfo(
-        _resolveInfo, _attr, desiredTime, /* authoredOnly */ false,
-        lower, upper, hasTimeSamples);
+    return _attr._GetStage()->_GetBracketingTimeSamples(
+        _attr, desiredTime, lower, upper, hasTimeSamples,
+        &_resolveInfo, _resolveTarget.get());
 }
 
 bool 
 UsdAttributeQuery::HasValue() const
 {
     return _resolveInfo._source != UsdResolveInfoSourceNone;  
+}
+
+bool
+UsdAttributeQuery::HasSpline() const
+{
+    return _attr._GetStage()->_HasSplineFromResolveInfo(
+        _resolveInfo, _attr, _resolveTarget.get());
 }
 
 bool 
@@ -206,11 +309,17 @@ UsdAttributeQuery::HasFallbackValue() const
     return _attr.HasFallbackValue();
 }
 
+bool
+UsdAttributeQuery::GetFallbackValue(VtValue* value) const
+{
+    return _attr.GetFallbackValue(value);
+}
+
 bool 
 UsdAttributeQuery::ValueMightBeTimeVarying() const
 {
-    return _attr._GetStage()->_ValueMightBeTimeVaryingFromResolveInfo(
-        _resolveInfo, _attr);
+    return _attr._GetStage()->
+        _ValueMightBeTimeVaryingFromResolveInfo(_resolveInfo, _attr);
 }
 
 ARCH_PRAGMA_PUSH
@@ -218,13 +327,13 @@ ARCH_PRAGMA_INSTANTIATION_AFTER_SPECIALIZATION
 
 // Explicitly instantiate templated getters for all Sdf value
 // types.
-#define _INSTANTIATE_GET(r, unused, elem)                               \
+#define _INSTANTIATE_GET(unused, elem)                                  \
     template USD_API bool UsdAttributeQuery::_Get(                      \
         SDF_VALUE_CPP_TYPE(elem)*, UsdTimeCode) const;                  \
     template USD_API bool UsdAttributeQuery::_Get(                      \
         SDF_VALUE_CPP_ARRAY_TYPE(elem)*, UsdTimeCode) const;
 
-BOOST_PP_SEQ_FOR_EACH(_INSTANTIATE_GET, ~, SDF_VALUE_TYPES)
+TF_PP_SEQ_FOR_EACH(_INSTANTIATE_GET, ~, SDF_VALUE_TYPES)
 #undef _INSTANTIATE_GET
 
 ARCH_PRAGMA_POP

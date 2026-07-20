@@ -1,26 +1,12 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
-#
+
+# pylint: disable=dict-keys-not-iterating
+
 from __future__ import print_function
 
 from pxr import Tf
@@ -78,20 +64,13 @@ class _Completer(object):
         Return a list of all keywords, built-in functions and names
         currently defines in __main__ that match.
         """
-        builtin_mod = None
 
-        if sys.version_info.major >= 3:
-            import builtins
-            builtin_mod = builtins
-        else:
-            import __builtin__
-            builtin_mod = __builtin__
-
+        import builtins
         import __main__
 
         matches = set()
         n = len(text)
-        for l in [keyword.kwlist,builtin_mod.__dict__.keys(),
+        for l in [keyword.kwlist,builtins.__dict__.keys(),
                   __main__.__dict__.keys(), self.locals.keys()]:
             for word in l:
                 if word[:n] == text and word != "__builtins__":
@@ -281,7 +260,7 @@ class Controller(QtCore.QObject):
 
         self.textEdit.setTabChangesFocus(False)
 
-        self.textEdit.setWordWrapMode(QtGui.QTextOption.WrapAnywhere)
+        self.textEdit.setWordWrapMode(QtGui.QTextOption.WrapMode.WrapAnywhere)
         self.textEdit.setWindowTitle('Interpreter')
 
         self.textEdit.promptLength = len(sys.ps1)
@@ -316,15 +295,20 @@ class Controller(QtCore.QObject):
         # various startup scripts, so that they can access the location from
         # which they are being run.
         # also, update the globals dict after we exec the file (bug 9529)
-        self.interpreter.runsource( 'g = dict(globals()); g["__file__"] = ' +
-                                    '"%s"; execfile("%s", g);' % (path, path) +
-                                    'del g["__file__"]; globals().update(g);' )
+        self.interpreter.runsource( 
+            'g = dict(globals());' 
+            'g["__file__"] = "{0}";'
+            'f = open("{0}", "rb");'
+            'exec(compile(f.read(), "{0}", "exec"), g);'
+            'f.close();'
+            'del g["__file__"];'
+            'globals().update(g);'.format(path))
         self.SetInputStart()
         self.lines = []
 
     def SetInputStart(self):
         cursor = self.textEdit.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         self.textEdit.SetStartOfInput(cursor.position())
 
     def _QuitSlot(self):
@@ -365,7 +349,7 @@ class Controller(QtCore.QObject):
                                "interpreters are not supported.")
 
         cursor = self.textEdit.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         self.SetInputStart()
         self.textEdit.setTextCursor(cursor)
 
@@ -385,11 +369,11 @@ class Controller(QtCore.QObject):
         finally:
             Controller._isAnyReadlineEventLoopActive = False
 
-        cursor.movePosition(QtGui.QTextCursor.EndOfBlock,
-                            QtGui.QTextCursor.MoveAnchor)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.EndOfBlock,
+                            QtGui.QTextCursor.MoveMode.MoveAnchor)
 
         cursor.setPosition(self.textEdit.StartOfInput(),
-                           QtGui.QTextCursor.KeepAnchor)
+                           QtGui.QTextCursor.MoveMode.KeepAnchor)
         txt = str(cursor.selectedText())
 
         if len(txt) == 0:
@@ -404,7 +388,7 @@ class Controller(QtCore.QObject):
 
 
         # Move the cursor to the end of the document
-        self.textEdit.moveCursor(QtGui.QTextCursor.End)
+        self.textEdit.moveCursor(QtGui.QTextCursor.MoveOperation.End)
 
         # Clear any existing text format.  We will explicitly set the format
         # later to something else if need be.
@@ -425,14 +409,14 @@ class Controller(QtCore.QObject):
 
         finally:
             # Set the textEdit's cursor to the end of input
-            self.textEdit.moveCursor(QtGui.QTextCursor.End)
+            self.textEdit.moveCursor(QtGui.QTextCursor.MoveOperation.End)
 
     # get the length of a string in pixels bases on our current font
     @staticmethod
     def _GetStringLengthInPixels(cf, string):
         font = cf.font()
         fm = QtGui.QFontMetrics(font)
-        strlen = fm.width(string)
+        strlen = fm.horizontalAdvance(string)
         return strlen
 
     def _CompleteSlot(self):
@@ -443,7 +427,7 @@ class Controller(QtCore.QObject):
         cursor = self.textEdit.textCursor()
         origPos = cursor.position()
         cursor.setPosition(self.textEdit.StartOfInput(),
-                           QtGui.QTextCursor.KeepAnchor)
+                           QtGui.QTextCursor.MoveMode.KeepAnchor)
         text = str(cursor.selectedText())
         tokens = text.split()
         token = ''
@@ -479,11 +463,11 @@ class Controller(QtCore.QObject):
             # how many rows do we need to fit our data
             numRows = (len(completions) // numCols) + 1
 
-            columnWidth = QtGui.QTextLength(QtGui.QTextLength.FixedLength,
+            columnWidth = QtGui.QTextLength(QtGui.QTextLength.Type.FixedLength,
                                             maxLength)
 
             tableFormat = QtGui.QTextTableFormat()
-            tableFormat.setAlignment(QtCore.Qt.AlignLeft)
+            tableFormat.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
             tableFormat.setCellPadding(0)
             tableFormat.setCellSpacing(0)
             tableFormat.setColumnWidthConstraints([columnWidth] * numCols)
@@ -492,7 +476,7 @@ class Controller(QtCore.QObject):
 
             # Make the completion table insertion a single edit block
             cursor.beginEditBlock()
-            cursor.movePosition(QtGui.QTextCursor.End)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
             textTable = cursor.insertTable(numRows, numCols, tableFormat)
 
             completions.sort()
@@ -544,10 +528,10 @@ class Controller(QtCore.QObject):
             cursor = self.textEdit.textCursor()
 
             cursor.setPosition(self.textEdit.StartOfInput(),
-                               QtGui.QTextCursor.MoveAnchor)
+                               QtGui.QTextCursor.MoveMode.MoveAnchor)
 
-            cursor.movePosition(QtGui.QTextCursor.EndOfBlock,
-                                QtGui.QTextCursor.KeepAnchor)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.EndOfBlock,
+                                QtGui.QTextCursor.MoveMode.KeepAnchor)
 
             cursor.removeSelectedText()
             cursor.insertText(line)
@@ -587,9 +571,9 @@ class Controller(QtCore.QObject):
     def _GetInputLine(self):
         cursor = self.textEdit.textCursor()
         cursor.setPosition(self.textEdit.StartOfInput(),
-                           QtGui.QTextCursor.MoveAnchor)
-        cursor.movePosition(QtGui.QTextCursor.EndOfBlock,
-                            QtGui.QTextCursor.KeepAnchor)
+                           QtGui.QTextCursor.MoveMode.MoveAnchor)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.EndOfBlock,
+                            QtGui.QTextCursor.MoveMode.KeepAnchor)
         txt = str(cursor.selectedText())
         return txt
 
@@ -597,10 +581,10 @@ class Controller(QtCore.QObject):
         cursor = self.textEdit.textCursor()
 
         cursor.setPosition(self.textEdit.StartOfInput(),
-                           QtGui.QTextCursor.MoveAnchor)
+                           QtGui.QTextCursor.MoveMode.MoveAnchor)
 
-        cursor.movePosition(QtGui.QTextCursor.EndOfBlock,
-                            QtGui.QTextCursor.KeepAnchor)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.EndOfBlock,
+                            QtGui.QTextCursor.MoveMode.KeepAnchor)
 
         cursor.removeSelectedText()
 
@@ -657,10 +641,9 @@ class View(QtWidgets.QTextEdit):
         self.__startOfInput = 0
         self.setUndoRedoEnabled(False)
         self.setAcceptRichText(False)
-        self.setContextMenuPolicy(QtCore.Qt.NoContextMenu)
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
         self.tripleClickTimer = QtCore.QBasicTimer()
         self.tripleClickPoint = QtCore.QPoint()
-        self._ignoreKeyPresses = True
         self.ResetCharFormat()
 
     def SetStartOfInput(self, position):
@@ -693,12 +676,12 @@ class View(QtWidgets.QTextEdit):
 
     def _MoveCursorToStartOfInput(self, select=False):
         cursor = self.textCursor()
-        anchor = QtGui.QTextCursor.MoveAnchor
+        anchor = QtGui.QTextCursor.MoveMode.MoveAnchor
 
         if (select):
-            anchor = QtGui.QTextCursor.KeepAnchor
+            anchor = QtGui.QTextCursor.MoveMode.KeepAnchor
 
-        cursor.movePosition(QtGui.QTextCursor.End, anchor)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End, anchor)
 
         cursor.setPosition(self.__startOfInput, anchor)
 
@@ -706,11 +689,11 @@ class View(QtWidgets.QTextEdit):
 
     def _MoveCursorToEndOfInput(self, select=False):
         c = self.textCursor()
-        anchor = QtGui.QTextCursor.MoveAnchor
+        anchor = QtGui.QTextCursor.MoveMode.MoveAnchor
         if (select):
-            anchor = QtGui.QTextCursor.KeepAnchor
+            anchor = QtGui.QTextCursor.MoveMode.KeepAnchor
 
-        c.movePosition(QtGui.QTextCursor.End, anchor)
+        c.movePosition(QtGui.QTextCursor.MoveOperation.End, anchor)
         self.setTextCursor(c)
 
     def _WritableCharsToLeftOfCursor(self):
@@ -720,7 +703,7 @@ class View(QtWidgets.QTextEdit):
         app = QtWidgets.QApplication.instance()
 
         # is this a triple click?
-        if ((e.button() & QtCore.Qt.LeftButton) and
+        if ((e.button() & QtCore.Qt.MouseButton.LeftButton) and
              self.tripleClickTimer.isActive() and
              (e.globalPos() - self.tripleClickPoint).manhattanLength() <
               app.startDragDistance() ):
@@ -738,7 +721,7 @@ class View(QtWidgets.QTextEdit):
                     # remove selection up until start of input
                      self._MoveCursorToStartOfInput(False)
                      cursor = self.textCursor()
-                     cursor.setPosition(selEnd, QtGui.QTextCursor.KeepAnchor)
+                     cursor.setPosition(selEnd, QtGui.QTextCursor.MoveMode.KeepAnchor)
                      self.setTextCursor(cursor)
         else:
             super(View, self).mousePressEvent(e)
@@ -756,20 +739,6 @@ class View(QtWidgets.QTextEdit):
         else:
             super(View, self).timerEvent(e)
 
-    def enterEvent(self, e):
-        self._ignoreKeyPresses = False
-
-    def leaveEvent(self, e):
-        self._ignoreKeyPresses = True
-
-    def dragEnterEvent(self, e):
-        self._ignoreKeyPresses = False
-        super(View, self).dragEnterEvent(e)
-
-    def dragLeaveEvent(self, e):
-        self._ignoreKeyPresses = True
-        super(View, self).dragLeaveEvent(e)
-
     def insertFromMimeData(self, source):
         if not self._CursorIsInInputArea():
             self._MoveCursorToEndOfInput()
@@ -782,9 +751,9 @@ class View(QtWidgets.QTextEdit):
             for i in range(len(textLines)):
                 line = textLines[i]
                 cursor = self.textCursor()
-                cursor.movePosition(QtGui.QTextCursor.End)        
+                cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)        
                 cursor.insertText(line)
-                cursor.movePosition(QtGui.QTextCursor.End)        
+                cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)        
                 self.setTextCursor(cursor)
                 if i < len(textLines) - 1:
                     self.returnPressed.emit()
@@ -794,88 +763,84 @@ class View(QtWidgets.QTextEdit):
         Handle user input a key at a time.
         """
 
-        if (self._ignoreKeyPresses):
-            e.ignore()
-            return
-
         key = e.key()
 
-        ctrl = e.modifiers() & QtCore.Qt.ControlModifier
-        alt = e.modifiers() & QtCore.Qt.AltModifier
-        shift = e.modifiers() & QtCore.Qt.ShiftModifier
+        ctrl = e.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
+        alt = e.modifiers() & QtCore.Qt.KeyboardModifier.AltModifier
+        shift = e.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier
 
         cursorInInput = self._CursorIsInInputArea()
         selectionInInput = self._SelectionIsInInputArea()
         hasSelection = self.textCursor().hasSelection()
         canBackspace = self._WritableCharsToLeftOfCursor()
         canEraseSelection = selectionInInput and cursorInInput
-        if key == QtCore.Qt.Key_Backspace:
+        if key == QtCore.Qt.Key.Key_Backspace:
             if (canBackspace and not hasSelection) or canEraseSelection:
                 super(View, self).keyPressEvent(e)
-        elif key == QtCore.Qt.Key_Delete:
+        elif key == QtCore.Qt.Key.Key_Delete:
             if (cursorInInput and not hasSelection) or canEraseSelection:
                 super(View, self).keyPressEvent(e)
-        elif key == QtCore.Qt.Key_Left:
+        elif key == QtCore.Qt.Key.Key_Left:
             pos = self._PositionInInputArea(self.textCursor().position())
             if pos == 0:
                 e.ignore()
             else:
                 super(View, self).keyPressEvent(e)
-        elif key == QtCore.Qt.Key_Right:
+        elif key == QtCore.Qt.Key.Key_Right:
             super(View, self).keyPressEvent(e)
-        elif key == QtCore.Qt.Key_Return or key == QtCore.Qt.Key_Enter:
+        elif key == QtCore.Qt.Key.Key_Return or key == QtCore.Qt.Key.Key_Enter:
             # move cursor to end of line.
             # emit signal to tell controller enter was pressed.
             if not cursorInInput:
                 self._MoveCursorToStartOfInput(False)
             cursor = self.textCursor()
-            cursor.movePosition(QtGui.QTextCursor.EndOfBlock)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.EndOfBlock)
             self.setTextCursor(cursor)
             # emit returnPressed
             self.returnPressed.emit()
 
-        elif (key == QtCore.Qt.Key_Up
-                or key == QtCore.Qt.Key_Down
+        elif (key == QtCore.Qt.Key.Key_Up
+                or key == QtCore.Qt.Key.Key_Down
                 # support Ctrl+P and Ctrl+N for history
                 # navigation along with arrows
-                or (ctrl and (key == QtCore.Qt.Key_P
-                              or key == QtCore.Qt.Key_N))
+                or (ctrl and (key == QtCore.Qt.Key.Key_P
+                              or key == QtCore.Qt.Key.Key_N))
                 # support Ctrl+E/End and Ctrl+A/Home for terminal
                 # style nav. to the ends of the line
-                or (ctrl and (key == QtCore.Qt.Key_A
-                              or key == QtCore.Qt.Key_E))
-                or (key == QtCore.Qt.Key_Home
-                    or key == QtCore.Qt.Key_End)):
+                or (ctrl and (key == QtCore.Qt.Key.Key_A
+                              or key == QtCore.Qt.Key.Key_E))
+                or (key == QtCore.Qt.Key.Key_Home
+                    or key == QtCore.Qt.Key.Key_End)):
             if cursorInInput:
-                if (key == QtCore.Qt.Key_Up or key == QtCore.Qt.Key_P):
+                if (key == QtCore.Qt.Key.Key_Up or key == QtCore.Qt.Key.Key_P):
                     self.requestPrev.emit()
-                if (key == QtCore.Qt.Key_Down or key == QtCore.Qt.Key_N):
+                if (key == QtCore.Qt.Key.Key_Down or key == QtCore.Qt.Key.Key_N):
                     self.requestNext.emit()
-                if (key == QtCore.Qt.Key_A or key == QtCore.Qt.Key_Home):
+                if (key == QtCore.Qt.Key.Key_A or key == QtCore.Qt.Key.Key_Home):
                     self._MoveCursorToStartOfInput(select=shift)
-                if (key == QtCore.Qt.Key_E or key == QtCore.Qt.Key_End):
+                if (key == QtCore.Qt.Key.Key_E or key == QtCore.Qt.Key.Key_End):
                     self._MoveCursorToEndOfInput(select=shift)
                 e.ignore()
             else:
                 super(View, self).keyPressEvent(e)
-        elif key == QtCore.Qt.Key_Tab:
+        elif key == QtCore.Qt.Key.Key_Tab:
             self.AutoComplete()
             e.accept()
-        elif ((ctrl and key == QtCore.Qt.Key_C) or
-              (shift and key == QtCore.Qt.Key_Insert)):
+        elif ((ctrl and key == QtCore.Qt.Key.Key_C) or
+              (shift and key == QtCore.Qt.Key.Key_Insert)):
             # Copy should never move cursor.
             super(View, self).keyPressEvent(e)
-        elif ((ctrl and key == QtCore.Qt.Key_X) or
-              (shift and key == QtCore.Qt.Key_Delete)):
+        elif ((ctrl and key == QtCore.Qt.Key.Key_X) or
+              (shift and key == QtCore.Qt.Key.Key_Delete)):
             # Disallow cut from outside the input area so users don't
             # affect the scrollback buffer.
             if not selectionInInput:
                 e.ignore()
             else:
                 super(View, self).keyPressEvent(e)
-        elif (key == QtCore.Qt.Key_Control or
-              key == QtCore.Qt.Key_Alt or
-              key == QtCore.Qt.Key_Shift):
+        elif (key == QtCore.Qt.Key.Key_Control or
+              key == QtCore.Qt.Key.Key_Alt or
+              key == QtCore.Qt.Key.Key_Shift):
             # Ignore modifier keypresses by themselves so the cursor
             # doesn't jump to the end of input when users begin a
             # key combination.
@@ -895,9 +860,9 @@ class View(QtWidgets.QTextEdit):
             self._MoveCursorToStartOfInput(select)
         else:
             cursor = self.textCursor()
-            anchor = QtGui.QTextCursor.MoveAnchor
+            anchor = QtGui.QTextCursor.MoveMode.MoveAnchor
             if (select):
-                anchor = QtGui.QTextCursor.KeepAnchor
+                anchor = QtGui.QTextCursor.MoveMode.KeepAnchor
             cursor.setPosition(0, anchor)
             self.setTextCursor(cursor)
 
@@ -906,13 +871,13 @@ class View(QtWidgets.QTextEdit):
             self._MoveCursorToEndOfInput(select)
         else:
             cursor = self.textCursor()
-            anchor = QtGui.QTextCursor.MoveAnchor
+            anchor = QtGui.QTextCursor.MoveMode.MoveAnchor
             if (select):
-                anchor = QtGui.QTextCursor.KeepAnchor
+                anchor = QtGui.QTextCursor.MoveMode.KeepAnchor
 
             cursor.setPosition(self.__startOfInput, anchor)
-            cursor.movePosition(QtGui.QTextCursor.Up, anchor)
-            cursor.movePosition(QtGui.QTextCursor.EndOfLine, anchor)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.Up, anchor)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.EndOfLine, anchor)
             self.setTextCursor(cursor)
 
     def MoveCursorToBeginning(self):

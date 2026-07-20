@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 /// \file usdImagingGL/engine.h
@@ -28,6 +11,7 @@
 #define PXR_USD_IMAGING_USD_IMAGING_GL_ENGINE_H
 
 #include "pxr/pxr.h"
+#include "pxr/usdImaging/usdImaging/legacyRenderSettingsSceneIndex.h"
 #include "pxr/usdImaging/usdImagingGL/api.h"
 #include "pxr/usdImaging/usdImagingGL/version.h"
 #include "pxr/usdImaging/usdImaging/version.h"
@@ -38,9 +22,9 @@
 #include "pxr/imaging/cameraUtil/conformWindow.h"
 
 #include "pxr/imaging/hd/driver.h"
-#include "pxr/imaging/hd/engine.h"
+#include "pxr/imaging/hd/noticeBatchingSceneIndex.h"
 #include "pxr/imaging/hd/rprimCollection.h"
-#include "pxr/imaging/hd/pluginRenderDelegateUniqueHandle.h"
+#include "pxr/imaging/hd/pluginRendererUniqueHandle.h"
 
 #include "pxr/imaging/hdx/selectionTracker.h"
 #include "pxr/imaging/hdx/renderSetupTask.h"
@@ -68,12 +52,28 @@
 PXR_NAMESPACE_OPEN_SCOPE
 
 class UsdPrim;
-class HdRenderIndex;
-class HdxTaskController;
 class UsdImagingDelegate;
-class UsdImagingGLLegacyEngine;
+class HdRendererCreateArgsSchema;
+class HdLegacyRenderControlInterface;
 
 TF_DECLARE_WEAK_AND_REF_PTRS(GlfSimpleLightingContext);
+TF_DECLARE_REF_PTRS(UsdImagingSceneIndex);
+TF_DECLARE_REF_PTRS(UsdImagingRootOverridesSceneIndex);
+TF_DECLARE_REF_PTRS(HdCachingSceneIndex);
+TF_DECLARE_REF_PTRS(HdsiLegacyDisplayStyleOverrideSceneIndex);
+TF_DECLARE_REF_PTRS(HdsiPrimTypeAndPathPruningSceneIndex);
+TF_DECLARE_REF_PTRS(HdsiSceneGlobalsSceneIndex);
+TF_DECLARE_REF_PTRS(HdSceneIndexBase);
+TF_DECLARE_REF_PTRS(HdMergingSceneIndex);
+TF_DECLARE_REF_PTRS(HdxTaskControllerSceneIndex);
+TF_DECLARE_REF_PTRS(UsdExecImagingStageSceneIndexInterface);
+
+using UsdStageWeakPtr = TfWeakPtr<class UsdStage>;
+
+namespace UsdImagingGLEngine_Impl
+{
+    using _AppSceneIndicesSharedPtr = std::shared_ptr<struct _AppSceneIndices>;
+}
 
 /// \class UsdImagingGLEngine
 ///
@@ -82,36 +82,69 @@ TF_DECLARE_WEAK_AND_REF_PTRS(GlfSimpleLightingContext);
 class UsdImagingGLEngine
 {
 public:
-
-    // ---------------------------------------------------------------------
-    /// \name Global State
-    /// @{
-    // ---------------------------------------------------------------------
-
-    /// Returns true if Hydra is enabled for GL drawing.
-    USDIMAGINGGL_API
-    static bool IsHydraEnabled();
-
-    /// @}
+    /// Parameters to construct UsdImagingGLEngine.
+    struct Parameters
+    {
+        SdfPath rootPath = SdfPath::AbsoluteRootPath();
+        SdfPathVector excludedPaths;
+        SdfPathVector invisedPaths;
+        SdfPath sceneDelegateID = SdfPath::AbsoluteRootPath();
+        /// An HdDriver, containing the Hgi of your choice, can be optionally passed
+        /// in during construction. This can be helpful if your application creates
+        /// multiple UsdImagingGLEngine's that wish to use the same HdDriver / Hgi.
+        HdDriver driver;
+        /// The \p rendererPluginId argument indicates the renderer plugin that
+        /// Hydra should use. If the empty token is passed in, a default renderer
+        /// plugin will be chosen depending on the value of \p gpuEnabled.
+        TfToken rendererPluginId;
+        /// The \p gpuEnabled argument determines if this instance will allow Hydra
+        /// to use the GPU to produce images.
+        bool gpuEnabled = true;
+        /// \p displayUnloadedPrimsWithBounds draws bounding boxes for unloaded
+        /// prims if they have extents/extentsHint authored.
+        bool displayUnloadedPrimsWithBounds = false;
+        /// \p allowAsynchronousSceneProcessing indicates to constructed hydra
+        /// scene indices that asynchronous processing is allowow. Applications
+        /// should perodically call PollForAsynchronousUpdates on the engine.
+        bool allowAsynchronousSceneProcessing = false;
+        /// \p enableUsdDrawModes enables the UsdGeomModelAPI draw mode
+        /// feature.
+        bool enableUsdDrawModes = true;
+    };
 
     // ---------------------------------------------------------------------
     /// \name Construction
     /// @{
     // ---------------------------------------------------------------------
 
-    /// A HdDriver, containing the Hgi of your choice, can be optionally passed
+    USDIMAGINGGL_API
+    UsdImagingGLEngine(const Parameters &params);
+
+    /// An HdDriver, containing the Hgi of your choice, can be optionally passed
     /// in during construction. This can be helpful if you application creates
     /// multiple UsdImagingGLEngine that wish to use the same HdDriver / Hgi.
+    /// The \p rendererPluginId argument indicates the renderer plugin that
+    /// Hyrda should use. If the empty token is passed in, a default renderer
+    /// plugin will be chosen depending on the value of \p gpuEnabled.
+    /// The \p gpuEnabled argument determines if this instance will allow Hydra
+    /// to use the GPU to produce images.
     USDIMAGINGGL_API
-    UsdImagingGLEngine(const HdDriver& driver = HdDriver());
+    UsdImagingGLEngine(const HdDriver& driver = HdDriver(),
+                       const TfToken& rendererPluginId = TfToken(),
+                       bool gpuEnabled = true);
 
     USDIMAGINGGL_API
     UsdImagingGLEngine(const SdfPath& rootPath,
                        const SdfPathVector& excludedPaths,
-                       const SdfPathVector& invisedPaths=SdfPathVector(),
+                       const SdfPathVector& invisedPaths = SdfPathVector(),
                        const SdfPath& sceneDelegateID =
                                         SdfPath::AbsoluteRootPath(),
-                       const HdDriver& driver = HdDriver());
+                       const HdDriver& driver = HdDriver(),
+                       const TfToken& rendererPluginId = TfToken(),
+                       const bool gpuEnabled = true,
+                       const bool displayUnloadedPrimsWithBounds = false,
+                       const bool allowAsynchronousSceneProcessing = false,
+                       const bool enableUsdDrawModes = true);
 
     // Disallow copies
     UsdImagingGLEngine(const UsdImagingGLEngine&) = delete;
@@ -129,15 +162,15 @@ public:
 
     /// Support for batched drawing
     USDIMAGINGGL_API
-    void PrepareBatch(const UsdPrim& root, 
+    void PrepareBatch(const UsdPrim& root,
                       const UsdImagingGLRenderParams& params);
     USDIMAGINGGL_API
-    void RenderBatch(const SdfPathVector& paths, 
+    void RenderBatch(const SdfPathVector& paths,
                      const UsdImagingGLRenderParams& params);
 
     /// Entry point for kicking off a render
     USDIMAGINGGL_API
-    void Render(const UsdPrim& root, 
+    void Render(const UsdPrim& root,
                 const UsdImagingGLRenderParams &params);
 
     /// Returns true if the resulting image is fully converged.
@@ -146,7 +179,7 @@ public:
     bool IsConverged() const;
 
     /// @}
-    
+
     // ---------------------------------------------------------------------
     /// \name Root Transform and Visibility
     /// @{
@@ -166,7 +199,7 @@ public:
     /// \name Camera State
     /// @{
     // ---------------------------------------------------------------------
-    
+
     /// Scene camera API
     /// Set the scene camera path to use for rendering.
     USDIMAGINGGL_API
@@ -189,7 +222,7 @@ public:
     /// because the latter is only available in C++17 or later.
     USDIMAGINGGL_API
     void SetOverrideWindowPolicy(
-        const std::pair<bool, CameraUtilConformWindowPolicy> &policy);
+        const std::optional<CameraUtilConformWindowPolicy> &policy);
 
     /// Set the size of the render buffers baking the AOVs.
     /// GUI applications should set this to the size of the window.
@@ -212,17 +245,12 @@ public:
     void SetWindowPolicy(CameraUtilConformWindowPolicy policy);
 
     /// Free camera API
-    /// Set camera framing state directly (without pointing to a camera on the 
+    /// Set camera framing state directly (without pointing to a camera on the
     /// USD stage). The projection matrix is expected to be pre-adjusted for the
     /// window policy.
     USDIMAGINGGL_API
     void SetCameraState(const GfMatrix4d& viewMatrix,
                         const GfMatrix4d& projectionMatrix);
-
-    /// Helper function to extract camera and viewport state from opengl and
-    /// then call SetCameraState and SetRenderViewport
-    USDIMAGINGGL_API
-    void SetCameraStateFromOpenGL();
 
     /// @}
 
@@ -230,11 +258,6 @@ public:
     /// \name Light State
     /// @{
     // ---------------------------------------------------------------------
-    
-    /// Helper function to extract lighting state from opengl and then
-    /// call SetLights.
-    USDIMAGINGGL_API
-    void SetLightingStateFromOpenGL();
 
     /// Copy lighting state from another lighting context.
     USDIMAGINGGL_API
@@ -256,8 +279,8 @@ public:
     /// @{
     // ---------------------------------------------------------------------
 
-    /// Sets (replaces) the list of prim paths that should be included in 
-    /// selection highlighting. These paths may include root paths which will 
+    /// Sets (replaces) the list of prim paths that should be included in
+    /// selection highlighting. These paths may include root paths which will
     /// be expanded internally.
     USDIMAGINGGL_API
     void SetSelected(SdfPathVector const& paths);
@@ -278,17 +301,113 @@ public:
     void SetSelectionColor(GfVec4f const& color);
 
     /// @}
-    
+
     // ---------------------------------------------------------------------
     /// \name Picking
     /// @{
     // ---------------------------------------------------------------------
-    
+
+    /// Pick result
+    ///
+    /// This includes the necessary information to identify the picked instance.
+    ///
+    /// That is, if the picked prim is instanced by a point instancer, the
+    /// instancer path and the instance corresponding to the picked instance
+    /// are reported in the instancer context. If a picked prim is USD native
+    /// instance, the USD proxy path is used instead for the hitPrimPath.
+    /// Note that nested scenarios are supported. If a point instancer itself
+    /// is a native instance, its USD proxy path is reported in the instancer
+    /// context.
+    ///
+    struct IntersectionResult
+    {
+        /// Intersection point in world space (that is, given projectionMatrix
+        /// and viewMatrix are factored out of the result when picking is
+        /// using, for example, the depth buffer).
+        GfVec3d hitPoint;
+        /// Normal at intersection point in world space.
+        GfVec3d hitNormal;
+        /// Path to picked gprim on the USD stage.
+        /// This is a USD proxy path.
+        SdfPath hitPrimPath;
+        /// \deprecated instancerContext has more complete information.
+        SdfPath hitInstancerPath;
+        /// \deprecated instancerContext has more complete information.
+        int hitInstanceIndex;
+        /// Paths to nested point instancers and instance indices identifying
+        /// the picked instance. This is in order from the outer most to
+        /// the inner most point instancer. The paths are USD proxy paths
+        /// to the relevant point instancers on the USD stage. Hydra instancers
+        /// created to realize USD native instancing are not included.
+        HdInstancerContext instancerContext;
+    };
+
+    using IntersectionResultVector = std::vector<IntersectionResult>;
+
+    /// Pick params
+    struct PickParams
+    {
+        /// Resolve mode
+        ///
+        /// If resolve mode is set to resolveDeep, picking uses Deep Selection
+        /// to gather all paths within the given frustum even if obscured by
+        /// other visible objects.
+        /// If resolve mode is set to resolveNearestToCenter, picking renders
+        /// to a customized depth buffer to find all approximate points of
+        /// intersection. This is less accurate than implicit methods or
+        /// rendering with GL_SELECT, but leverages any data already cached
+        /// in the renderer.
+        ///
+        /// The tokens are defined in HdxPickResolveMode in hdx/pickTask.h.
+        ///
+        TfToken resolveMode;
+    };
+
+    /// Perform picking by finding the intersection of objects in the scene with
+    /// a given frustum.
+    ///
+    /// Depending on the resolve mode it may find all objects intersecting the
+    /// frustum or the closest point of intersection within the frustum.
+    ///
+    USDIMAGINGGL_API
+    bool TestIntersection(
+        const PickParams& pickParams,
+        const GfMatrix4d& viewMatrix,
+        const GfMatrix4d& projectionMatrix,
+        const UsdPrim& root,
+        const UsdImagingGLRenderParams& params,
+        IntersectionResultVector* outResults);
+
+    /// Decodes a pick result given hydra prim ID/instance ID (like you'd get
+    /// from an ID render), where ID is represented as a vec4 color.
+    USDIMAGINGGL_API
+    bool DecodeIntersection(
+        unsigned char const primIdColor[4],
+        unsigned char const instanceIdColor[4],
+        SdfPath *outHitPrimPath = NULL,
+        SdfPath *outHitInstancerPath = NULL,
+        int *outHitInstanceIndex = NULL,
+        HdInstancerContext *outInstancerContext = NULL);
+
+    /// Decodes a pick result given hydra prim ID/instance ID (like you'd get
+    /// from an ID render), where ID is represented as a int.
+    USDIMAGINGGL_API
+    bool DecodeIntersection(
+        int primIdx,
+        int instanceIdx,
+        SdfPath *outHitPrimPath = NULL,
+        SdfPath *outHitInstancerPath = NULL,
+        int *outHitInstanceIndex = NULL,
+        HdInstancerContext *outInstancerContext = NULL);
+
+    /// \deprecated Please use the override of TestIntersection that takes
+    ///
+    /// PickParams and returns an IntersectionResultVector instead!
     /// Finds closest point of intersection with a frustum by rendering.
-    ///	
+    ///
     /// This method uses a PickRender and a customized depth buffer to find an
     /// approximate point of intersection by rendering. This is less accurate
-    /// than implicit methods or rendering with GL_SELECT, but leverages any 
+    /// than implicit methods or rendering with GL_SELECT, but leverages any
     /// data already cached in the renderer.
     ///
     /// Returns whether a hit occurred and if so, \p outHitPoint will contain
@@ -313,20 +432,9 @@ public:
         SdfPath *outHitInstancerPath = NULL,
         int *outHitInstanceIndex = NULL,
         HdInstancerContext *outInstancerContext = NULL);
-
-    /// Decodes a pick result given hydra prim ID/instance ID (like you'd get
-    /// from an ID render).
-    USDIMAGINGGL_API
-    bool DecodeIntersection(
-        unsigned char const primIdColor[4],
-        unsigned char const instanceIdColor[4],
-        SdfPath *outHitPrimPath = NULL,
-        SdfPath *outHitInstancerPath = NULL,
-        int *outHitInstanceIndex = NULL,
-        HdInstancerContext *outInstancerContext = NULL);
-
-    /// @}
     
+    /// @}
+
     // ---------------------------------------------------------------------
     /// \name Renderer Plugin Management
     /// @{
@@ -336,9 +444,19 @@ public:
     USDIMAGINGGL_API
     static TfTokenVector GetRendererPlugins();
 
-    /// Return the user-friendly description of a renderer plugin.
+    /// Return the user-friendly name of a renderer plugin.
     USDIMAGINGGL_API
     static std::string GetRendererDisplayName(TfToken const &id);
+
+    /// Return the user-friendly name of the Hgi implementation.
+    /// For example: OpenGL, Metal, Vulkan. This is only available
+    /// if a render plugin was set and it uses Hgi.
+    USDIMAGINGGL_API
+    std::string GetRendererHgiDisplayName() const;
+
+    /// Return if the GPU is enabled and can be used for any rendering tasks.
+    USDIMAGINGGL_API
+    bool GetGPUEnabled() const;
 
     /// Return the id of the currently used renderer plugin.
     USDIMAGINGGL_API
@@ -350,9 +468,9 @@ public:
     bool SetRendererPlugin(TfToken const &id);
 
     /// @}
-    
+
     // ---------------------------------------------------------------------
-    /// \name AOVs and Renderer Settings
+    /// \name AOVs
     /// @{
     // ---------------------------------------------------------------------
 
@@ -364,9 +482,22 @@ public:
     USDIMAGINGGL_API
     bool SetRendererAov(TfToken const& id);
 
+    /// Set the current renderer AOVs to a list of \p ids.
+    USDIMAGINGGL_API
+    bool SetRendererAovs(TfTokenVector const &ids);
+
     /// Returns an AOV texture handle for the given token.
     USDIMAGINGGL_API
     HgiTextureHandle GetAovTexture(TfToken const& name) const;
+
+    /// Returns the AOV render buffer for the given token.
+    USDIMAGINGGL_API
+    HdRenderBuffer* GetAovRenderBuffer(TfToken const& name) const;
+
+    // ---------------------------------------------------------------------
+    /// \name Render Settings (Legacy)
+    /// @{
+    // ---------------------------------------------------------------------
 
     /// Returns the list of renderer settings.
     USDIMAGINGGL_API
@@ -380,6 +511,45 @@ public:
     USDIMAGINGGL_API
     void SetRendererSetting(TfToken const& id,
                             VtValue const& value);
+
+    /// @}
+
+    // ---------------------------------------------------------------------
+    /// \name Scene-defined Render Pass and Render Settings
+    /// \note Support is WIP.
+    /// @{
+    // ---------------------------------------------------------------------
+
+    /// Returns the active render pass prim path by querying the terminal scene
+    /// index. Returns an empty path if none was found.
+    USDIMAGINGGL_API
+    SdfPath GetActiveRenderPassPrimPath() const;
+
+    /// Returns the active render settings prim path by querying the terminal
+    /// scene index. Returns an empty path if none was found.
+    USDIMAGINGGL_API
+    SdfPath GetActiveRenderSettingsPrimPath() const;
+
+    /// Utility method to query available render settings prims.
+    USDIMAGINGGL_API
+    static SdfPathVector
+    GetAvailableRenderSettingsPrimPaths(UsdPrim const &root);
+
+    /// Set active render pass prim to use to drive rendering.
+    USDIMAGINGGL_API
+    void SetActiveRenderPassPrimPath(SdfPath const &);
+
+    /// Set active render settings prim to use to drive rendering.
+    USDIMAGINGGL_API
+    void SetActiveRenderSettingsPrimPath(SdfPath const &);
+
+
+    /// @}
+
+    // ---------------------------------------------------------------------
+    /// \name Presentation
+    /// @{
+    // ---------------------------------------------------------------------
 
     /// Enable / disable presenting the render to bound framebuffer.
     /// An application may choose to manage the AOVs that are rendered into
@@ -396,6 +566,27 @@ public:
     void SetPresentationOutput(TfToken const &api, VtValue const &framebuffer);
 
     /// @}
+
+    // ---------------------------------------------------------------------
+    /// \name Renderer Command API
+    /// @{
+    // ---------------------------------------------------------------------
+
+    /// Return command deescriptors for commands supported by the active
+    /// render delegate.
+    ///
+    USDIMAGINGGL_API
+    HdCommandDescriptors GetRendererCommandDescriptors() const;
+
+    /// Invokes command on the active render delegate. If successful, returns
+    /// \c true, returns \c false otherwise. Note that the command will not
+    /// succeeed if it is not among those returned by
+    /// GetRendererCommandDescriptors() for the same active render delegate.
+    ///
+    USDIMAGINGGL_API
+    bool InvokeRendererCommand(
+            const TfToken &command,
+            const HdCommandArgs &args = HdCommandArgs()) const;
 
     // ---------------------------------------------------------------------
     /// \name Control of background rendering threads.
@@ -441,10 +632,27 @@ public:
     /// @{
     // ---------------------------------------------------------------------
 
-    /// Set \p id to one of the HdxColorCorrectionTokens.
+    /// Set \p ccType to one of the HdxColorCorrectionTokens:
+    /// {disabled, sRGB, openColorIO}
+    ///
+    /// If 'openColorIO' is used, \p ocioDisplay, \p ocioView, \p ocioColorSpace
+    /// and \p ocioLook are options the client may supply to configure OCIO.
+    /// \p ocioColorSpace refers to the input (source) color space.
+    /// The default value is substituted if an option isn't specified.
+    /// You can find the values for these strings inside the
+    /// profile/config .ocio file. For example:
+    ///
+    ///  displays:
+    ///    rec709g22:
+    ///      !<View> {name: studio, colorspace: linear, looks: studio_65_lg2}
+    ///
     USDIMAGINGGL_API
     void SetColorCorrectionSettings(
-        TfToken const& id);
+        TfToken const& ccType,
+        TfToken const& ocioDisplay = {},
+        TfToken const& ocioView = {},
+        TfToken const& ocioColorSpace = {},
+        TfToken const& ocioLook = {});
 
     /// @}
 
@@ -459,7 +667,7 @@ public:
 
     /// Returns render statistics.
     ///
-    /// The contents of the dictionary will depend on the current render 
+    /// The contents of the dictionary will depend on the current render
     /// delegate.
     ///
     USDIMAGINGGL_API
@@ -478,20 +686,42 @@ public:
     Hgi* GetHgi();
 
     /// @}
-    
+
+    // ---------------------------------------------------------------------
+    /// \name Asynchronous
+    /// @{
+    // ---------------------------------------------------------------------
+
+    /// If \p allowAsynchronousSceneProcessing is true within the Parameters
+    /// provided to the UsdImagingGLEngine constructor, an application can
+    /// periodically call this from the main thread.
+    ///
+    /// A return value of true indicates that the scene has changed and the
+    /// render should be updated.
+    USDIMAGINGGL_API
+    bool PollForAsynchronousUpdates() const;
+
+    /// @}
+
+
+    // ---------------------------------------------------------------------
+    /// \name Miscellaneous
+    /// @{
+    // ---------------------------------------------------------------------
+
+    /// Returns true if using the UsdImaging scene index.
+    USDIMAGINGGL_API
+    static bool UseUsdImagingSceneIndex();
+    /// @}
+
 protected:
 
     /// Open some protected methods for whitebox testing.
     friend class UsdImagingGL_UnitTestGLDrawing;
 
-    /// Returns the render index of the engine, if any.  This is only used for
-    /// whitebox testing.
-    USDIMAGINGGL_API
-    HdRenderIndex *_GetRenderIndex() const;
-
     USDIMAGINGGL_API
     void _Execute(const UsdImagingGLRenderParams &params,
-                  HdTaskSharedPtrVector tasks);
+                  const SdfPathVector &taskPaths);
 
     USDIMAGINGGL_API
     bool _CanPrepare(const UsdPrim& root);
@@ -502,6 +732,23 @@ protected:
 
     USDIMAGINGGL_API
     void _PrepareRender(const UsdImagingGLRenderParams& params);
+
+    USDIMAGINGGL_API
+    void _SetActiveRenderSettingsPrimFromStageMetadata(UsdStageWeakPtr stage);
+
+    USDIMAGINGGL_API
+    void _SetSceneGlobalsCurrentFrame(UsdTimeCode const &time);
+
+    USDIMAGINGGL_API
+    void _UpdateDomeLightCameraVisibility();
+
+    using BBoxVector = std::vector<GfBBox3d>;
+
+    USDIMAGINGGL_API
+    void _SetBBoxParams(
+        const BBoxVector& bboxes,
+        const GfVec4f& bboxLineColor,
+        float bboxLineDashSize);
 
     // Create a hydra collection given root paths and render params.
     // Returns true if the collection was updated.
@@ -517,58 +764,69 @@ protected:
                           TfTokenVector *renderTags);
 
     USDIMAGINGGL_API
-    void _InitializeHgiIfNecessary();
-
-    USDIMAGINGGL_API
-    void _SetRenderDelegateAndRestoreState(
-        HdPluginRenderDelegateUniqueHandle &&);
-
-    USDIMAGINGGL_API
-    void _SetRenderDelegate(HdPluginRenderDelegateUniqueHandle &&);
-
-    USDIMAGINGGL_API
-    SdfPath _ComputeControllerPath(const HdPluginRenderDelegateUniqueHandle &);
+    SdfPath _ComputeControllerPath(const TfToken &pluginId);
 
     USDIMAGINGGL_API
     static TfToken _GetDefaultRendererPluginId();
 
+    /// Get a direct pointer to the scene delegate.
+    /// \deprecated Existing instances of this call will be replaced with new
+    ///             APIs on this class, to support multiplexing between the
+    ///             scene delegate and scene index. This API is scheduled for
+    ///             deletion.
     USDIMAGINGGL_API
     UsdImagingDelegate *_GetSceneDelegate() const;
 
-    USDIMAGINGGL_API
-    HdEngine *_GetHdEngine();
-
-    USDIMAGINGGL_API
-    HdxTaskController *_GetTaskController() const;
-
-    USDIMAGINGGL_API
-    bool _IsUsingLegacyImpl() const;
-
+    /// \deprecated Hydra 1.0
     USDIMAGINGGL_API
     HdSelectionSharedPtr _GetSelection() const;
 
+    USDIMAGINGGL_API
+    HdContainerDataSourceHandle
+    _GetSceneIndexCreateArgs(
+        HdRendererPluginHandle const &plugin);
+
+    USDIMAGINGGL_API
+    HdContainerDataSourceHandle
+    _GetSceneIndexCreateArgsFromLegacyRenderControl();
+
+    // Create UsdImagingStageSceneIndex and subsequent scene indices.
+    USDIMAGINGGL_API
+    HdSceneIndexBaseRefPtr
+    _CreateUsdImagingSceneIndices(HdContainerDataSourceHandle const &inputArgs);
+
+    // Create the merging scene index and all subsequent filtering scene index
+    // and the renderer fed by those.
+    USDIMAGINGGL_API
+    void
+    _CreateSceneIndexChainAndRenderer(
+        HdContainerDataSourceHandle const &sceneIndexCreateArgs,
+        HdRendererPluginHandle const &plugin,
+        const HdRendererCreateArgsSchema &rendererCreateArgs);
+
+    Hgi *
+    _GetOrCreateHgi();
+
 protected:
+    // The Hgi used by the renderer.
+    // It is either provided by the user or the Hgi::CreatePlatformDefaultHgi().
+    Hgi * _hgi;
 
-// private:
-    // Note that any of the fields below might become private
-    // in the future and subclasses should use the above getters
-    // to access them instead.
-
-    HgiUniquePtr _hgi;
-    // Similar for HdDriver.
-    HdDriver _hgiDriver;
+    // Result of Hgi::CreatePlatformDefaultHgi() if needed.
+    HgiUniquePtr _defaultHgi;
 
     VtValue _userFramebuffer;
 
 protected:
-    HdPluginRenderDelegateUniqueHandle _renderDelegate;
-    std::unique_ptr<HdRenderIndex> _renderIndex;
+    bool _displayUnloadedPrimsWithBounds;
+    bool _gpuEnabled;
+
+    HdPluginRendererUniqueHandle _renderer; // Hydra 2.0
+    HdxTaskControllerSceneIndexRefPtr _taskControllerSceneIndex; // Hydra 2.0
 
     SdfPath const _sceneDelegateId;
 
-    std::unique_ptr<HdxTaskController> _taskController;
-
-    HdxSelectionTrackerSharedPtr _selTracker;
+    HdxSelectionTrackerSharedPtr _selTracker; // Hydra 1.0
     HdRprimCollection _renderCollection;
     HdRprimCollection _intersectCollection;
 
@@ -576,26 +834,55 @@ protected:
 
     // Data we want to live across render plugin switches:
     GfVec4f _selectionColor;
+    bool _domeLightCameraVisibility;
 
     SdfPath _rootPath;
     SdfPathVector _excludedPrimPaths;
     SdfPathVector _invisedPrimPaths;
     bool _isPopulated;
 
-    // An implementation of much of the engine functionality that doesn't
-    // invoke any of the advanced Hydra features.  It is kept around for 
-    // backwards compatibility and may one day be deprecated.  Most of the 
-    // time we expect this to be null.  When it is not null, none of the other
-    // member variables of this class are used.
-    std::unique_ptr<UsdImagingGLLegacyEngine> _legacyImpl;
-
 private:
+    HdSceneIndexBaseRefPtr _GetTerminalSceneIndex() const;
+
+    HdLegacyRenderControlInterface * _GetLegacyRenderControl() const;
+
+    HdSceneIndexBaseRefPtr
+    _AppendOverridesSceneIndices(
+        const HdSceneIndexBaseRefPtr &inputScene);
+
+    UsdImagingGLEngine_Impl::_AppSceneIndicesSharedPtr _appSceneIndices;
+
+    bool _CreateSceneIndicesAndRenderer(
+        HdRendererPluginHandle const &plugin,
+        const HdRendererCreateArgsSchema &rendererCreateArgs);
+
     void _DestroyHydraObjects();
 
-    std::unique_ptr<UsdImagingDelegate> _sceneDelegate;
-    std::unique_ptr<HdEngine> _engine;
-};
+    SdfPath _GetInstancerForPrim(const SdfPath &sceneIndexPath) const;
 
+    // Note that we'll only ever use one of _sceneIndex/_sceneDelegate
+    // at a time.
+    UsdExecImagingStageSceneIndexInterfaceRefPtr _execStageSceneIndex;
+    HdNoticeBatchingSceneIndexRefPtr _noticeBatchingStageSceneIndex;
+    UsdImagingRootOverridesSceneIndexRefPtr _rootOverridesSceneIndex;
+    UsdImagingLegacyRenderSettingsSceneIndexRefPtr _legacyRenderSettingsSceneIndex;
+    HdsiLegacyDisplayStyleOverrideSceneIndexRefPtr _displayStyleSceneIndex;
+    HdsiPrimTypeAndPathPruningSceneIndexRefPtr _lightPruningSceneIndex;
+    // State of the _lightPruningSceneIndex.
+    bool _lightPruningSceneIndexEnableSceneLights;
+
+    UsdImagingSceneIndexRefPtr _usdImagingSceneIndex;
+
+    HdMergingSceneIndexRefPtr _mergingSceneIndex;
+    HdCachingSceneIndexRefPtr _cachingSceneIndex;
+    HdSceneIndexBaseRefPtr _terminalSceneIndex;
+
+    /* Hydra 1.0 */
+    std::unique_ptr<UsdImagingDelegate> _sceneDelegate;
+
+    bool _allowAsynchronousSceneProcessing = false;
+    bool _enableUsdDrawModes = true;
+};
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

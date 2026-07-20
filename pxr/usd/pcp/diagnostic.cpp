@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -59,12 +42,12 @@ _GetString(bool b)
 }
 
 typedef std::map<PcpNodeRef, int> _NodeToStrengthOrderMap;
-typedef std::map<PcpNodeRef, SdfPrimSpecHandleVector> _NodeToPrimSpecsMap;
+typedef std::map<PcpNodeRef, SdfSiteVector> _NodeToPrimSpecSitesMap;
 
 std::string Pcp_Dump(
     const PcpNodeRef& node,
     const _NodeToStrengthOrderMap& nodeToStrengthOrder,
-    const _NodeToPrimSpecsMap& nodeToPrimSpecs,
+    const _NodeToPrimSpecSitesMap &nodeToPrimSpecSites,
     bool includeInheritOriginInfo,
     bool includeMaps)
 {
@@ -124,6 +107,8 @@ std::string Pcp_Dump(
         node.GetNamespaceDepth());
     s += TfStringPrintf("    Depth below introduction: %d\n", 
         node.GetDepthBelowIntroduction());
+    s += TfStringPrintf("    Is due to ancestor:       %s\n", 
+        _GetString(node.IsDueToAncestor()));
     s += TfStringPrintf("    Permission:               %s\n",
         TfEnum::GetDisplayName(node.GetPermission()).c_str());
     s += TfStringPrintf("    Is restricted:            %s\n", 
@@ -132,32 +117,32 @@ std::string Pcp_Dump(
         _GetString(node.IsInert()));
     s += TfStringPrintf("    Contribute specs:         %s\n",
         _GetString(node.CanContributeSpecs()));
+    s += TfStringPrintf("        Restricted at depth:  %zu\n",
+        node.GetSpecContributionRestrictedDepth());
     s += TfStringPrintf("    Has specs:                %s\n",
         _GetString(node.HasSpecs()));
     s += TfStringPrintf("    Has symmetry:             %s\n",
         _GetString(node.HasSymmetry()));
 
-    const SdfPrimSpecHandleVector* specs =
-        TfMapLookupPtr(nodeToPrimSpecs, node);
-    if (specs) {
+    const SdfSiteVector* sites =
+        TfMapLookupPtr(nodeToPrimSpecSites, node);
+    if (sites) {
         s += "    Prim stack:\n";
-        TF_FOR_ALL(primIt, *specs) {
-            const SdfPrimSpecHandle& primSpec = *primIt;
+        for(const SdfSite& site : *sites) {
             std::string layerPath;
             SdfLayer::FileFormatArguments args;
-            SdfLayer::SplitIdentifier( primSpec->GetLayer()->GetIdentifier(),
+            SdfLayer::SplitIdentifier( site.layer->GetIdentifier(),
                                        &layerPath, &args );
             std::string basename = TfGetBaseName(layerPath);
             s += TfStringPrintf("      <%s> %s - @%s@\n",
-                                primSpec->GetPath().GetText(),
+                                site.path.GetText(),
                                 basename.c_str(),
-                                primSpec->GetLayer()->GetIdentifier().c_str());
+                                site.layer->GetIdentifier().c_str());
         }
     }
-
     TF_FOR_ALL(childIt, Pcp_GetChildrenRange(node)) {
         s += Pcp_Dump(
-            *childIt, nodeToStrengthOrder, nodeToPrimSpecs,
+            *childIt, nodeToStrengthOrder, nodeToPrimSpecSites,
             includeInheritOriginInfo, includeMaps);
     }
     s += "\n";
@@ -193,7 +178,7 @@ std::string PcpDump(
 
     _Collector c(rootNode);
     return Pcp_Dump(
-        rootNode, c.nodeToStrengthMap, _NodeToPrimSpecsMap(), 
+        rootNode, c.nodeToStrengthMap, _NodeToPrimSpecSitesMap(), 
         includeInheritOriginInfo, includeMaps);
 }
 
@@ -207,21 +192,43 @@ std::string PcpDump(
     }
 
     _NodeToStrengthOrderMap nodeToIndexMap;
-    _NodeToPrimSpecsMap nodeToSpecsMap;
+    _NodeToPrimSpecSitesMap nodeToSpecSitesMap;
     {
         int nodeIdx = 0;
         for (const PcpNodeRef &node: primIndex.GetNodeRange()) {
             nodeToIndexMap[node] = nodeIdx++;
         }
 
-        TF_FOR_ALL(it, primIndex.GetPrimRange()) {
-            const SdfPrimSpecHandle prim = SdfGetPrimAtPath(*it);
-            nodeToSpecsMap[it.base().GetNode()].push_back(prim);
+        if (primIndex.IsUsd()) {
+            // USD mode doesn't cache a prim stack and prim ranges so
+            // we have to iterate through all nodes again to gather
+            // prim spec sites.
+            for (const PcpNodeRef &node: primIndex.GetNodeRange()) {
+                if (!node.HasSpecs() || !node.CanContributeSpecs()) {
+                    continue;
+                }
+
+                const SdfLayerRefPtrVector &layers = 
+                    node.GetLayerStack()->GetLayers();
+                for (const SdfLayerRefPtr &layer : layers) {
+                    if (!layer->HasSpec(node.GetPath())) {
+                        continue;
+                    }
+                    nodeToSpecSitesMap[node].emplace_back(
+                        layer, node.GetPath());
+                }
+            }
+        } else {
+            TF_FOR_ALL(it, primIndex.GetPrimRange()) {
+                const SdfPrimSpecHandle prim = SdfGetPrimAtPath(*it);
+                nodeToSpecSitesMap[it.base().GetNode()].emplace_back(
+                    it->layer, it->path);
+            }
         }
     }
 
     return Pcp_Dump(
-        primIndex.GetRootNode(), nodeToIndexMap, nodeToSpecsMap,
+        primIndex.GetRootNode(), nodeToIndexMap, nodeToSpecSitesMap,
         includeInheritOriginInfo, includeMaps);
 }
 
@@ -250,7 +257,7 @@ _WriteGraph(
 
     bool hasSpecs = false;
     if (node.CanContributeSpecs()) {
-        hasSpecs = PcpComposeSiteHasPrimSpecs(node);
+        hasSpecs = PcpComposeSiteHasSpecs(node);
     }
 
     std::vector<std::string> status;
@@ -272,17 +279,26 @@ _WriteGraph(
     if (!node.CanContributeSpecs()) {
         nodeDesc += "\\nCANNOT contribute specs";
     }
-    nodeDesc += TfStringPrintf("\\ndepth: %i", node.GetNamespaceDepth());
+    nodeDesc += TfStringPrintf(
+        "\\ndepth (below intro): %i (%i)", 
+        node.GetNamespaceDepth(), node.GetDepthBelowIntroduction());
 
     std::string nodeStyle = (hasSpecs ? "solid" : "dotted");
     if (nodesToHighlight.count(node) != 0) {
         nodeStyle += ", filled";
     }
-    
+
+    std::string nodeSite = [&]() {
+        std::ostringstream stream;
+        stream << PcpIdentifierFormatBaseName << node.GetLayerStack()
+               << "\\n" << "<" << node.GetPath() << ">";
+        return stream.str();
+    }();
+        
     out << TfStringPrintf(
         "\t%zu [label=\"%s (%i)\\n%s\", shape=\"box\", style=\"%s\"];\n",
         size_t(node.GetUniqueIdentifier()),
-        Pcp_FormatSite(node.GetSite()).c_str(),
+        nodeSite.c_str(),
         count,
         nodeDesc.c_str(),
         nodeStyle.c_str());
@@ -558,7 +574,7 @@ private:
             const size_t numSpacesPerIndent = 4;
             const std::string indentation(indent * numSpacesPerIndent, ' ');
             const std::string finalMsg =
-                TfStringReplace(msg, "\n", "\n" + indentation);
+                TfStringReplace(TfStringTrim(msg), "\n", "\n" + indentation);
 
             // Append output.
             outputBuffer.push_back(indentation + finalMsg + "\n");
@@ -627,11 +643,15 @@ private:
 
             std::stringstream ss;
 
+            const bool includeInheritOriginInfo = true;
+            const bool includeMaps = 
+                TfDebug::IsEnabled(PCP_PRIM_INDEX_GRAPHS_MAPPINGS);
+
             _WriteGraph(
                 ss, 
                 currentIndex.index->GetRootNode(),
-                /* includeInheritOriginInfo = */ true,
-                /* includeMaps = */ false, 
+                includeInheritOriginInfo,
+                includeMaps,
                 currentPhase.nodesToHighlight);
     
             currentIndex.dotGraph = ss.str();
@@ -893,6 +913,73 @@ Pcp_IndexingMsg(PcpPrimIndex const *index,
 
     Pcp_NodeSet nodes { a1, a2 };
     _outputManager->Msg(index, std::move(msg), nodes);
+}
+
+void
+Pcp_CheckConsistency(const PcpPrimIndex& primIndex)
+{
+#define _VERIFY_NODE(node, cond, msg)                      \
+    TF_VERIFY(                                             \
+        cond, msg " (node %s in <%s>)",                    \
+        TfStringify(node.GetSite()).c_str(),               \
+        primIndex.GetPath().GetText());
+
+    // Verify that all descendants of a culled node in the prim index
+    // are also marked as culled.
+    for (PcpNodeRange r = primIndex.GetNodeRange();
+         r.first != r.second; /* nothing */) {
+
+        PcpNodeRef n = *r.first;
+        if (n.IsCulled()) {
+            for (PcpNodeRef n2 : primIndex.GetNodeSubtreeRange(n)) {
+                _VERIFY_NODE(
+                    n2, n2.IsCulled(),
+                    "Descendant of culled node must also be culled");
+            }
+            r.first.MoveToNextSubtree();
+        }
+        else {
+            ++r.first;
+        }
+    }
+
+    // Verify that the transitive dependency flags on each node are
+    // correct by walking each node's ancestor chain. This code was
+    // previously used in PcpClassifyNodeDependency but was replaced with
+    // the per-node cached dependency flags.
+    auto classifyDependency = [](const PcpNodeRef& node) {
+        bool anyDirect = false;
+        bool anyAncestral = false;
+        for (PcpNodeRef p = node; p.GetParentNode(); p = p.GetParentNode()) {
+            // For propagated specializes nodes, we want to continue the
+            // traversal from its origin to pick up dependency information
+            // from the site where the arc was introduced.
+            if (Pcp_IsPropagatedSpecializesNode(p)) {
+                p = p.GetOriginNode();
+            }
+
+            if (p.IsDueToAncestor()) {
+                anyAncestral = true;
+            } else {
+                anyDirect = true;
+            }
+            if (anyAncestral && anyDirect) {
+                break;
+            }
+        }
+        return std::make_pair(anyDirect, anyAncestral);
+    };
+    
+    for (PcpNodeRef n : primIndex.GetNodeRange()) {
+        auto [anyDirect, anyAncestral] = classifyDependency(n);
+        _VERIFY_NODE(
+            n, anyDirect == n.HasTransitiveDirectDependency(),
+            "Incorrect transitive direct dep flag");
+
+        _VERIFY_NODE(
+            n, anyAncestral == n.HasTransitiveAncestralDependency(),
+            "Incorrect transitive ancestral dep flag");
+    }
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

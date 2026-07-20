@@ -1,14 +1,14 @@
-Loading @TrickyMultipleRelocations4/root.sdf@
+Loading @TrickyMultipleRelocations4/root.usda@
 
 ------------------------------------------------------------------------
 Layer Stack:
-     root.sdf
+     root.usda
 
 ------------------------------------------------------------------------
 Results for composing </SymRig>
 
 Prim Stack:
-    root.sdf             /SymRig
+    root.usda            /SymRig
 
 Child names:
      ['Leg_bone']
@@ -17,16 +17,30 @@ Child names:
 Results for composing </SymRig/Leg_bone>
 
 Prim Stack:
-    root.sdf             /SymRig/Leg_bone
+    root.usda            /SymRig/Leg_bone
 
 Child names:
      ['Knee_bone']
+
+Property names:
+     ['bones']
+
+Property stacks:
+/SymRig/Leg_bone.bones:
+    root.usda            /SymRig/Leg_bone.bones
+
+Relationship targets:
+/SymRig/Leg_bone.bones:
+    /SymRig
+    /SymRig/Leg_bone
+    /SymRig/Leg_bone/Knee_bone
+    /SymRig/Leg_bone/Knee_bone/Ankle_bone
 
 ------------------------------------------------------------------------
 Results for composing </SymRig/Leg_bone/Knee_bone>
 
 Prim Stack:
-    root.sdf             /SymRig/Leg_bone/Knee_bone
+    root.usda            /SymRig/Leg_bone/Knee_bone
 
 Child names:
      ['Ankle_bone']
@@ -35,13 +49,13 @@ Child names:
 Results for composing </SymRig/Leg_bone/Knee_bone/Ankle_bone>
 
 Prim Stack:
-    root.sdf             /SymRig/Leg_bone/Knee_bone/Ankle_bone
+    root.usda            /SymRig/Leg_bone/Knee_bone/Ankle_bone
 
 ------------------------------------------------------------------------
 Results for composing </RearLegRig>
 
 Prim Stack:
-    root.sdf             /RearLegRig
+    root.usda            /RearLegRig
 
 Child names:
      ['Knee_bone', 'Legs']
@@ -50,8 +64,8 @@ Child names:
 Results for composing </RearLegRig/Knee_bone>
 
 Prim Stack:
-    root.sdf             /RearLegRig/Knee_bone
-    root.sdf             /SymRig/Leg_bone/Knee_bone
+    root.usda            /RearLegRig/Knee_bone
+    root.usda            /SymRig/Leg_bone/Knee_bone
 
 Child names:
      ['Ankle_bone_phrbv']
@@ -63,13 +77,13 @@ Prohibited child names:
 Results for composing </RearLegRig/Knee_bone/Ankle_bone_phrbv>
 
 Prim Stack:
-    root.sdf             /SymRig/Leg_bone/Knee_bone/Ankle_bone
+    root.usda            /SymRig/Leg_bone/Knee_bone/Ankle_bone
 
 ------------------------------------------------------------------------
 Results for composing </RearLegRig/Legs>
 
 Prim Stack:
-    root.sdf             /RearLegRig/Legs
+    root.usda            /RearLegRig/Legs
 
 Child names:
      ['RightRig', 'LeftRig']
@@ -78,8 +92,8 @@ Child names:
 Results for composing </RearLegRig/Legs/RightRig>
 
 Prim Stack:
-    root.sdf             /RearLegRig/Legs/RightRig
-    root.sdf             /SymRig
+    root.usda            /RearLegRig/Legs/RightRig
+    root.usda            /SymRig
 
 Prohibited child names:
      ['Leg_bone']
@@ -88,8 +102,8 @@ Prohibited child names:
 Results for composing </RearLegRig/Legs/LeftRig>
 
 Prim Stack:
-    root.sdf             /RearLegRig/Legs/LeftRig
-    root.sdf             /SymRig
+    root.usda            /RearLegRig/Legs/LeftRig
+    root.usda            /SymRig
 
 Child names:
      ['Leg_bone']
@@ -98,16 +112,30 @@ Child names:
 Results for composing </RearLegRig/Legs/LeftRig/Leg_bone>
 
 Prim Stack:
-    root.sdf             /SymRig/Leg_bone
+    root.usda            /SymRig/Leg_bone
 
 Child names:
      ['Knee_bone', 'Leg_bone']
+
+Property names:
+     ['bones']
+
+Property stacks:
+/RearLegRig/Legs/LeftRig/Leg_bone.bones:
+    root.usda            /SymRig/Leg_bone.bones
+
+Relationship targets:
+/RearLegRig/Legs/LeftRig/Leg_bone.bones:
+    /RearLegRig/Legs/LeftRig
+    /RearLegRig/Legs/LeftRig/Leg_bone
+    /RearLegRig/Legs/LeftRig/Leg_bone/Knee_bone
+    /RearLegRig/Legs/LeftRig/Leg_bone/Knee_bone/Ankle_bone
 
 ------------------------------------------------------------------------
 Results for composing </RearLegRig/Legs/LeftRig/Leg_bone/Knee_bone>
 
 Prim Stack:
-    root.sdf             /SymRig/Leg_bone/Knee_bone
+    root.usda            /SymRig/Leg_bone/Knee_bone
 
 Child names:
      ['Ankle_bone']
@@ -116,14 +144,28 @@ Child names:
 Results for composing </RearLegRig/Legs/LeftRig/Leg_bone/Knee_bone/Ankle_bone>
 
 Prim Stack:
-    root.sdf             /SymRig/Leg_bone/Knee_bone/Ankle_bone
+    root.usda            /SymRig/Leg_bone/Knee_bone/Ankle_bone
 
 ------------------------------------------------------------------------
 Results for composing </RearLegRig/Legs/LeftRig/Leg_bone/Leg_bone>
 
 Prim Stack:
-    root.sdf             /SymRig/Leg_bone
+    root.usda            /SymRig/Leg_bone
 
 Prohibited child names:
      ['Knee_bone']
+
+Property names:
+     ['bones']
+
+Property stacks:
+/RearLegRig/Legs/LeftRig/Leg_bone/Leg_bone.bones:
+    root.usda            /SymRig/Leg_bone.bones
+
+Relationship targets:
+/RearLegRig/Legs/LeftRig/Leg_bone/Leg_bone.bones:
+    /RearLegRig/Legs/RightRig
+    /RearLegRig/Legs/LeftRig/Leg_bone/Leg_bone
+    /RearLegRig/Knee_bone
+    /RearLegRig/Knee_bone/Ankle_bone_phrbv
 

@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_TASK_H
 #define PXR_IMAGING_HD_TASK_H
@@ -51,7 +34,14 @@ using HdTaskSharedPtrVector = std::vector<HdTaskSharedPtr>;
 using HdTaskContext = 
     std::unordered_map<TfToken, VtValue, TfToken::HashFunctor>;
 
-class HdTask {
+/// \class HdTask
+///
+/// HdTask represents a unit of work to perform during a Hydra render.
+/// Developers can subclass HdTask to prepare resources, run 3d renderpasses, 
+/// run 2d renderpasses such as compositing or color correction, or coordinate 
+/// integration with the application or other renderers.
+class HdTask
+{
 public:
     /// Construct a new task.
     /// If the task is going to be added to the render index, id
@@ -63,6 +53,18 @@ public:
 
     HD_API
     virtual ~HdTask();
+
+    /// This function returns true when a (progressive) task considers its
+    /// execution results converged. Usually this means that a progressive
+    /// render delegate is finished rendering into the HdRenderBuffers used by
+    /// this task.
+    /// Returns true by default which is a good default for rasterizers.
+    ///
+    /// Applications with data-driven task lists can determine their convergence
+    /// state by determining which tasks are HdxTasks and then querying
+    /// specifically those tasks for IsConverged.
+    HD_API
+    virtual bool IsConverged() const;
 
     /// Sync Phase:  Obtain task state from Scene delegate based on
     /// change processing.
@@ -104,7 +106,7 @@ public:
     /// At this time all Tasks and other prims have completed the phase synced.
     ///
     /// This is an opportunity for the task to pull data from other prims
-    /// (such as a camera prim), but accessing the render index.
+    /// (such as a camera prim) by querying the render index.
     ///
     /// The task can also use the phase to create, register and update temporary
     /// resources with the resource registry or other render delegate
@@ -140,11 +142,11 @@ public:
     /// Hydra prims are marked up with a render tag and only prims
     /// marked with the render tags in the current active set are Sync'ed.
     ///
-    /// Hydra's core will combine the sets from each task and deduplicated the
+    /// Hydra's core will combine the sets from each task and deduplicate the
     /// result.  So tasks don't need to co-ordinate with each other to
-    /// Optimize the set.
+    /// optimize the set.
     ///
-    /// For those tasks that use HdRenderPass, is the typically the set passed
+    /// For those tasks that use HdRenderPass, this set is passed
     /// to HdRenderPass's Execute method.
     ///
     /// The default implementation returns an empty set

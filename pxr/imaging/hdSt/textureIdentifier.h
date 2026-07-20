@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_ST_TEXTURE_IDENTIFIER_H
 #define PXR_IMAGING_HD_ST_TEXTURE_IDENTIFIER_H
@@ -28,6 +11,7 @@
 #include "pxr/imaging/hdSt/api.h"
 
 #include "pxr/base/tf/token.h"
+#include "pxr/base/vt/value.h"
 
 #include <memory>
 
@@ -49,31 +33,55 @@ class HdStTextureIdentifier final
 public:
     using ID = size_t;
 
+    HDST_API
     HdStTextureIdentifier();
 
     /// C'tor for files that can contain only one texture.
     ///
-    explicit HdStTextureIdentifier(const TfToken &filePath);
+    HDST_API
+    explicit HdStTextureIdentifier(
+        const TfToken &filePath,
+        const VtValue &fallback = VtValue(),
+        bool defaultToFallback = false);
 
     /// C'tor for files that can contain more than one texture (e.g.,
     /// frames in a movie, grids in a VDB file).
     ///
+    HDST_API
     HdStTextureIdentifier(
         const TfToken &filePath,
-        std::unique_ptr<const HdStSubtextureIdentifier> &&subtextureId);
+        std::unique_ptr<const HdStSubtextureIdentifier> &&subtextureId,
+        const VtValue &fallback = VtValue(),
+        bool defaultToFallback = false);
 
+    HDST_API
     HdStTextureIdentifier(const HdStTextureIdentifier &textureId);
 
+    HDST_API
     HdStTextureIdentifier &operator=(HdStTextureIdentifier &&textureId);
 
+    HDST_API
     HdStTextureIdentifier &operator=(const HdStTextureIdentifier &textureId);
 
+    HDST_API
     ~HdStTextureIdentifier();
 
     /// Get file path of texture file.
     ///
     const TfToken &GetFilePath() const {
         return _filePath;
+    }
+
+    /// Get fallback value that's used if loading from _filePath fails
+    ///
+    const VtValue &GetFallback() const {
+        return _fallback;
+    }
+
+    /// Get if reading from _filePath should be skipped
+    ///
+    bool ShouldDefaultToFallback() const {
+        return _defaultToFallback;
     }
     
     /// Get additional information identifying a texture in a file that
@@ -86,14 +94,19 @@ public:
         return _subtextureId.get();
     }
 
+    HDST_API
     bool operator==(const HdStTextureIdentifier &other) const;
+    HDST_API
     bool operator!=(const HdStTextureIdentifier &other) const;
 
 private:
     TfToken _filePath;
+    VtValue _fallback;
+    bool _defaultToFallback = false;
     std::unique_ptr<const HdStSubtextureIdentifier> _subtextureId;
 };
 
+HDST_API
 size_t hash_value(const HdStTextureIdentifier &);
 
 PXR_NAMESPACE_CLOSE_SCOPE

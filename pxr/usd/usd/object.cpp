@@ -1,30 +1,14 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 #include "pxr/usd/usd/object.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
+#include "pxr/usd/sdf/propertySpec.h"
 
 #include "pxr/base/tf/ostreamMethods.h"
 
@@ -63,21 +47,20 @@ UsdObject::_GetMetadataImpl(
 }
 
 bool 
-UsdObject::SetMetadata(const TfToken& key, const VtValue& value) const
+UsdObject::SetMetadata(const TfToken& key, VtValueRef value) const
 {
     return _SetMetadataImpl(key, value);
 }
 
 bool
 UsdObject::SetMetadataByDictKey(
-        const TfToken& key, const TfToken &keyPath, const VtValue& value) const
+        const TfToken& key, const TfToken &keyPath, VtValueRef value) const
 {
     return _SetMetadataImpl(key, value, keyPath);
 }
 
 bool 
-UsdObject::_SetMetadataImpl(const TfToken& key,
-                            const VtValue& value,
+UsdObject::_SetMetadataImpl(const TfToken& key, VtValueRef value,
                             const TfToken &keyPath) const
 {
     return _GetStage()->_SetMetadata(*this, key, keyPath, value);
@@ -293,12 +276,20 @@ UsdObject::IsHidden() const
 bool
 UsdObject::SetHidden(bool hidden) const
 {
+    if (TfGetEnvSetting(SDF_LEGACY_UI_HINTS_WARN_ON_WRITE)) {
+        TF_WARN("Writing to deprecated metadata field 'hidden'");
+    }
+
     return SetMetadata(SdfFieldKeys->Hidden, hidden);
 }
 
 bool
 UsdObject::ClearHidden() const
 {
+    if (TfGetEnvSetting(SDF_LEGACY_UI_HINTS_WARN_ON_WRITE)) {
+        TF_WARN("Writing to deprecated metadata field 'hidden'");
+    }
+
     return ClearMetadata(SdfFieldKeys->Hidden);
 }
 
@@ -339,6 +330,44 @@ UsdObject::HasAuthoredDocumentation() const
     return HasAuthoredMetadata(SdfFieldKeys->Documentation);
 }
 
+// ------------------------------------------------------------------------- //
+// 'DisplayName' Metadata
+// ------------------------------------------------------------------------- //
+
+std::string
+UsdObject::GetDisplayName() const
+{
+    std::string result;
+    GetMetadata(SdfFieldKeys->DisplayName, &result);
+    return result;
+}
+
+bool
+UsdObject::SetDisplayName(const std::string& newDisplayName) const
+{
+    if (TfGetEnvSetting(SDF_LEGACY_UI_HINTS_WARN_ON_WRITE)) {
+        TF_WARN("Writing to deprecated metadata field 'displayName'");
+    }
+
+    return SetMetadata(SdfFieldKeys->DisplayName, newDisplayName);
+}
+
+bool
+UsdObject::ClearDisplayName() const
+{
+    if (TfGetEnvSetting(SDF_LEGACY_UI_HINTS_WARN_ON_WRITE)) {
+        TF_WARN("Writing to deprecated metadata field 'displayName'");
+    }
+
+    return ClearMetadata(SdfFieldKeys->DisplayName);
+}
+
+bool
+UsdObject::HasAuthoredDisplayName() const
+{
+    return HasAuthoredMetadata(SdfFieldKeys->DisplayName);
+}
+
 SdfSpecType
 UsdObject::_GetDefiningSpecType() const
 {
@@ -376,17 +405,6 @@ std::string
 UsdObject::GetDescription() const
 {
     return _GetObjectDescription("");
-}
-
-size_t
-hash_value(const UsdObject &obj)
-{
-    size_t seed = 510-922-3000;
-    boost::hash_combine(seed, long(obj._type));
-    boost::hash_combine(seed, obj._prim);
-    boost::hash_combine(seed, obj._proxyPrimPath);
-    boost::hash_combine(seed, obj._propName.Hash());
-    return seed;
 }
 
 std::string

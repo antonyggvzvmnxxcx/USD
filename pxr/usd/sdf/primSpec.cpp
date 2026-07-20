@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 /// \file PrimSpec.cpp
 
@@ -54,8 +37,6 @@ using std::string;
 using std::vector;
 
 PXR_NAMESPACE_OPEN_SCOPE
-
-SDF_DEFINE_SPEC(SdfSchema, SdfSpecTypePrim, SdfPrimSpec, SdfSpec);
 
 // register types
 TF_REGISTRY_FUNCTION(TfType)
@@ -113,17 +94,12 @@ SdfPrimSpec::_New(const SdfPrimSpecHandle &parentPrim,
     // Group all the edits in a single change block.
     SdfChangeBlock block;
 
-    // Use the special "pass" token if the caller tried to
-    // create a typeless def
-    TfToken type = (typeName.IsEmpty() && spec == SdfSpecifierDef) 
-                   ? SdfTokens->AnyTypeToken : typeName;
-
     SdfLayerHandle layer = parentPrimPtr->GetLayer();
     SdfPath childPath = parentPrimPtr->GetPath().AppendChild(name);
 
     // PrimSpecs are considered inert if their specifier is
-    // "over" and the type is not specified.
-    bool inert = (spec == SdfSpecifierOver) && type.IsEmpty();
+    // "over" and the typeName is not specified.
+    bool inert = (spec == SdfSpecifierOver) && typeName.IsEmpty();
 
     if (!Sdf_ChildrenUtils<Sdf_PrimChildPolicy>::CreateSpec(
                 layer, childPath, SdfSpecTypePrim, inert)) {
@@ -131,8 +107,8 @@ SdfPrimSpec::_New(const SdfPrimSpecHandle &parentPrim,
     }
 
     layer->SetField(childPath, SdfFieldKeys->Specifier, spec);
-    if (!type.IsEmpty()) {
-        layer->SetField(childPath, SdfFieldKeys->TypeName, type);
+    if (!typeName.IsEmpty()) {
+        layer->SetField(childPath, SdfFieldKeys->TypeName, typeName);
     }
     
     return layer->GetPrimAtPath(childPath);
@@ -524,10 +500,10 @@ SdfPrimSpec::GetRelationshipAtPath(const SdfPath& path) const
 #define SDF_ACCESSOR_WRITE_PREDICATE(key_)   _ValidateEdit(key_)
 
 SDF_DEFINE_GET(TypeName, SdfFieldKeys->TypeName, TfToken)
+SDF_DEFINE_GET(Hidden,   SdfFieldKeys->Hidden,   bool)
 
 SDF_DEFINE_GET_SET(Comment,            SdfFieldKeys->Comment,       std::string)
 SDF_DEFINE_GET_SET(Documentation,      SdfFieldKeys->Documentation, std::string)
-SDF_DEFINE_GET_SET(Hidden,             SdfFieldKeys->Hidden,        bool)
 SDF_DEFINE_GET_SET(SymmetryFunction,   SdfFieldKeys->SymmetryFunction, TfToken)
 SDF_DEFINE_GET_SET(SymmetricPeer,      SdfFieldKeys->SymmetricPeer, std::string)
 SDF_DEFINE_GET_SET(Prefix,             SdfFieldKeys->Prefix,        std::string)
@@ -550,6 +526,9 @@ SDF_DEFINE_TYPED_GET_SET(Permission, SdfFieldKeys->Permission,
 SDF_DEFINE_DICTIONARY_GET_SET(GetSymmetryArguments,
                               SetSymmetryArgument, 
                               SdfFieldKeys->SymmetryArguments);
+SDF_DEFINE_DICTIONARY_GET_SET(GetClips,
+                              SetClips,
+                              SdfFieldKeys->Clips);
 SDF_DEFINE_DICTIONARY_GET_SET(GetCustomData,
                               SetCustomData,
                               SdfFieldKeys->CustomData);
@@ -573,6 +552,16 @@ SdfPrimSpec::SetTypeName(const std::string& value)
             SetField(SdfFieldKeys->TypeName, TfToken(value));
         }
     }
+}
+
+void
+SdfPrimSpec::SetHidden(bool value)
+{
+    if (TfGetEnvSetting(SDF_LEGACY_UI_HINTS_WARN_ON_WRITE)) {
+        TF_WARN("Writing to deprecated metadata field 'hidden'");
+    }
+
+    SetField(SdfFieldKeys->Hidden, value);
 }
 
 //
@@ -682,10 +671,8 @@ SdfPrimSpec::ClearReferenceList()
 SdfVariantSetNamesProxy
 SdfPrimSpec::GetVariantSetNameList() const
 {
-    boost::shared_ptr<Sdf_ListEditor<SdfNameKeyPolicy> > editor( 
-            new Sdf_ListOpListEditor<SdfNameKeyPolicy>( 
-                SdfCreateHandle(this), SdfFieldKeys->VariantSetNames));
-    return SdfVariantSetNamesProxy(editor);
+    return SdfGetNameEditorProxy(
+            SdfCreateHandle(this), SdfFieldKeys->VariantSetNames);
 }
 
 bool
@@ -784,8 +771,7 @@ SdfPrimSpec::GetRelocates() const
     if (!_IsPseudoRoot()) {
         return SdfRelocatesMapProxy(
             SdfCreateHandle(this), SdfFieldKeys->Relocates);
-    }
-    else {
+    } else {
         return SdfRelocatesMapProxy();
     }
 }
@@ -810,6 +796,22 @@ SdfPrimSpec::ClearRelocates()
     if (_ValidateEdit(SdfFieldKeys->Relocates)) {
         ClearField(SdfFieldKeys->Relocates);
     }
+}
+
+//
+// ClipSets
+//
+SdfNameEditorProxy
+SdfPrimSpec::GetClipSetsList() const
+{
+    return SdfGetNameEditorProxy(
+        SdfCreateHandle(this), SdfFieldKeys->ClipSets);
+}
+
+bool
+SdfPrimSpec::HasClipSets() const
+{
+    return GetClipSetsList().HasKeys();
 }
 
 //
@@ -840,7 +842,7 @@ _FindOrCreateVariantSpec(SdfLayer *layer, const SdfPath &vsPath)
     // Create a new variant set spec and add it to the variant set list.
     if (!varSetSpec) {
         if ((varSetSpec = SdfVariantSetSpec::New(primSpec, varSel.first)))
-            primSpec->GetVariantSetNameList().Add(varSel.first);
+            primSpec->GetVariantSetNameList().Prepend(varSel.first);
     }
 
     if (!TF_VERIFY(varSetSpec, "Failed to create variant set for '%s' in @%s@",

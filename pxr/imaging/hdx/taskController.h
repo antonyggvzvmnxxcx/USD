@@ -1,25 +1,8 @@
 //
 // Copyright 2017 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HDX_TASK_CONTROLLER_H
 #define PXR_IMAGING_HDX_TASK_CONTROLLER_H
@@ -31,6 +14,7 @@
 #include "pxr/imaging/hdx/renderSetupTask.h"
 #include "pxr/imaging/hdx/shadowTask.h"
 #include "pxr/imaging/hdx/colorCorrectionTask.h"
+#include "pxr/imaging/hdx/boundingBoxTask.h"
 
 #include "pxr/imaging/hd/aov.h"
 #include "pxr/imaging/hd/renderIndex.h"
@@ -40,6 +24,8 @@
 #include "pxr/imaging/cameraUtil/framing.h"
 #include "pxr/imaging/glf/simpleLightingContext.h"
 #include "pxr/usd/sdf/path.h"
+
+#include "pxr/base/gf/bbox3d.h"
 #include "pxr/base/gf/matrix4d.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -49,12 +35,16 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 class HdRenderBuffer;
 
+///
+/// \deprecated Use HdxTaskControllerSceneIndex instead
+///
 class HdxTaskController final
 {
 public:
     HDX_API
     HdxTaskController(HdRenderIndex *renderIndex,
-                      SdfPath const& controllerId);
+                      SdfPath const& controllerId,
+                      bool gpuEnabled = true);
     HDX_API
     ~HdxTaskController();
 
@@ -69,16 +59,32 @@ public:
     /// -------------------------------------------------------
     /// Execution API
 
-    /// Obtain the set of tasks managed by the task controller,
+    /// Obtain paths to the tasks managed by the task controller,
     /// for image generation. The tasks returned will be different
     /// based on current renderer state.
     HDX_API
-    HdTaskSharedPtrVector const GetRenderingTasks() const;
+    SdfPathVector GetRenderingTaskPaths() const;
 
-    /// Obtain the set of tasks managed by the task controller,
+    /// Obtain paths to tasks managed by the task controller,
     /// for picking.
     HDX_API
-    HdTaskSharedPtrVector const GetPickingTasks() const;
+    SdfPathVector GetPickingTaskPaths() const;
+
+    /// \deprecated Use GetRenderingTaskPaths
+    ///
+    /// Deprecated in preparation of changing to an
+    /// HdxTaskControllerSceneIndex.
+    ///
+    HDX_API
+    HdTaskSharedPtrVector GetRenderingTasks() const;
+
+    /// \deprecated Use GetPickingTaskPaths
+    ///
+    /// Deprecated in preparation of changing to an
+    /// HdxTaskControllerSceneIndex.
+    ///
+    HDX_API
+    HdTaskSharedPtrVector GetPickingTasks() const;
 
     /// -------------------------------------------------------
     /// Rendering API
@@ -149,8 +155,8 @@ public:
 
     /// -------------------------------------------------------
     /// Camera and Framing API
-    
-    /// Set the size of the render buffers baking the AOVs.
+
+    /// Set the size of the render buffers backing the AOVs.
     /// GUI applications should set this to the size of the window.
     ///
     HDX_API
@@ -165,15 +171,9 @@ public:
     /// Specifies whether to force a window policy when conforming
     /// the frustum of the camera to match the display window of
     /// the camera framing.
-    ///
-    /// If set to {false, ...}, the window policy of the specified camera
-    /// will be used.
-    ///
-    /// Note: std::pair<bool, ...> is used instead of std::optional<...>
-    /// because the latter is only available in C++17 or later.
     HDX_API
     void SetOverrideWindowPolicy(
-        const std::pair<bool, CameraUtilConformWindowPolicy> &policy);
+        const std::optional<CameraUtilConformWindowPolicy> &policy);
 
     /// -- Scene camera --
     /// Set the camera param on tasks to a USD camera path.
@@ -197,6 +197,10 @@ public:
     HDX_API
     void SetFreeCameraClipPlanes(std::vector<GfVec4d> const& clipPlanes);
 
+    /// Get the free camera's Hydra prim path
+    HDX_API
+    SdfPath GetFreeCameraPath();
+
     /// -------------------------------------------------------
     /// Selection API
 
@@ -207,6 +211,10 @@ public:
     /// Set the selection color.
     HDX_API
     void SetSelectionColor(GfVec4f const& color);
+
+    /// Set the selection locate (over) color.
+    HDX_API
+    void SetSelectionLocateColor(GfVec4f const& color);
 
     /// Set if the selection highlight should be rendered as an outline around
     /// the selected objects or as a solid color overlaid on top of them.
@@ -235,6 +243,15 @@ public:
     /// Progressive Image Generation
 
     /// Return whether the image has converged.
+    ///
+    /// \deprecated
+    ///
+    /// Instead, checks whether HdxTask::IsConverged for a
+    /// task in the render index for each path in GetRenderingTaskPaths().
+    ///
+    /// Deprecated in preparation of changing to an
+    /// HdxTaskControllerSceneIndex.
+    ///
     HDX_API
     bool IsConverged() const;
 
@@ -244,6 +261,13 @@ public:
     /// Configure color correction by settings params.
     HDX_API
     void SetColorCorrectionParams(HdxColorCorrectionTaskParams const& params);
+
+    /// -------------------------------------------------------
+    /// Bounding Box API
+
+    /// Set the bounding box params.
+    HDX_API
+    void SetBBoxParams(const HdxBoundingBoxTaskParams& params);
 
     /// -------------------------------------------------------
     /// Present API
@@ -263,6 +287,7 @@ private:
 
     HdRenderIndex *_index;
     SdfPath const _controllerId;
+    bool _gpuEnabled;
 
     // Create taskController objects. Since the camera is a parameter
     // to the tasks, _CreateCamera() should be called first.
@@ -270,6 +295,7 @@ private:
 
     void _CreateLightingTask();
     void _CreateShadowTask();
+    SdfPath _CreateSkydomeTask();
     SdfPath _CreateRenderTask(TfToken const& materialTag);
     void _CreateOitResolveTask();
     void _CreateSelectionTask();
@@ -278,6 +304,7 @@ private:
     void _CreateVisualizeAovTask();
     void _CreatePickTask();
     void _CreatePickFromRenderBufferTask();
+    void _CreateBoundingBoxTask();
     void _CreateAovInputTask();
     void _CreatePresentTask();
 
@@ -303,12 +330,23 @@ private:
     SdfPath _GetAovPath(TfToken const& aov) const;
     SdfPathVector _GetAovEnabledTasks() const;
 
-    // Helper function to set the parameters of a light, get a particular light 
-    // in the scene, replace and remove Sprims from the scene 
+    // Helper functions to set up the lighting state for the built-in lights
+    bool _SupportBuiltInLightTypes();
+    void _SetBuiltInLightingState(GlfSimpleLightingContextPtr const& src);
+
+    // Helper function to get the built-in Camera light type SimpleLight for
+    // Storm, and DistantLight otherwise
+    TfToken _GetCameraLightType();
+
+    // Helper functions to set the parameters of a light, get a particular light
+    // in the scene, replace and remove Sprims from the scene
+    VtValue _GetDomeLightTexture(GlfSimpleLight const& light);
     void _SetParameters(SdfPath const& pathName, GlfSimpleLight const& light);
+    void _SetMaterialNetwork(SdfPath const& pathName,
+                             GlfSimpleLight const& light);
     GlfSimpleLight _GetLightAtId(size_t const& pathIdx);
     void _RemoveLightSprim(size_t const& pathIdx);
-    void _ReplaceLightSprim(size_t const& pathIdx, GlfSimpleLight const& light, 
+    void _ReplaceLightSprim(size_t const& pathIdx, GlfSimpleLight const& light,
                         SdfPath const& pathName);
 
     // A private scene delegate member variable backs the tasks and the free cam
@@ -351,8 +389,9 @@ private:
         // HdSceneDelegate interface
         VtValue Get(SdfPath const& id, TfToken const& key) override;
         GfMatrix4d GetTransform(SdfPath const& id) override;
-        VtValue GetLightParamValue(SdfPath const& id, 
+        VtValue GetLightParamValue(SdfPath const& id,
                                    TfToken const& paramName) override;
+        VtValue GetMaterialResource(SdfPath const& id) override;
         bool IsEnabled(TfToken const& option) const override;
         HdRenderBufferDescriptor
             GetRenderBufferDescriptor(SdfPath const& id) override;
@@ -379,11 +418,12 @@ private:
     SdfPath _visualizeAovTaskId;
     SdfPath _pickTaskId;
     SdfPath _pickFromRenderBufferTaskId;
+    SdfPath _boundingBoxTaskId;
     SdfPath _presentTaskId;
 
     // Current active camera
     SdfPath _activeCameraId;
-    
+
     // Built-in lights
     SdfPathVector _lightIds;
 
@@ -394,7 +434,7 @@ private:
 
     GfVec2i _renderBufferSize;
     CameraUtilFraming _framing;
-    std::pair<bool, CameraUtilConformWindowPolicy> _overrideWindowPolicy;
+    std::optional<CameraUtilConformWindowPolicy> _overrideWindowPolicy;
 
     GfVec4d _viewport;
 };

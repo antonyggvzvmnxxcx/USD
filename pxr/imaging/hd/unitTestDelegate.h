@@ -1,31 +1,15 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_UNIT_TEST_DELEGATE_H
 #define PXR_IMAGING_HD_UNIT_TEST_DELEGATE_H
 
 #include "pxr/pxr.h"
 #include "pxr/imaging/hd/api.h"
+#include "pxr/imaging/hd/enums.h"
 #include "pxr/imaging/hd/material.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
 #include "pxr/imaging/hd/tokens.h"
@@ -48,7 +32,8 @@ PXR_NAMESPACE_OPEN_SCOPE
 ///
 /// A simple delegate class for unit test driver.
 ///
-class HdUnitTestDelegate : public HdSceneDelegate {
+class HdUnitTestDelegate : public HdSceneDelegate
+{
 public:
     HD_API
     HdUnitTestDelegate(HdRenderIndex *parentIndex,
@@ -97,11 +82,40 @@ public:
                  TfToken const &orientation=HdTokens->rightHanded,
                  bool doubleSided=false);
 
+    HD_API
+    void AddMesh(SdfPath const &id,
+                 GfMatrix4f const &transform,
+                 VtVec3fArray const &points,
+                 VtIntArray const &numVerts,
+                 VtIntArray const &verts,
+                 VtIntArray const &holes,
+                 PxOsdSubdivTags const &subdivTags,
+                 VtValue const &color,
+                 VtIntArray const &colorIndices,
+                 HdInterpolation colorInterpolation,
+                 VtValue const &opacity,
+                 VtIntArray const &opacityIndices,
+                 HdInterpolation opacityInterpolation,
+                 bool guide=false,
+                 SdfPath const &instancerId=SdfPath(),
+                 TfToken const &scheme=PxOsdOpenSubdivTokens->catmullClark,
+                 TfToken const &orientation=HdTokens->rightHanded,
+                 bool doubleSided=false);
+    
+    HD_API
+    void SetMeshCullStyle(SdfPath const &id, HdCullStyle const &cullstyle);
+
     /// Add a cube
     HD_API
-    void AddCube(SdfPath const &id, GfMatrix4f const &transform, bool guide=false,
-                 SdfPath const &instancerId=SdfPath(),
+    void AddCube(SdfPath const &id, GfMatrix4f const &transform,
+                 bool guide=false, SdfPath const &instancerId=SdfPath(),
                  TfToken const &scheme=PxOsdOpenSubdivTokens->catmullClark);
+
+    HD_API
+    void AddCube(SdfPath const &id, GfMatrix4f const &transform, 
+                 bool guide, SdfPath const &instancerId, TfToken const &scheme,
+                 VtValue const &color, HdInterpolation colorInterpolation,
+                 VtValue const &opacity, HdInterpolation opacityInterpolation);
 
     /// Add a grid with division x*y
     HD_API
@@ -144,6 +158,13 @@ public:
     void AddPolygons(SdfPath const &id, GfMatrix4f const &transform,
                      HdInterpolation colorInterp,
                      SdfPath const &instancerId=SdfPath());
+                     
+    /// Add a triangle, quad and pentagon with face-varying displayColor and
+    /// displayOpacity            
+    HD_API
+    void AddFaceVaryingPolygons(
+        SdfPath const &id, GfMatrix4f const &transform,
+        SdfPath const &instancerId=SdfPath());
 
     /// Add a subdiv with various tags
     HD_API
@@ -156,6 +177,7 @@ public:
     void AddBasisCurves(SdfPath const &id,
                         VtVec3fArray const &points,
                         VtIntArray const &curveVertexCounts,
+                        VtIntArray const &curveIndices,
                         VtVec3fArray const &normals,
                         TfToken const &type,
                         TfToken const &basis,
@@ -175,6 +197,9 @@ public:
                    HdInterpolation widthInterp=HdInterpolationConstant,
                    bool authoredNormals=false,
                    SdfPath const &instancerId=SdfPath());
+    
+    HD_API
+    void SetCurveWrapMode(SdfPath const &id, TfToken const &wrap);
 
     HD_API
     void AddPoints(SdfPath const &id,
@@ -217,12 +242,14 @@ public:
                     TfToken const& name,
                     VtValue const& value,
                     HdInterpolation const& interp,
-                    TfToken const& role);
+                    TfToken const& role,
+                    VtIntArray const& indices=VtIntArray(0));
     
     HD_API
     void UpdatePrimvarValue(SdfPath const& id,
                             TfToken const& name,
-                            VtValue const& value);
+                            VtValue const& value,
+                            VtIntArray const& indices=VtIntArray(0));
     
     HD_API
     void RemovePrimvar(SdfPath const& id, TfToken const& name);
@@ -248,10 +275,16 @@ public:
     HD_API
     void RebindMaterial(SdfPath const &rprimId, SdfPath const &materialId);
 
+    HD_API
+    void SetUseSceneMaterials(bool useSceneMaterials);
+
     /// Render buffers
     HD_API
-    void AddRenderBuffer(SdfPath const &id, GfVec3i const& dims,
-                         HdFormat format, bool multiSampled);
+    void AddRenderBuffer(SdfPath const &id, 
+                         HdRenderBufferDescriptor const &desc);
+    HD_API
+    void UpdateRenderBuffer(SdfPath const &id, 
+                            HdRenderBufferDescriptor const &desc);
 
     /// Camera
     HD_API
@@ -330,6 +363,8 @@ public:
     HD_API
     virtual TfToken GetRenderTag(SdfPath const& id) override;
     HD_API
+    virtual TfTokenVector GetTaskRenderTags(SdfPath const &taskId) override;
+    HD_API
     virtual PxOsdSubdivTags GetSubdivTags(SdfPath const& id) override;
     HD_API
     virtual GfRange3d GetExtent(SdfPath const & id) override;
@@ -342,7 +377,12 @@ public:
     HD_API
     virtual HdDisplayStyle GetDisplayStyle(SdfPath const & id) override;
     HD_API
+    virtual HdCullStyle GetCullStyle(SdfPath const &id) override;
+    HD_API
     virtual VtValue Get(SdfPath const& id, TfToken const& key) override;
+    HD_API
+    virtual VtValue GetIndexedPrimvar(SdfPath const& id, TfToken const& key, 
+                                      VtIntArray *outIndices) override;
     HD_API
     virtual HdReprSelector GetReprSelector(SdfPath const &id) override;
     HD_API
@@ -353,6 +393,10 @@ public:
     HD_API
     virtual VtIntArray GetInstanceIndices(SdfPath const& instancerId,
                                           SdfPath const& prototypeId) override;
+
+    HD_API
+    virtual SdfPathVector GetInstancerPrototypes(SdfPath const& instancerId)
+        override;
 
     HD_API
     virtual GfMatrix4d GetInstancerTransform(SdfPath const& instancerId)
@@ -400,7 +444,7 @@ private:
             transform(transform),
             points(points), numVerts(numVerts), verts(verts),
             holes(holes), subdivTags(subdivTags), guide(guide),
-            doubleSided(doubleSided) { }
+            doubleSided(doubleSided), cullStyle(HdCullStyleDontCare) { }
 
         TfToken scheme;
         TfToken orientation;
@@ -413,20 +457,25 @@ private:
         bool guide;
         bool doubleSided;
         HdReprSelector reprSelector;
+        HdCullStyle cullStyle;
     };
     struct _Curves {
         _Curves() { }
         _Curves(VtVec3fArray const &points,
                 VtIntArray const &curveVertexCounts,
+                VtIntArray const &curveIndices,
                 TfToken const &type,
-                TfToken const &basis) :
+                TfToken const &basis,
+                TfToken const &wrap = HdTokens->nonperiodic) :
             points(points), curveVertexCounts(curveVertexCounts), 
-            type(type), basis(basis) { }
+            curveIndices(curveIndices), type(type), basis(basis), wrap(wrap) { }
 
         VtVec3fArray points;
         VtIntArray curveVertexCounts;
+        VtIntArray curveIndices;
         TfToken type;
         TfToken basis;
+        TfToken wrap;
     };
     struct _Points {
         _Points() { }
@@ -456,16 +505,19 @@ private:
         _Primvar(TfToken const& _name,
                  VtValue const& _value,
                  HdInterpolation const& _interp,
-                 TfToken const& _role) :
+                 TfToken const& _role,
+                 VtIntArray const& _indices=VtIntArray(0)) :
             name(_name),
             value(_value),
             interp(_interp),
-            role(_role) {}
+            role(_role),
+            indices(_indices) {}
 
         TfToken name;
         VtValue value;
         HdInterpolation interp;
         TfToken role;
+        VtIntArray indices;
     };
     using _Primvars = std::vector<_Primvar>;
     // Given an rprim id and primvar name, looks up the primvars map (see below)
@@ -476,6 +528,7 @@ private:
 
     struct _Camera {
         VtDictionary params;
+        GfMatrix4f transform;
     };
     struct _Light {
         VtDictionary params;
@@ -498,6 +551,7 @@ private:
     std::map<SdfPath, _Instancer> _instancers;
     std::map<SdfPath, _Primvars> _primvars;
     std::map<SdfPath, VtValue> _materials;
+    std::map<SdfPath, VtValue> _sceneMaterials;
     std::map<SdfPath, _Camera> _cameras;
     std::map<SdfPath, _RenderBuffer> _renderBuffers;
     std::map<SdfPath, _Light> _lights;

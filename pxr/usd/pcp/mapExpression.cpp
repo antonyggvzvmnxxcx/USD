@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -52,22 +35,6 @@ _AddRootIdentity(const PcpMapFunction &value)
 
 ////////////////////////////////////////////////////////////////////////
 
-PcpMapExpression::PcpMapExpression()
-{
-}
-
-bool
-PcpMapExpression::IsNull() const
-{
-    return !_node;
-}
-
-void
-PcpMapExpression::Swap(PcpMapExpression &other)
-{
-    _node.swap(other._node);
-}
-
 const PcpMapExpression::Value &
 PcpMapExpression::Evaluate() const
 {
@@ -87,6 +54,26 @@ PcpMapExpression::Constant( const Value & value )
 {
     return PcpMapExpression( _Node::New(_OpConstant, _NodeRefPtr(),
                                         _NodeRefPtr(), value) );
+}
+
+PcpMapExpression
+PcpMapExpression::ImpliedClass(
+    const PcpMapExpression& transferFunc,
+    const PcpMapExpression& classArc)
+{
+    if (transferFunc.IsConstantIdentity()) {
+        return classArc;
+    }
+
+    if (transferFunc._node->key.op == _OpConstant &&
+        classArc._node->key.op == _OpConstant) {
+        // Apply constant folding.
+        return Constant(PcpMapFunction::ImpliedClass(
+                transferFunc.Evaluate(), classArc.Evaluate()));
+    }
+
+    return PcpMapExpression( _Node::New(_OpImpliedClass, 
+        transferFunc._node, classArc._node));
 }
 
 PcpMapExpression
@@ -233,6 +220,10 @@ PcpMapExpression::_Node::_ExpressionTreeAlwaysHasIdentity(const Key& key)
         return (key.arg1 && key.arg1->expressionTreeAlwaysHasIdentity &&
                 key.arg2 && key.arg2->expressionTreeAlwaysHasIdentity);
 
+    case _OpImpliedClass:
+        // The implied class operation always adds the root identity.
+        return true;
+
     default:
         // For any other operation, if either of the subtrees has an
         // identity mapping, so does this tree.
@@ -247,27 +238,27 @@ PcpMapExpression::_Node::New( _Op op_,
                               const _NodeRefPtr & arg2_,
                               const Value & valueForConstant_ )
 {
-    TfAutoMallocTag2 tag("Pcp", "PcpMapExpresion");
+    TfAutoMallocTag tag("Pcp", "PcpMapExpresion::_Node::New");
     const Key key(op_, arg1_, arg2_, valueForConstant_);
 
     if (key.op != _OpVariable) {
         // Check for existing instance to re-use
         _NodeMap::accessor accessor;
         if (_nodeRegistry->map.insert(accessor, key) ||
-            accessor->second->_refCount.fetch_and_increment() == 0) {
+            accessor->second->_refCount.fetch_add(1) == 0) {
             // Either there was no node in the table, or there was but it had
             // begun dying (another client dropped its refcount to 0).  We have
             // to create a new node in the table.  When the client that is
             // killing the other node it looks for itself in the table, it will
             // either not find itself or will find a different node and so won't
             // remove it.
-            _NodeRefPtr newNode(new _Node(key));
+            _NodeRefPtr newNode{TfDelegatedCountIncrementTag, new _Node(key)};
             accessor->second = newNode.get();
             return newNode;
         }
-        return _NodeRefPtr(accessor->second, /*add_ref =*/ false);
+        return {TfDelegatedCountDoNotIncrementTag, accessor->second};
     }
-    return _NodeRefPtr(new _Node(key));
+    return {TfDelegatedCountIncrementTag, new _Node(key)};
 }
 
 PcpMapExpression::_Node::_Node( const Key & key_ )
@@ -327,6 +318,8 @@ PcpMapExpression::_Node::EvaluateAndCache() const
 PcpMapExpression::Value
 PcpMapExpression::_Node::_EvaluateUncached() const
 {
+    TfAutoMallocTag tag("Pcp", "PcpMapExpression::_Node::_EvaluateUncached");
+
     switch(key.op) {
     case _OpConstant:
         return key.valueForConstant;
@@ -339,6 +332,15 @@ PcpMapExpression::_Node::_EvaluateUncached() const
             .Compose(key.arg2->EvaluateAndCache());
     case _OpAddRootIdentity:
         return _AddRootIdentity(key.arg1->EvaluateAndCache());
+    case _OpImpliedClass: 
+        {
+            const PcpMapExpression::Value& transferFunc =
+                key.arg1->EvaluateAndCache();
+            const PcpMapExpression::Value& classArc =
+                key.arg2->EvaluateAndCache();
+            // The root identity is added below if needed.
+            return PcpMapFunction::ImpliedClass(transferFunc, classArc);
+        }
     default:
         TF_VERIFY(false, "unhandled case");
         return PcpMapFunction();
@@ -378,11 +380,12 @@ PcpMapExpression::_Node::SetValueForVariable(Value && value)
 inline size_t
 PcpMapExpression::_Node::Key::GetHash() const
 {
-    size_t hash = op;
-    boost::hash_combine(hash, boost::get_pointer(arg1));
-    boost::hash_combine(hash, boost::get_pointer(arg2));
-    boost::hash_combine(hash, valueForConstant);
-    return hash;
+    return TfHash::Combine(
+        op,
+        arg1.get(),
+        arg2.get(),
+        valueForConstant
+    );
 }
 
 bool
@@ -395,15 +398,15 @@ PcpMapExpression::_Node::Key::operator==(const Key &key) const
 }
 
 void
-intrusive_ptr_add_ref(PcpMapExpression::_Node* p)
+TfDelegatedCountIncrement(PcpMapExpression::_Node* p)
 {
     ++p->_refCount;
 }
 
 void
-intrusive_ptr_release(PcpMapExpression::_Node* p)
+TfDelegatedCountDecrement(PcpMapExpression::_Node* p) noexcept
 {
-    if (p->_refCount.fetch_and_decrement() == 1)
+    if (p->_refCount.fetch_sub(1) == 1)
         delete p;
 }
 

@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -29,7 +12,12 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 TF_WRAP_MODULE
 {
-    TF_WRAP( BBox3d );    
+    TF_WRAP( BBox3d );
+    TF_WRAP( Color );
+    TF_WRAP( ColorSpace );
+    TF_WRAP( DualQuatd );
+    TF_WRAP( DualQuatf );
+    TF_WRAP( DualQuath );
     TF_WRAP( Frustum );
     TF_WRAP( Gamma );
     TF_WRAP( Half );
@@ -69,6 +57,7 @@ TF_WRAP_MODULE
     TF_WRAP( Rotation );
     TF_WRAP( Size2 );
     TF_WRAP( Size3 );
+    TF_WRAP( TimeCode );
 
     // Order of wrapping Vecs matters because in the cases where overloads could
     // choose either float or double, we want the double versions to be found
@@ -92,6 +81,7 @@ TF_WRAP_MODULE
     // Note that Transform must be wrapped after Rotation and Vec3d so that it
     // can create python objects for them as keyword args.
     TF_WRAP( Transform );
+    TF_WRAP( Traits );
 
 
     TF_WRAP( Camera );

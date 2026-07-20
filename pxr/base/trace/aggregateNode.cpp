@@ -1,25 +1,8 @@
 //
 // Copyright 2018 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/base/trace/aggregateNode.h"
@@ -31,12 +14,11 @@
 PXR_NAMESPACE_OPEN_SCOPE
 
 TraceAggregateNodeRefPtr
-TraceAggregateNode::Append(Id id, const TfToken &key,
-                  TimeStamp ts, int c, int xc)
+TraceAggregateNode::Append(const TfToken &key,
+                           TimeStamp ts, int c, int xc)
 {
-    TraceAggregateNodeRefPtr n = GetChild(key);
-    if (n) {
-        n->_id = id;
+    TraceAggregateNodeRefPtr nRef = GetChild(key);
+    if (TraceAggregateNode *n = get_pointer(nRef)) {
         n->_ts += ts;
         n->_count += c;
         n->_recursiveCount += c;
@@ -45,8 +27,8 @@ TraceAggregateNode::Append(Id id, const TfToken &key,
         n->_recursiveExclusiveTs += ts;
     }
     else {
-        n = TraceAggregateNode::New(id,key,ts,c,xc);
-        _children.push_back(n);
+        nRef = TraceAggregateNode::New(key,ts,c,xc);
+        _children.push_back(nRef);
         _childrenByKey[key] = _children.size() - 1;
     }
 
@@ -55,14 +37,36 @@ TraceAggregateNode::Append(Id id, const TfToken &key,
     _recursiveExclusiveTs = 
         (_recursiveExclusiveTs >= ts) ? _recursiveExclusiveTs - ts : 0;
 
-    return n;
+    return nRef;
+}
+
+void
+TraceAggregateNode::AppendBlind(const TfToken &key,
+                                TimeStamp ts, int c, int xc)
+{
+    if (TraceAggregateNode *n = _GetChildRaw(key)) {
+        n->_ts += ts;
+        n->_count += c;
+        n->_recursiveCount += c;
+        n->_exclusiveCount += xc;
+        n->_exclusiveTs += ts;
+        n->_recursiveExclusiveTs += ts;
+    }
+    else {
+        _children.push_back(TraceAggregateNode::New(key,ts,c,xc));
+        _childrenByKey[key] = _children.size() - 1;
+    }
+
+    // Update our exclusive time to discount our new child's time.
+    _exclusiveTs = (_exclusiveTs >= ts) ? _exclusiveTs - ts : 0;
+    _recursiveExclusiveTs = 
+        (_recursiveExclusiveTs >= ts) ? _recursiveExclusiveTs - ts : 0;
 }
 
 void 
 TraceAggregateNode::Append(TraceAggregateNodeRefPtr child) {
     TraceAggregateNodeRefPtr n = GetChild(child->GetKey());
     if (n) {
-        n->_id = child->_id;
         n->_ts += child->_ts;
         n->_count += child->_count;
         n->_recursiveCount += child->_count;
@@ -126,12 +130,72 @@ TraceAggregateNode::GetExclusiveCounterValue(int index) const
 TraceAggregateNodeRefPtr
 TraceAggregateNode::GetChild(const TfToken &key)
 {
+    return TraceAggregateNodeRefPtr { _GetChildRaw(key) };
+}
+
+TraceAggregateNode *
+TraceAggregateNode::_GetChildRaw(const TfToken &key)
+{
     _ChildDictionary::const_iterator i = _childrenByKey.find(key);
     if (i != _childrenByKey.end()) {
-        return _children[i->second];
+        return get_pointer(_children[i->second]);
     }
-    else {
-        return TraceAggregateNodeRefPtr(0);
+    return nullptr;
+}
+
+void
+TraceAggregateNode::AdjustForOverheadAndNoise(
+    TimeStamp scopeOverhead,
+    TimeStamp timerQuantum,
+    uint64_t *numDescendantNodes)
+{
+
+    // Walk everything depth-first and accumulate descendant counts.  On the way
+    // out, subtract scopeOverhead times number of descendant scopes from
+    // inclusive time.
+
+    uint64_t localNumDescendantNodes = _children.size();
+    for (TraceAggregateNodeRefPtr const &child: _children) {
+        child->AdjustForOverheadAndNoise(
+            scopeOverhead, timerQuantum, &localNumDescendantNodes);
+    }
+
+    TimeStamp totalOverhead = scopeOverhead * localNumDescendantNodes;
+    if (totalOverhead > _ts) {
+        totalOverhead = _ts;
+    }
+    _ts -= totalOverhead;
+
+    // Our exclusive time should be our inclusive time minus the inclusive times
+    // of our direct children.  But if we have any children whose measurements
+    // are overly "noisy" then we mark their inclusive/exclusive times as zero,
+    // and do not deduct them from our exclusive time.
+    //
+    // Each sample measurement has an error of +/- \p timerQuantum, so if
+    // the number of samples times the quantum is of some threshold fraction of
+    // the inclusive time, we consider the child "noisy".
+    auto isNoisy = [timerQuantum](TimeStamp totalTime, int count) {
+        // Consider a scope noisy if timerQuantum times count is 5% or more of
+        // totalTime.  (count * timerQuantum) >= (totalTime / 20)
+        return count * timerQuantum * 20 >= totalTime;
+    };        
+    
+    TimeStamp newExclusiveTs = _ts;
+    for (TraceAggregateNodeRefPtr const &child: _children) {
+        if (isNoisy(child->_ts, child->_count)) {
+            child->_ts = child->_exclusiveTs = 0;
+        }
+        else {
+            newExclusiveTs -=
+                (newExclusiveTs > child->_ts) ? child->_ts : newExclusiveTs;
+        }
+    }
+            
+    _exclusiveTs = newExclusiveTs;
+    
+    // Publish number of descendant nodes.
+    if (numDescendantNodes) {
+        *numDescendantNodes += localNumDescendantNodes;
     }
 }
 
@@ -293,7 +357,7 @@ TraceAggregateNode::_MergeRecursive(const TraceAggregateNodeRefPtr &node)
         if (!n)
         {
             // Create an empty node to merge with.
-            n = TraceAggregateNode::New( child->GetId(), child->GetKey(), 
+            n = TraceAggregateNode::New(child->GetKey(), 
                                 child->GetInclusiveTime(), 
                                 0, child->GetExclusiveCount() );
 
@@ -373,8 +437,8 @@ TraceAggregateNode::CalculateInclusiveCounterValues()
         c->CalculateInclusiveCounterValues();
     }
 
-    // Rest the inclusive count to the exclusive count. Then accumulate inclusive
-    // counts of children.
+    // Rest the inclusive count to the exclusive count. Then accumulate
+    // inclusive counts of children.
     for (_CounterValues::value_type& v : _counterValues) {
         v.second.inclusive = v.second.exclusive;
     }

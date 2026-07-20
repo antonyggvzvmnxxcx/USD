@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdx/types.h"
 
@@ -82,10 +65,15 @@ const HioFormat FORMAT_DESC[] =
     HioFormatFloat32Vec3,   // Float32Vec3
     HioFormatFloat32Vec4,   // Float32Vec4
 
-    HioFormatUInt16,         // UInt16
-    HioFormatUInt16Vec2,     // UInt16Vec2
-    HioFormatUInt16Vec3,     // UInt16Vec3
-    HioFormatUInt16Vec4,     // UInt16Vec4
+    HioFormatInt16,         // Int16
+    HioFormatInt16Vec2,     // Int16Vec2
+    HioFormatInt16Vec3,     // Int16Vec3
+    HioFormatInt16Vec4,     // Int16Vec4
+
+    HioFormatUInt16,        // UInt16
+    HioFormatUInt16Vec2,    // UInt16Vec2
+    HioFormatUInt16Vec3,    // UInt16Vec3
+    HioFormatUInt16Vec4,    // UInt16Vec4
 
     HioFormatInt32,         // Int32
     HioFormatInt32Vec2,     // Int32Vec2
@@ -104,6 +92,8 @@ const HioFormat FORMAT_DESC[] =
 
     HioFormatFloat32, // HdFormatFloat32UInt8
 
+    HioFormatInt32,   // PackedInt1010102
+
 };
 
 // A few random format validations to make sure out Hio table stays aligned
@@ -113,10 +103,10 @@ constexpr bool _CompileTimeValidateHgiFormatTable() {
             HgiFormatUNorm8 == 0 &&
             HgiFormatFloat16Vec4 == 9 &&
             HgiFormatFloat32Vec4 == 13 &&
-            HgiFormatUInt16Vec4 == 17 &&
-            HgiFormatInt32Vec4 == 21 &&
-            HgiFormatUNorm8Vec4srgb == 22 &&
-            HgiFormatBC3UNorm8Vec4 == 28) ? true : false;
+            HgiFormatUInt16Vec4 == 21 &&
+            HgiFormatInt32Vec4 == 25 &&
+            HgiFormatUNorm8Vec4srgb == 26 &&
+            HgiFormatBC3UNorm8Vec4 == 32) ? true : false;
 }
 
 static_assert(_CompileTimeValidateHgiFormatTable(), 

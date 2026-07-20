@@ -1,53 +1,47 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 
 # Enable exception handling.
 set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /EHsc")
 
 # Standards compliant.
-set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /Zc:rvalueCast /Zc:strictStrings")
+set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /permissive- /Zc:inline")
 
-# The /Zc:inline option strips out the "arch_ctor_<name>" symbols used for
-# library initialization by ARCH_CONSTRUCTOR starting in Visual Studio 2019, 
-# causing release builds to fail. Disable the option for this and later 
-# versions.
-# 
+# Visual Studio sets the value of __cplusplus to 199711L regardless of
+# the C++ standard actually being used, unless /Zc:__cplusplus is enabled.
+#
 # For more details, see:
-# https://developercommunity.visualstudio.com/content/problem/914943/zcinline-removes-extern-symbols-inside-anonymous-n.html
-if (MSVC_VERSION GREATER_EQUAL 1920)
-    set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /Zc:inline-")
-else()
-    set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /Zc:inline")
-endif()
+# https://learn.microsoft.com/en-us/cpp/build/reference/zc-cplusplus
+set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /Zc:__cplusplus")
 
 # Turn on all but informational warnings.
+# Note /W3 also includes Mismatch-tags warnings (C4099)
 set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /W3")
 
 # Warnings are errors in strict build mode.
 if (${PXR_STRICT_BUILD_MODE})
     set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /WX")
 endif()
+
+# The Visual Studio preprocessor does not conform to the C++ standard,
+# resulting in warnings like:
+#
+#     warning C4003: not enough arguments for function-like macro invocation '_TF_PP_IS_PARENS'
+#
+# These warnings are harmless and can be ignored. They affect a number of
+# code sites that tricky to guard with individual pragmas, so we opt to
+# disable them throughout the build here.
+#
+# Note that these issues are apparently fixed with the "new" preprocessor
+# present in Visual Studio 2019 version 16.5. If/when we enable that option,
+# we should revisit this.
+#
+# https://developercommunity.visualstudio.com/t/standard-conforming-preprocessor-invalid-warning-c/364698
+_disable_warning("4003")
 
 # truncation from 'double' to 'float' due to matrix and vector classes in `Gf`
 _disable_warning("4244")
@@ -80,17 +74,23 @@ _disable_warning("4334")
 # Disable warning C4996 regarding fopen(), strcpy(), etc.
 _add_define("_CRT_SECURE_NO_WARNINGS")
 
+# Disable warning C4996 regarding deprecated POSIX function names and
+# recommending non-standard Microsoft names instead (e.g. use _strdup 
+# instead of strdup). Per docs, these warnings can be disabled if the
+# original names are needed for portability reasons.
+_add_define("_CRT_NONSTDC_NO_WARNINGS")
+
 # Disable warning C4996 regarding unchecked iterators for std::transform,
 # std::copy, std::equal, et al.
 _add_define("_SCL_SECURE_NO_WARNINGS")
 
+# Disable warning C4996 regarding use of std::iterator as a base class.
+# This warning is emitted from legacy TBB's containers/iterators.
+_add_define("_SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING")
+
 # Make sure WinDef.h does not define min and max macros which
 # will conflict with std::min() and std::max().
 _add_define("NOMINMAX")
-
-# Needed to prevent YY files trying to include unistd.h
-# (which doesn't exist on Windows)
-_add_define("YY_NO_UNISTD_H")
 
 # Forces all libraries that have separate source to be linked as
 # DLL's rather than static libraries on Microsoft Windows, unless
@@ -99,8 +99,22 @@ if (NOT Boost_USE_STATIC_LIBS)
     _add_define("BOOST_ALL_DYN_LINK")
 endif()
 
+# Suppress automatic boost linking via pragmas, as we must not rely on
+# a heuristic, but upon the tool set we have specified in our build.
+_add_define("BOOST_ALL_NO_LIB")
+
+if(${PXR_USE_DEBUG_PYTHON})
+    _add_define("BOOST_DEBUG_PYTHON")
+    _add_define("BOOST_LINKING_PYTHON")
+endif()
+
 # Need half::_toFloat and half::_eLut.
 _add_define("OPENEXR_DLL")
+
+# Exclude headers from unnecessary Windows APIs to improve build
+# times and avoid annoying conflicts with macros defined in those
+# headers.
+_add_define("WIN32_LEAN_AND_MEAN")
 
 # These files require /bigobj compiler flag
 #   Vt/arrayPyBuffer.cpp
@@ -111,7 +125,16 @@ _add_define("OPENEXR_DLL")
 set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /bigobj")
 
 # Enable PDB generation.
-set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /Zi")
+cmake_policy(SET CMP0141 NEW)
+if(PXR_ENABLE_COMPILER_CACHE)
+    # Neither ccache nor sccache support /Zi PDB generation, so using embedded
+    # debug information is necessary to avoid build errors or cache misses.
+    # See https://github.com/mozilla/sccache#usage and
+    # https://github.com/ccache/ccache/issues/1040 for more information.
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
+else()
+    set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>")
+endif()
 
 # Enable multiprocessor builds.
 set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /MP")
@@ -121,3 +144,9 @@ set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /Gm-")
 # with no symbols in it.  We do this a lot because of a pattern of having
 # a C++ source file for many header-only facilities, e.g. tf/bitUtils.cpp.
 set(CMAKE_STATIC_LINKER_FLAGS "${CMAKE_STATIC_LINKER_FLAGS} /IGNORE:4221")
+
+# Enforce synchronous PDB writes when using Ninja
+# (this prevents "permission denied" compile errors on program databases)
+if("${CMAKE_GENERATOR}" STREQUAL "Ninja")
+    set(_PXR_CXX_FLAGS "${_PXR_CXX_FLAGS} /FS")
+endif()

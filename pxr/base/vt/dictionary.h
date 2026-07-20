@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_BASE_VT_DICTIONARY_H
 #define PXR_BASE_VT_DICTIONARY_H
@@ -28,21 +11,27 @@
 
 #include "pxr/pxr.h"
 #include "pxr/base/vt/api.h"
+#include "pxr/base/vt/traits.h"
 #include "pxr/base/vt/value.h"
 
 #include "pxr/base/tf/diagnostic.h"
+#include "pxr/base/tf/functionRef.h"
 #include "pxr/base/tf/hash.h"
 #include "pxr/base/tf/mallocTag.h"
-
-#include <boost/functional/hash.hpp>
-#include <boost/iterator/iterator_adaptor.hpp>
 
 #include <initializer_list>
 #include <iosfwd>
 #include <map>
 #include <memory>
+#include <optional>
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+// VtDictionary can compose over itself and must support value transforms in
+// general, since it can contain values that support transforms.
+class VtDictionary;
+VT_VALUE_TYPE_CAN_COMPOSE(VtDictionary);
+VT_VALUE_TYPE_CAN_TRANSFORM(VtDictionary);
 
 /// \defgroup group_vtdict_functions VtDictionary Functions
 /// Functions for manipulating VtDictionary objects.
@@ -75,43 +64,84 @@ public:
     // VtDictionary is empty, or the Iterator is at the end of a VtDictionary
     // that contains values).
     template<class UnderlyingMapPtr, class UnderlyingIterator>
-    class Iterator : public boost::iterator_adaptor<Iterator<UnderlyingMapPtr,
-        UnderlyingIterator>, UnderlyingIterator> {
+    class Iterator {
     public:
+        using iterator_category = std::bidirectional_iterator_tag;
+        using value_type = typename UnderlyingIterator::value_type;
+        using reference = typename UnderlyingIterator::reference;
+        using pointer = typename UnderlyingIterator::pointer;
+        using difference_type = typename UnderlyingIterator::difference_type;
+
+
         // Default constructor creates an Iterator equivalent to end() (i.e.
         // UnderlyingMapPtr is null)
-        Iterator()
-            : Iterator::iterator_adaptor_(UnderlyingIterator())
-            , _underlyingMap(0) {}
+        Iterator() = default;
 
         // Copy constructor (also allows for converting non-const to const).
         template <class OtherUnderlyingMapPtr, class OtherUnderlyingIterator>
         Iterator(Iterator<OtherUnderlyingMapPtr,
                           OtherUnderlyingIterator> const &other)
-            : Iterator::iterator_adaptor_(other.base())
-            , _underlyingMap(other._underlyingMap) {}
+            : _underlyingIterator(other._underlyingIterator),
+              _underlyingMap(other._underlyingMap) {}
+
+        reference operator*() const { return *_underlyingIterator; }
+        pointer operator->() const { return _underlyingIterator.operator->(); }
+
+        Iterator& operator++() {
+            increment();
+            return *this;
+        }
+
+        Iterator operator++(int) {
+            Iterator result = *this;
+            increment();
+            return result;
+        }
+
+        Iterator& operator--() {
+            --_underlyingIterator;
+            return *this;
+        }
+
+        Iterator operator--(int) {
+            Iterator result = *this;
+            --_underlyingIterator;
+            return result;
+        }
+
+        template <class OtherUnderlyingMapPtr, class OtherUnderlyingIterator>
+        bool operator==(const Iterator<OtherUnderlyingMapPtr,
+                                       OtherUnderlyingIterator>& other) const {
+            return equal(other);
+        }
+
+        template <class OtherUnderlyingMapPtr, class OtherUnderlyingIterator>
+        bool operator!=(const Iterator<OtherUnderlyingMapPtr,
+                                       OtherUnderlyingIterator>& other) const {
+            return !equal(other);
+        }
 
     private:
+
         // Private constructor allowing the find, begin and insert methods
         // to create and return the proper Iterator.
         Iterator(UnderlyingMapPtr m, UnderlyingIterator i)
-            : Iterator::iterator_adaptor_(i)
-            , _underlyingMap(m) {
+            : _underlyingIterator(i),
+              _underlyingMap(m) {
                 if (m && i == m->end())
-                    _underlyingMap = 0;
+                    _underlyingMap = nullptr;
             }
        
-        friend class boost::iterator_core_access;
         friend class VtDictionary;
 
         UnderlyingIterator GetUnderlyingIterator(UnderlyingMapPtr map)
         const {
             TF_AXIOM(!_underlyingMap || _underlyingMap == map);
-            return (!_underlyingMap) ? map->end() : this->base();
+            return (!_underlyingMap) ? map->end() : _underlyingIterator;
         }
 
         // Fundamental functionality to implement the iterator.
-        // boost::iterator_adaptor will invoke these as necessary to implement
+        // These will be invoked these as necessary to implement
         // the full iterator public interface.
 
         // Increments the underlying iterator, and sets the underlying map to
@@ -122,8 +152,8 @@ public:
                     "VtDictionary iterator");
                 return;
             }
-            if (++this->base_reference() == _underlyingMap->end()) {
-                _underlyingMap = 0;
+            if (++_underlyingIterator == _underlyingMap->end()) {
+                _underlyingMap = nullptr;
             }
         }
 
@@ -132,18 +162,20 @@ public:
         // 2) They both point to the end() of a VtDictionary
         // - or-
         // 3) They both point to the same VtDictionary and their
-        //    boost::iterator_adaptors' base() iterators are the same
+        //    underlying iterators are the same
         // In cases 1 and 2 above, _underlyingMap will be null
         template <class OtherUnderlyingMapPtr, class OtherUnderlyingIterator>
         bool equal(Iterator<OtherUnderlyingMapPtr,
-                OtherUnderlyingIterator> const& i) const {
-            if (_underlyingMap == i._underlyingMap)
-                if (!_underlyingMap || this->base() == i.base())
+                            OtherUnderlyingIterator> const& other) const {
+            if (_underlyingMap == other._underlyingMap)
+                if (!_underlyingMap ||
+                    (_underlyingIterator == other._underlyingIterator))
                     return true;
             return false;
         }
 
-        UnderlyingMapPtr _underlyingMap;
+        UnderlyingIterator _underlyingIterator;
+        UnderlyingMapPtr _underlyingMap = nullptr;
     };
 
     TF_MALLOC_TAG_NEW("Vt", "VtDictionary");
@@ -209,11 +241,11 @@ public:
 
     /// Erases the element pointed to by \p it. 
     VT_API
-    void erase(iterator it);
+    iterator erase(iterator it);
 
     /// Erases all elements in a range.
     VT_API
-    void erase(iterator f, iterator l);
+    iterator erase(iterator f, iterator l);
 
     /// Erases all of the elements. 
     VT_API
@@ -273,7 +305,7 @@ public:
         if (dict.empty())
             return 0;
         // Otherwise hash the map.
-        return boost::hash_value(*dict._dictMap);
+        return TfHash()(*dict._dictMap);
     }
 
     /// Inserts a range into the \p VtDictionary. 
@@ -289,6 +321,59 @@ public:
     /// Inserts \p obj into the \p VtDictionary. 
     VT_API
     std::pair<iterator, bool> insert(const value_type& obj);
+
+    /// Attempts to insert \p value into the \p VtDictionary at \p key.
+    template<class... Args>
+    std::pair<iterator, bool>
+    try_emplace(const key_type& key, 
+                Args&&... args)
+    {
+        TfAutoMallocTag tag("Vt", "VtDictionary::try_emplace");
+        _CreateDictIfNeeded();
+        std::pair<_Map::iterator, bool> inserted = 
+            _dictMap->try_emplace(key, std::forward<Args>(args)...);
+        return {iterator(_dictMap.get(), inserted.first), inserted.second};
+    }
+
+    /// Attempts to insert \p value into the \p VtDictionary at \p key.
+    template<class... Args>
+    std::pair<iterator, bool>
+    try_emplace(key_type&& key, 
+                Args&&... args)
+    {
+        TfAutoMallocTag tag("Vt", "VtDictionary::try_emplace");
+        _CreateDictIfNeeded();
+        std::pair<_Map::iterator, bool> inserted = 
+            _dictMap->try_emplace(std::move(key), std::forward<Args>(args)...);
+        return {iterator(_dictMap.get(), inserted.first), inserted.second};
+    }
+
+    /// Inserts or assigns \p value into the \p VtDictionary at \p key.
+    template<class... Args>
+    std::pair<iterator, bool> 
+    insert_or_assign(const key_type& key, 
+                     Args&&... args)
+    {
+        TfAutoMallocTag tag("Vt", "VtDictionary::insert_or_assign");
+        _CreateDictIfNeeded();
+        std::pair<_Map::iterator, bool> inserted = 
+            _dictMap->insert_or_assign(key, std::forward<Args>(args)...);
+        return {iterator(_dictMap.get(), inserted.first), inserted.second};
+    }
+
+    /// Inserts or assigns \p value into the \p VtDictionary at \p key.
+    template<class... Args>
+    std::pair<iterator, bool> 
+    insert_or_assign(key_type&& key, 
+                     Args&&... args)
+    {
+        TfAutoMallocTag tag("Vt", "VtDictionary::insert_or_assign");
+        _CreateDictIfNeeded();
+        std::pair<_Map::iterator, bool> inserted = 
+            _dictMap->insert_or_assign(
+                std::move(key), std::forward<Args>(args)...);
+        return {iterator(_dictMap.get(), inserted.first), inserted.second};
+    }
 
     /// Return a pointer to the value at \p keyPath if one exists.  \p keyPath
     /// is a delimited string of sub-dictionary names.  Key path elements are
@@ -350,6 +435,7 @@ private:
         std::vector<std::string>::const_iterator curKeyElem,
         std::vector<std::string>::const_iterator keyElemEnd);
 
+    VT_API
     void _CreateDictIfNeeded();
 
 };
@@ -556,14 +642,9 @@ VtDictionaryOver(const VtDictionary &strong, VtDictionary *weak,
 /// subdict, too, will contain values from \a weak that are not found in \a
 /// strong.
 ///
-/// If \p coerceToWeakerOpinionType is \c true then coerce a strong value to
-/// the weaker value's type, if there is a weaker value.  This is mainly
-/// intended to promote to enum types.
-///
 /// \ingroup group_vtdict_functions
 VT_API VtDictionary
-VtDictionaryOverRecursive(const VtDictionary &strong, const VtDictionary &weak,
-                          bool coerceToWeakerOpinionType = false);
+VtDictionaryOverRecursive(const VtDictionary &strong, const VtDictionary &weak);
 
 /// Updates \p strong to become \p strong composed recursively over \p weak.
 ///
@@ -577,14 +658,9 @@ VtDictionaryOverRecursive(const VtDictionary &strong, const VtDictionary &weak,
 /// recursive call to this method in which \a strong's subdictionary will have
 /// entries added if they are contained in \a weak but not in \a strong
 ///
-/// If \p coerceToWeakerOpinionType is \c true then coerce a strong value to
-/// the weaker value's type, if there is a weaker value.  This is mainly
-/// intended to promote to enum types.
-///
 /// \ingroup group_vtdict_functions
 VT_API void
-VtDictionaryOverRecursive(VtDictionary *strong, const VtDictionary &weak,
-                          bool coerceToWeakerOpinionType = false);
+VtDictionaryOverRecursive(VtDictionary *strong, const VtDictionary &weak);
 
 /// Updates \p weak to become \p strong composed recursively over \p weak.
 ///
@@ -598,18 +674,12 @@ VtDictionaryOverRecursive(VtDictionary *strong, const VtDictionary &weak,
 /// weak's subdictionary is recursively overlayed by \a strong's
 /// subdictionary.
 ///
-/// The result is that no key/value pairs of \a will be lost in nested
+/// The result is that no key/value pairs of \a weak will be lost in nested
 /// dictionaries. Rather, only non-dictionary values will be overwritten
-///
-/// If \p coerceToWeakerOpinionType is \c true then coerce a strong value to
-/// the weaker value's type, if there is a weaker value.  This is mainly
-/// intended to promote to enum types.
 ///
 /// \ingroup group_vtdict_functions
 VT_API void
-VtDictionaryOverRecursive(const VtDictionary &strong, VtDictionary *weak,
-                          bool coerceToWeakerOpinionType = false);
-
+VtDictionaryOverRecursive(const VtDictionary &strong, VtDictionary *weak);
 
 struct VtDictionaryHash {
     inline size_t operator()(VtDictionary const &dict) const {

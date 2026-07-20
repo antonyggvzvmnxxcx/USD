@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_USD_CLIP_SET_H
 #define PXR_USD_USD_CLIP_SET_H
@@ -39,6 +22,7 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 TF_DECLARE_WEAK_PTRS(PcpLayerStack);
 
+class GfInterval;
 class Usd_ClipSet;
 class Usd_ClipSetDefinition;
 
@@ -49,6 +33,17 @@ using Usd_ClipSetRefPtr = std::shared_ptr<Usd_ClipSet>;
 /// Represents a clip set for value resolution. A clip set primarily
 /// consists of a list of Usd_Clip objects from which attribute values
 /// are retrieved during value resolution.
+///
+/// Clip sets support both time samples and spline value formats.
+/// Within a clip set, an attribute cannot mix and match time samples
+/// and splines. Note the following behaviors.
+/// 1. Time samples are preferred. If a single clip contains both time
+///    samples and splines for an attribute, the spline is ignored.
+///    If an attribute has time samples and splines in different clips,
+///    it will get values from time samples and the splines are ignored.
+/// 2. If a manifest is authored, the value format that resolves from
+///    the annotations is the source of truth. Other formats may be
+///    defined in clips but ignored to prefer the manifest definition.
 ///
 class Usd_ClipSet
 {
@@ -67,10 +62,62 @@ public:
 
     /// Return the active clip at the given \p time. This should
     /// always be a valid Usd_ClipRefPtr.
-    const Usd_ClipRefPtr& GetActiveClip(double time) const
+    ///
+    /// This overload tries to find if \p time has any jump discontinuity, and
+    /// if so, and if querying a pre-time, it will return the previous clip.
+    ///
+    /// \sa GetActiveClip(UsdTimeCode time, bool timeHasJumpDiscontinuity)
+    const Usd_ClipRefPtr& GetActiveClip(UsdTimeCode time) const
     {
-        return valueClips[_FindClipIndexForTime(time)];
+        if (!time.IsPreTime()) {
+            // When querying an ordinary time, we do not need to check if there 
+            // is a jump discontinuity at time, the active clip will be decided 
+            // based on the later time mapping.
+            return GetActiveClip(time, false /*timeHasJumpDiscontinuity*/);
+        }
+
+        return GetActiveClip(
+            time, _HasJumpDiscontinuityAtTime(time.GetValue()));
     }
+
+    /// Return the active clip at the given \p time. This should
+    /// always be a valid Usd_ClipRefPtr.
+    ///
+    /// If \p timeHasJumpDiscontinuity is true, and \p time is a pre-time 
+    /// then our active clip should be previous clip.
+    const Usd_ClipRefPtr& GetActiveClip(
+        UsdTimeCode time, bool timeHasJumpDiscontinuity) const
+    {
+        size_t clipIndex = _FindClipIndexForTime(time.GetValue());
+        return (timeHasJumpDiscontinuity && time.IsPreTime() && clipIndex > 0) ?
+            valueClips[clipIndex - 1] : valueClips[clipIndex];
+    }
+
+    /// Returns the previous clip given a \p clip. 
+    ///
+    /// If there is no previous clip, this \p clip is returned as the previous 
+    /// clip.
+    const Usd_ClipRefPtr& GetPreviousClip(
+        const Usd_ClipRefPtr& clip) const
+    {
+        auto it = std::find(valueClips.begin(), valueClips.end(), clip);
+        if (it == valueClips.end()) {
+            TF_CODING_ERROR("Clip must be in clip set");
+            return clip;
+        }
+        if (it != valueClips.begin()) {
+            return *(--it);
+        }
+        // No previous clip, return the same clip.
+        return clip; 
+    }
+
+    /// Convenience functions for determining attribute data format for a path
+    /// @{
+    bool ContainsValueForAttribute(const SdfPath& path) const;
+    bool ContainsTimeSamplesForAttribute(const SdfPath& path) const;
+    bool ContainsSplineForAttribute(const SdfPath& path) const;
+    /// @}
 
     /// Return bracketing time samples for the attribute at \p path
     /// at \p time.
@@ -78,8 +125,22 @@ public:
         const SdfPath& path, double time,
         double* lower, double* upper) const;
 
+    /// Returns the previous time sample authored just before the querying \p 
+    /// time.
+    ///
+    /// If there is no time sample authored just before \p time, this function
+    /// returns false. Otherwise, it returns true and sets \p tPrevious to the
+    /// time of the previous sample.
+    bool GetPreviousTimeSampleForPath(
+        const SdfPath& path, double time, double* tPrevious) const;
+
     /// Return set of time samples for attribute at \p path.
     std::set<double> ListTimeSamplesForPath(const SdfPath& path) const;
+
+    /// Return list of time samples for attribute at \p path
+    /// in the given \p interval.
+    std::vector<double> GetTimeSamplesInInterval(
+        const SdfPath& path, const GfInterval& interval) const;
 
     /// Query time sample for the attribute at \p path at \p time.
     /// If no time sample exists in the active clip at \p time,
@@ -91,13 +152,51 @@ public:
     /// the attribute's value type.
     template <class T>
     bool QueryTimeSample(
-        const SdfPath& path, double time, 
-        Usd_InterpolatorBase* interpolator, T* value) const;
+        const SdfPath& path, UsdTimeCode time, 
+        Usd_Interpolator const &interpolator, T* value) const;
+
+    /// If there is a time sample for \p path at \p time, return its value's
+    /// typeid(), otherwise return typeid(void).
+    const std::type_info &QueryTimeSampleTypeid(
+        const SdfPath& path, UsdTimeCode time) const;
+
+    /// Query time samples for an attribute at \p path at pre-time \p time if
+    /// samples represent a jump discontinuity.
+    ///
+    /// If \p time is not a pre-time or it doesn't represent a jump
+    /// discontinuity, this function returns false. Otherwise, it returns
+    /// true and sets the pre-time sample value to \p value.
+    template <class T>
+    bool QueryPreTimeSampleWithJumpDiscontinuity(
+        const SdfPath& path, UsdTimeCode time, 
+        Usd_Interpolator const &interpolator, T* value) const;
+
+    template <class T>
+    bool QuerySpline(const SdfPath& path, UsdTimeCode time, T* result) const;
+
+    /// Output a spline assembled from clips for attribute at \p path ,
+    /// returning true on successfully building a spline.
+    ///
+    /// If the manifest reports that the attribute doesn't exist or is not
+    /// a spline, this returns false.
+    ///
+    /// This function concatenates clips' contributed splines from
+    /// Usd_Clip::BuildSpline. If a clip doesn't have a spline, the
+    /// following process is invoked:
+    /// 1. If the manifest has a default value, a held spline with that value
+    ///    is produced that coalesces adjacent clips that are missing splines.
+    /// 2. If the manifest doesn't have a default value, a value block spline
+    ///    is produced with the same coalescing behavior as (1).
+    /// 3. If the manifest doesn't have a default value and
+    ///    interpolateMissingClipValues=true, a spline with linear
+    ///    interpolation between splines built from adjacent clips is produced
+    ///    with the same coalescing behavior as (1).
+    bool BuildSpline(const SdfPath& path, TsSpline* result) const;
 
     std::string name;
     PcpLayerStackPtr sourceLayerStack;
     SdfPath sourcePrimPath;
-    size_t sourceLayerIndex;
+    SdfLayerHandle sourceLayer;
     SdfPath clipPrimPath;
     Usd_ClipRefPtr manifestClip;
     Usd_ClipRefPtrVector valueClips;
@@ -112,10 +211,18 @@ private:
     // This will always return a valid index into the valueClips list.
     size_t _FindClipIndexForTime(double time) const;
 
+    /// Returns true if the \p time represents a jump discontinuity.
+    ///
+    bool _HasJumpDiscontinuityAtTime(double time) const;
+
     // Return whether the specified clip contributes time sample values
     // to this clip set for the attribute at \p path.
-    bool _ClipContributesValue(
+    bool _ClipContributesTimeSamples(
         const Usd_ClipRefPtr& clip, const SdfPath& path) const;
+
+    /// Mapping of external to internal times, populated during clips
+    /// population.
+    std::shared_ptr<const Usd_Clip::TimeMappings> _times;
 };
 
 // ------------------------------------------------------------
@@ -123,10 +230,11 @@ private:
 template <class T>
 inline bool
 Usd_ClipSet::QueryTimeSample(
-    const SdfPath& path, double time, 
-    Usd_InterpolatorBase* interpolator, T* value) const
+    const SdfPath& path, UsdTimeCode time, 
+    Usd_Interpolator const &interpolator, T* value) const
 {
-    const Usd_ClipRefPtr& clip = GetActiveClip(time);
+    const Usd_ClipRefPtr& clip = 
+        GetActiveClip(time, false /*timeHasJumpDiscontinuity*/);
 
     // First query the clip for time samples at the specified time.
     if (clip->QueryTimeSample(path, time, interpolator, value)) {
@@ -140,13 +248,38 @@ Usd_ClipSet::QueryTimeSample(
         Usd_DefaultValueResult::Found;
 }
 
+template <class T>
+inline bool
+Usd_ClipSet::QueryPreTimeSampleWithJumpDiscontinuity(
+    const SdfPath& path, UsdTimeCode time,
+    Usd_Interpolator const &interpolator, T* value) const
+{
+    if (!time.IsPreTime()) {
+        return false;
+    }
+
+    if (!_HasJumpDiscontinuityAtTime(time.GetValue())) {
+        return false;
+    }
+
+    const Usd_ClipRefPtr& clip = 
+        GetActiveClip(time, true /*timeHasJumpDiscontinuity*/);
+    
+    if (clip->QueryTimeSample(path, time, interpolator, value)) {
+        return true;
+    }
+
+    return Usd_HasDefault(manifestClip, path, value) == 
+        Usd_DefaultValueResult::Found;
+}
+
 // ------------------------------------------------------------
 
 template <class T>
 inline bool
 Usd_QueryTimeSample(
     const Usd_ClipSetRefPtr& clipSet, const SdfPath& path,
-    double time, Usd_InterpolatorBase* interpolator, T* result)
+    double time, Usd_Interpolator const &interpolator, T* result)
 {
     return clipSet->QueryTimeSample(path, time, interpolator, result);
 }

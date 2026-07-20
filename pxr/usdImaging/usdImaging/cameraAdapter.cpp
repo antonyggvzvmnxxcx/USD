@@ -1,27 +1,12 @@
 //
 // Copyright 2019 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usdImaging/usdImaging/cameraAdapter.h"
+
+#include "pxr/usdImaging/usdImaging/dataSourceCamera.h"
 #include "pxr/usdImaging/usdImaging/delegate.h"
 #include "pxr/usdImaging/usdImaging/indexProxy.h"
 #include "pxr/usdImaging/usdImaging/tokens.h"
@@ -42,6 +27,53 @@ TF_REGISTRY_FUNCTION(TfType)
 }
 
 UsdImagingCameraAdapter::~UsdImagingCameraAdapter() = default;
+
+TfTokenVector
+UsdImagingCameraAdapter::GetImagingSubprims(UsdPrim const& prim)
+{
+    return { TfToken() };
+}
+
+TfToken
+UsdImagingCameraAdapter::GetImagingSubprimType(
+        UsdPrim const& prim,
+        TfToken const& subprim)
+{
+    if (subprim.IsEmpty()) {
+        return HdPrimTypeTokens->camera;
+    }
+    return TfToken();
+}
+
+HdContainerDataSourceHandle
+UsdImagingCameraAdapter::GetImagingSubprimData(
+        UsdPrim const& prim,
+        TfToken const& subprim,
+        const UsdImagingDataSourceStageGlobals &stageGlobals)
+{
+    if (subprim.IsEmpty()) {
+        return UsdImagingDataSourceCameraPrim::New(
+            prim.GetPath(),
+            prim,
+            stageGlobals);
+    }
+    return nullptr;
+}
+
+HdDataSourceLocatorSet
+UsdImagingCameraAdapter::InvalidateImagingSubprim(
+        UsdPrim const& prim,
+        TfToken const& subprim,
+        TfTokenVector const& properties,
+        const UsdImagingPropertyInvalidationType invalidationType)
+{
+    if (subprim.IsEmpty()) {
+        return UsdImagingDataSourceCameraPrim::Invalidate(
+            prim, subprim, properties, invalidationType);
+    }
+
+    return HdDataSourceLocatorSet();
+}
 
 bool
 UsdImagingCameraAdapter::IsSupported(UsdImagingIndexProxy const* index) const
@@ -78,120 +110,34 @@ UsdImagingCameraAdapter::TrackVariability(UsdPrim const& prim,
 
     // Discover time-varying transforms.
     _IsTransformVarying(prim,
-        HdCamera::DirtyTransform,
-        UsdImagingTokens->usdVaryingXform,
-        timeVaryingBits);
-
-    // Properties that affect the projection matrix.
-    // To get a small speed boost, if an attribute sets a dirty bit we skip
-    // all subsequent checks for that dirty bit.
-    _IsVarying(prim,
-        UsdGeomTokens->projection,
-        HdCamera::DirtyProjMatrix,
-        HdCameraTokens->projection,
-        timeVaryingBits,
-        false);
-
-    if ((*timeVaryingBits & HdCamera::DirtyProjMatrix) == 0) {
-        _IsVarying(prim,
-            UsdGeomTokens->horizontalAperture,
-            HdCamera::DirtyProjMatrix,
-            HdCameraTokens->projectionMatrix,
-            timeVaryingBits,
-            false);
-    }
-        
-    if ((*timeVaryingBits & HdCamera::DirtyProjMatrix) == 0) {
-        _IsVarying(prim,
-            UsdGeomTokens->verticalAperture,
-            HdCamera::DirtyProjMatrix,
-            HdCameraTokens->projectionMatrix,
-            timeVaryingBits,
-            false);
-    }
-    if ((*timeVaryingBits & HdCamera::DirtyProjMatrix) == 0) {
-        _IsVarying(prim,
-            UsdGeomTokens->horizontalApertureOffset,
-            HdCamera::DirtyProjMatrix,
-            HdCameraTokens->projectionMatrix,
-            timeVaryingBits,
-            false);
-    }
-    if ((*timeVaryingBits & HdCamera::DirtyProjMatrix) == 0) {
-        _IsVarying(prim,
-            UsdGeomTokens->verticalApertureOffset,
-            HdCamera::DirtyProjMatrix,
-            HdCameraTokens->projectionMatrix,
-            timeVaryingBits,
-            false);
-    }
-    if ((*timeVaryingBits & HdCamera::DirtyProjMatrix) == 0) {
-        _IsVarying(prim,
-            UsdGeomTokens->clippingRange,
-            HdCamera::DirtyProjMatrix,
-            HdCameraTokens->projectionMatrix,
-            timeVaryingBits,
-            false);
-    }
-    if ((*timeVaryingBits & HdCamera::DirtyProjMatrix) == 0) {
-        _IsVarying(prim,
-            UsdGeomTokens->focalLength,
-            HdCamera::DirtyProjMatrix,
-            HdCameraTokens->projectionMatrix,
-            timeVaryingBits,
-            false);
-    }
+                        HdCamera::DirtyTransform,
+                        UsdImagingTokens->usdVaryingXform,
+                        timeVaryingBits);
 
     _IsVarying(prim,
-        UsdGeomTokens->clippingPlanes,
-        HdCamera::DirtyClipPlanes,
-        HdCameraTokens->clipPlanes,
-        timeVaryingBits,
-        false);
+               UsdGeomTokens->clippingPlanes,
+               HdCamera::DirtyClipPlanes,
+               HdCameraTokens->clipPlanes,
+               timeVaryingBits,
+               false);
 
-    // If any of the physical params that affect the projection matrix are time
-    // varying, we can flag the DirtyParams bit as varying and avoid querying
-    // variability of the remaining params.
-    if (*timeVaryingBits & HdCamera::DirtyProjMatrix) {
-        *timeVaryingBits |= HdCamera::DirtyParams;
-    } else {
-        _IsVarying(prim,
-            UsdGeomTokens->fStop,
-            HdCamera::DirtyParams,
-            HdCameraTokens->fStop,
-            timeVaryingBits,
-            false);
-        if ((*timeVaryingBits & HdCamera::DirtyParams) == 0) {
-            _IsVarying(prim,
-                UsdGeomTokens->focusDistance,
-                HdCamera::DirtyParams,
-                HdCameraTokens->focusDistance,
-                timeVaryingBits,
-                false);
+    // If any other camera attributes are time varying
+    // we will assume all camera params are time-varying.
+    const std::vector<UsdAttribute> &attrs = prim.GetAttributes();
+    for (UsdAttribute const& attr : attrs) {
+        // Don't double-count clipping-plane or transform attrs.
+        if (attr.GetBaseName() == UsdGeomTokens->clippingPlanes) { continue; }
+        if (UsdGeomXformable::IsTransformationAffectedByAttrNamed(
+                attr.GetName())) {
+            continue;
         }
-        if ((*timeVaryingBits & HdCamera::DirtyParams) == 0) {
-            _IsVarying(prim,
-                UsdGeomTokens->shutterOpen,
-                HdCamera::DirtyParams,
-                HdCameraTokens->shutterOpen,
-                timeVaryingBits,
-                false);
-        }
-        if ((*timeVaryingBits & HdCamera::DirtyParams) == 0) {
-            _IsVarying(prim,
-                UsdGeomTokens->shutterClose,
-                HdCamera::DirtyParams,
-                HdCameraTokens->shutterClose,
-                timeVaryingBits,
-                false);
-        }
-        if ((*timeVaryingBits & HdCamera::DirtyParams) == 0) {
-            _IsVarying(prim,
-                UsdGeomTokens->exposure,
-                HdCamera::DirtyParams,
-                HdCameraTokens->exposure,
-                timeVaryingBits,
-                false);
+        if (_IsVarying(prim,
+                       attr.GetName(),
+                       HdCamera::DirtyParams,
+                       attr.GetName(),
+                       timeVaryingBits,
+                       false)) {
+            return;
         }
     }
 }
@@ -296,9 +242,30 @@ UsdImagingCameraAdapter::Get(UsdPrim const& prim,
         cam.GetShutterCloseAttr().Get(&vShutterClose, time); // conversion n/a
         return vShutterClose;
     } else if (key == HdCameraTokens->exposure) {
-        VtValue v;
-        cam.GetExposureAttr().Get(&v, time); // conversion n/a
-        return v;
+        // The raw exponential compensation attribute.
+        // See "linearExposureScale" below for the computed linear multiplier.
+        VtValue vExposureExponent;
+        cam.GetExposureAttr().Get(&vExposureExponent, time); // conversion n/a
+        return vExposureExponent;
+    } else if (key == HdCameraTokens->exposureTime) {
+        VtValue vExposureTime;
+        cam.GetExposureTimeAttr().Get(&vExposureTime, time); // conversion n/a
+        return vExposureTime;
+    } else if (key == HdCameraTokens->exposureIso) {
+        VtValue vExposureIso;
+        cam.GetExposureIsoAttr().Get(&vExposureIso, time); // conversion n/a
+        return vExposureIso;
+    } else if (key == HdCameraTokens->exposureFStop) {
+        VtValue vExposureFStop;
+        cam.GetExposureFStopAttr().Get(&vExposureFStop, time); // conversion n/a
+        return vExposureFStop;
+    } else if (key == HdCameraTokens->exposureResponsivity) {
+        VtValue vExposureResponsivity;
+        cam.GetExposureResponsivityAttr().Get(&vExposureResponsivity, time); // conversion n/a
+        return vExposureResponsivity;
+    } else if (key == HdCameraTokens->linearExposureScale) {
+        // The computed linear exposure multiplier.
+        return VtValue(cam.ComputeLinearExposureScale(time));
     }
 
     VtValue v;
@@ -312,27 +279,30 @@ UsdImagingCameraAdapter::ProcessPropertyChange(UsdPrim const& prim,
                                       TfToken const& propertyName)
 {
     if (UsdGeomXformable::IsTransformationAffectedByAttrNamed(propertyName))
+
         return HdCamera::DirtyTransform;
 
-    else if (propertyName == UsdGeomTokens->projection ||
-             propertyName == UsdGeomTokens->horizontalAperture ||
-             propertyName == UsdGeomTokens->verticalAperture ||
-             propertyName == UsdGeomTokens->horizontalApertureOffset ||
-             propertyName == UsdGeomTokens->verticalApertureOffset ||
-             propertyName == UsdGeomTokens->clippingRange ||
-             propertyName == UsdGeomTokens->focalLength) {
-        return HdCamera::DirtyProjMatrix |
-               HdCamera::DirtyParams;
-    }
+    if (propertyName == UsdGeomTokens->clippingPlanes)
 
-    else if (propertyName == UsdGeomTokens->clippingPlanes)
         return HdCamera::DirtyClipPlanes;
 
-    else if (propertyName == UsdGeomTokens->fStop ||
-             propertyName == UsdGeomTokens->focusDistance ||
-             propertyName == UsdGeomTokens->shutterOpen ||
-             propertyName == UsdGeomTokens->shutterClose ||
-             propertyName == UsdGeomTokens->exposure)
+    if (propertyName == UsdGeomTokens->projection ||
+        propertyName == UsdGeomTokens->horizontalAperture ||
+        propertyName == UsdGeomTokens->verticalAperture ||
+        propertyName == UsdGeomTokens->horizontalApertureOffset ||
+        propertyName == UsdGeomTokens->verticalApertureOffset ||
+        propertyName == UsdGeomTokens->focalLength ||
+        propertyName == UsdGeomTokens->clippingRange ||
+        propertyName == UsdGeomTokens->fStop ||
+        propertyName == UsdGeomTokens->focusDistance ||
+        propertyName == UsdGeomTokens->shutterOpen ||
+        propertyName == UsdGeomTokens->shutterClose ||
+        propertyName == UsdGeomTokens->exposure ||
+        propertyName == UsdGeomTokens->exposureTime ||
+        propertyName == UsdGeomTokens->exposureIso ||
+        propertyName == UsdGeomTokens->exposureFStop ||
+        propertyName == UsdGeomTokens->exposureResponsivity)
+        
         return HdCamera::DirtyParams;
 
     // XXX: There's no catch-all dirty bit for weird camera params.
@@ -353,7 +323,7 @@ UsdImagingCameraAdapter::MarkTransformDirty(UsdPrim const& prim,
                                            SdfPath const& cachePath,
                                            UsdImagingIndexProxy* index)
 {
-    index->MarkSprimDirty(cachePath, HdCamera::DirtyViewMatrix);
+    index->MarkSprimDirty(cachePath, HdCamera::DirtyTransform);
 }
 
 void

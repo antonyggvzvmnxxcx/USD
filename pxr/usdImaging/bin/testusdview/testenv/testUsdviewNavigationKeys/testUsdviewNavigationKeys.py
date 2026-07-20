@@ -2,25 +2,8 @@
 #
 # Copyright 2017 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 
 # Leaving these in for future debugging
@@ -33,14 +16,14 @@ def _emitCollapseAllAction(appController):
     appController._ui.actionCollapse_All.triggered.emit() 
     appController._processEvents()
 
-def _popupViewMenu(appController):
-    appController._ui.menuView.exec_()
+def _popupFileMenu(appController):
+    appController._ui.menuFile.exec_()
     appController._processEvents()
 
 def _postAndProcessKeyEvent(key, widget, appController):
-    event = QtGui.QKeyEvent(QtCore.QEvent.KeyPress,
+    event = QtGui.QKeyEvent(QtCore.QEvent.Type.KeyPress,
                             key,
-                            QtCore.Qt.NoModifier)
+                            QtCore.Qt.KeyboardModifier.NoModifier)
     QtWidgets.QApplication.postEvent(widget, event)
     appController._processEvents()
 
@@ -50,7 +33,7 @@ class EscapeSender(QtCore.QObject):
         self._receiver = receiver
 
     def doIt(self, appController):
-        _postAndProcessKeyEvent(QtCore.Qt.Key_Escape, self._receiver, 
+        _postAndProcessKeyEvent(QtCore.Qt.Key.Key_Escape, self._receiver, 
                 appController)
 
 def _testBasic(appController):
@@ -79,7 +62,7 @@ def _testBasic(appController):
     # path hierarchy
     path = Sdf.Path("/World/sets/setModel")
     for i in range(2 * path.pathElementCount):
-        _postAndProcessKeyEvent(QtCore.Qt.Key_Right, appObj, appController)
+        _postAndProcessKeyEvent(QtCore.Qt.Key.Key_Right, appObj, appController)
 
     assert len(selectionDataModel.getPrims()) == 1
     assert selectionDataModel.getFocusPrim().GetPrimPath() == path, \
@@ -89,7 +72,7 @@ def _testBasic(appController):
     for i in range(1, 2 * path.pathElementCount):
         # Send the event to mainWindow to ensure our app filter reroutes it
         # to the focusWidget.
-        _postAndProcessKeyEvent(QtCore.Qt.Key_Left, appObj, appController)
+        _postAndProcessKeyEvent(QtCore.Qt.Key.Key_Left, appObj, appController)
 
     assert len(selectionDataModel.getPrims()) == 1
     assert selectionDataModel.getFocusPrim().IsPseudoRoot()
@@ -100,10 +83,10 @@ def _testBasic(appController):
     appController._mainWindow.setFocus()
     assert appController._dataModel.currentFrame == startFrame
 
-    _postAndProcessKeyEvent(QtCore.Qt.Key_Right, appObj, appController)
+    _postAndProcessKeyEvent(QtCore.Qt.Key.Key_Right, appObj, appController)
     assert appController._dataModel.currentFrame == startFrame + 1
 
-    _postAndProcessKeyEvent(QtCore.Qt.Key_Left, appObj, appController)
+    _postAndProcessKeyEvent(QtCore.Qt.Key.Key_Left, appObj, appController)
     assert appController._dataModel.currentFrame == startFrame
 
     # Regression tests for bugs #154716, 154665: Make sure we don't try
@@ -112,9 +95,9 @@ def _testBasic(appController):
     # menus and modals, since our filter changes it to be a focus-changer.
     # If the filter is still active (FAILURE), then the test will not
     # terminate, and eventually be killed.
-    escSender = EscapeSender(appController._ui.menuView)
+    escSender = EscapeSender(appController._ui.menuFile)
     QtCore.QTimer.singleShot(500, lambda: escSender.doIt(appController))
-    _popupViewMenu(appController)
+    _popupFileMenu(appController)
     
     # Modal dialogs won't receive events sent to the application object,
     # so we must send it to the widget itself. Which means we can't use any

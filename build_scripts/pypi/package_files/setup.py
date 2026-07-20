@@ -1,29 +1,17 @@
 #
 # Copyright 2020 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 import setuptools
-
-import glob, os, platform, re, shutil
+import argparse
+import glob
+import os
+import platform
+import re
+import shutil
+import sys
 
 # This setup.py script expects to be run from an inst directory in a typical
 # USD build run from build_usd.py.
@@ -35,12 +23,29 @@ import glob, os, platform, re, shutil
 # is done depends on platform, and is mostly accomplished by steps in the CI
 # system.
 
+# Define special arguments for setup.py to customize behavior.
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--post-release-tag", type=str,
+    help="Post release tag to append to version number")
+
+args, remaining = parser.parse_known_args()
+
+# Remove our special arguments from sys.argv so that setuptools doesn't choke on
+# them. argparse will also eat the "setup.py" argument in sys.argv[0] which is
+# apparently necessary for setuptools, so we manually prepend that to the
+# remaining unprocessed arguments.
+sys.argv = [sys.argv[0]] + remaining
+
 def windows():
     return platform.system() == "Windows"
 
 WORKING_ROOT = '.'
 USD_BUILD_OUTPUT = os.path.join(WORKING_ROOT, 'inst')
 BUILD_DIR = os.path.join(WORKING_ROOT, 'pypi')
+PYTHON_LIB_DIR = os.path.join(BUILD_DIR, 'lib/python')
+PXR_DIR = os.path.join(PYTHON_LIB_DIR, 'pxr')
+PLUGINFO_DIR = os.path.join(PXR_DIR, 'pluginfo')
 
 # Copy everything in lib over before we start making changes
 shutil.copytree(os.path.join(USD_BUILD_OUTPUT, 'lib'), os.path.join(BUILD_DIR, 'lib'))
@@ -49,7 +54,18 @@ shutil.copytree(os.path.join(USD_BUILD_OUTPUT, 'lib'), os.path.join(BUILD_DIR, '
 # distribution. This breaks the relative paths in the pluginfos, but we'll need
 # to update them later anyway after running "auditwheel repair", which will
 # move the libraries to a new directory
-shutil.move(os.path.join(BUILD_DIR, 'lib/usd'), os.path.join(BUILD_DIR, 'lib/python/pxr/pluginfo'))
+shutil.move(os.path.join(BUILD_DIR, 'lib/usd'), PLUGINFO_DIR)
+
+# Move the pluginfos for plugins that are distributed with the package
+# to the same directory as above.
+#
+# XXX:
+# Currently all plugins are built into the monolithic shared library, so
+# we just need to move the pluginfos over. If we ever ship plugins that
+# are kept separate, we'll need to copy those over too.
+for p in glob.glob(os.path.join(USD_BUILD_OUTPUT, 'plugin/usd/*')):
+    if os.path.isdir(p):
+        shutil.move(p, PLUGINFO_DIR)
 
 if windows():
     # On windows we also need dlls from the bin directory
@@ -61,21 +77,28 @@ if windows():
     dll_files = glob.glob(os.path.join(BUILD_DIR, "lib/*.dll"))
     dll_files.extend(glob.glob(os.path.join(BUILD_DIR, "bin/*.dll")))
     for f in dll_files:
-        shutil.move(f, os.path.join(BUILD_DIR, "lib/python/pxr"))
+        shutil.move(f, PXR_DIR)
 
     # Because there are no RPATHS, patch __init__.py
     # See this thread and related conversations
     # https://mail.python.org/pipermail/distutils-sig/2014-September/024962.html
-    with open(os.path.join(BUILD_DIR, 'lib/python/pxr/__init__.py'), 'a+') as init_file:
+    with open(os.path.join(PXR_DIR, '__init__.py'), 'a+') as init_file:
         init_file.write('''
 
 # appended to this file for the windows PyPI package
 import os, sys
 dllPath = os.path.split(os.path.realpath(__file__))[0]
 if sys.version_info >= (3, 8, 0):
-    os.add_dll_directory(dllPath)
-else:
-    os.environ['PATH'] = dllPath + os.pathsep + os.environ['PATH']
+    os.environ['PXR_USD_WINDOWS_DLL_PATH'] = dllPath
+# Note that we ALWAYS modify the PATH, even for python-3.8+. This is because:
+#    - Anaconda python interpreters are modified to use the old, pre-3.8, PATH-
+#      based method of loading dlls
+#    - extra calls to os.add_dll_directory won't hurt these anaconda
+#      interpreters
+#    - similarly, adding the extra PATH entry shouldn't hurt standard python
+#      interpreters
+#    - there's no canonical/bulletproof way to check for an anaconda interpreter
+os.environ['PATH'] = dllPath + os.pathsep + os.environ['PATH']
 ''')
 
 # Get the readme text
@@ -85,48 +108,58 @@ with open("README.md", "r") as fh:
 # Get the library version number from the installed pxr.h header.
 with open(os.path.join(USD_BUILD_OUTPUT, "include/pxr/pxr.h"), "r") as fh:
     for line in fh:
-        m = re.match("#define PXR_MINOR_VERSION (\d+)", line)
+        m = re.match(r"#define PXR_MINOR_VERSION (\d+)", line)
         if m:
             minorVersion = m.groups(1)[0]
             continue
 
-        m = re.match("#define PXR_PATCH_VERSION (\d+)", line)
+        m = re.match(r"#define PXR_PATCH_VERSION (\d+)", line)
         if m:
             patchVersion = m.groups(1)[0]
             continue
 
 version = "{}.{}".format(minorVersion, patchVersion)
 
+if args.post_release_tag:
+    version = "{}.{}".format(version, args.post_release_tag)
+
+# Build the list of all pluginfo files to include as package data.
+pluginfo_files = [
+    os.path.relpath(f, PXR_DIR)
+    for f in glob.glob(os.path.join(PLUGINFO_DIR, '**/*'), recursive=True)
+    if os.path.isfile(f)
+]
+
 # Config
 setuptools.setup(
     name="usd-core",
     version=version,
     author="Pixar Animation Studios",
-    author_email="pixar.oss+usd_pypi@gmail.com",
-    description="Pixar's Universal Scene Description library",
+    author_email="openusd+usd_pypi@pixar.com",
+    description="Pixar's Universal Scene Description",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://graphics.pixar.com/usd/docs/index.html",
+    license="LicenseRef-TOST-1.0",
+    url="https://openusd.org",
     project_urls={
-        "Documentation": "https://graphics.pixar.com/usd/docs/index.html",
-        "Developer Docs": "https://graphics.pixar.com/usd/docs/USD-Developer-API-Reference.html",
-        "Source": "https://github.com/PixarAnimationStudios/USD",
-        "Discussion Group": "https://groups.google.com/g/usd-interest"
+        "Documentation": "https://openusd.org",
+        "Developer Docs": "https://www.openusd.org/release/apiDocs.html",
+        "Source": "https://github.com/PixarAnimationStudios/OpenUSD",
+        "Discussion Group": "https://forum.openusd.org"
     },
-    packages=setuptools.find_packages(os.path.join(BUILD_DIR, 'lib/python')),
-    package_dir={"": os.path.join(BUILD_DIR, 'lib/python')},
+    packages=setuptools.find_packages(PYTHON_LIB_DIR),
+    package_dir={"": PYTHON_LIB_DIR},
     package_data={
         "": ["*.so", "*.dll", "*.pyd"],
-        "pxr": ["pluginfo/*", "pluginfo/*/*", "pluginfo/*/*/*"],
+        "pxr": pluginfo_files,
     },
     classifiers=[
         "Programming Language :: Python :: 3",
-        "License :: Other/Proprietary License",
         "Operating System :: POSIX :: Linux",
         "Operating System :: MacOS :: MacOS X",
         "Operating System :: Microsoft :: Windows :: Windows 10",
         "Environment :: Console",
         "Topic :: Multimedia :: Graphics",
     ],
-    python_requires='>=3.6, <3.8',
+    python_requires='>=3.9, <3.15',
 )

@@ -12,9 +12,6 @@ pxr_library(kind
     PUBLIC_HEADERS
         api.h
 
-    PYTHON_CPPFILES
-        moduleDeps.cpp
-
     PYMODULE_CPPFILES
         module.cpp
         wrapRegistry.cpp
@@ -31,13 +28,9 @@ pxr_test_scripts(
     testenv/testKindRegistry.py
 )
 
-pxr_install_test_dir(
-    SRC testenv/testKindRegistry
-    DEST testKindRegistry
-)
-
 pxr_register_test(testKindRegistry
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testKindRegistry"
+    TESTENV testenv/testKindRegistry
     EXPECTED_RETURN_CODE 0
 )

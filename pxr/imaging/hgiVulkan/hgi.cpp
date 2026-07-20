@@ -1,28 +1,13 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
-//
+#include "pxr/imaging/hgi/debugCodes.h"
 #include "pxr/imaging/hgiVulkan/blitCmds.h"
 #include "pxr/imaging/hgiVulkan/buffer.h"
+#include "pxr/imaging/hgiVulkan/capabilities.h"
 #include "pxr/imaging/hgiVulkan/commandQueue.h"
 #include "pxr/imaging/hgiVulkan/computeCmds.h"
 #include "pxr/imaging/hgiVulkan/computePipeline.h"
@@ -44,6 +29,7 @@
 #include "pxr/base/tf/envSetting.h"
 #include "pxr/base/tf/registryManager.h"
 #include "pxr/base/tf/type.h"
+#include "pxr/imaging/hgiVulkan/debugCodes.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -65,12 +51,44 @@ HgiVulkan::HgiVulkan()
 
 HgiVulkan::~HgiVulkan()
 {
-    // Wait for all devices and perform final garbage collection.
-    _device->WaitForIdle();
-    _garbageCollector->PerformGarbageCollection(_device);
+    if (HgiVulkanCommandQueue* queue = _device->GetCommandQueue()) {
+        // Wait for command buffers to complete, then reset command buffers for
+        // each device's queue.
+        queue->ResetConsumedCommandBuffers(
+            HgiSubmitWaitTypeWaitUntilCompleted);
+
+        // Wait for all devices and perform final garbage collection.
+        _device->WaitForIdle();
+        _garbageCollector->PerformGarbageCollection(_device);
+    }
+
     delete _garbageCollector;
     delete _device;
     delete _instance;
+}
+
+bool
+HgiVulkan::IsBackendSupported() const
+{
+    // Check if we at least found a usable device.
+    if (!_device->GetVulkanDevice()) {
+        return false;
+    }
+
+    // Want Vulkan 1.2 or higher.
+    const uint32_t apiVersion = GetCapabilities()->GetAPIVersion();
+    const uint32_t majorVersion = VK_VERSION_MAJOR(apiVersion);
+    const uint32_t minorVersion = VK_VERSION_MINOR(apiVersion);
+
+    bool support = (majorVersion > 1) ||
+        ((majorVersion == 1) && (minorVersion >= 2));
+    if (!support) {
+        TF_DEBUG(HGI_DEBUG_IS_SUPPORTED).Msg(
+            "HgiVulkan unsupported due to Vulkan API version: %d.%d "
+            "(must be >= 1.2)\n",
+            majorVersion, minorVersion);
+    }
+    return support;
 }
 
 /* Multi threaded */
@@ -90,19 +108,31 @@ HgiVulkan::CreateBlitCmds()
 }
 
 HgiComputeCmdsUniquePtr
-HgiVulkan::CreateComputeCmds()
+HgiVulkan::CreateComputeCmds(
+    HgiComputeCmdsDesc const& desc)
 {
-    HgiVulkanComputeCmds* cmds(new HgiVulkanComputeCmds(this));
+    HgiVulkanComputeCmds* cmds(new HgiVulkanComputeCmds(this, desc));
     return HgiComputeCmdsUniquePtr(cmds);
 }
 
 /* Multi threaded */
 HgiTextureHandle
-HgiVulkan::CreateTexture(HgiTextureDesc const & desc)
+HgiVulkan::_CreateTexture(HgiTextureDesc const & desc)
 {
     return HgiTextureHandle(
-        new HgiVulkanTexture(this, GetPrimaryDevice(), desc),
-        GetUniqueId());
+        new HgiVulkanTexture(this, desc,
+            /*optimalTiling=*/ true, /*interop=*/false), GetUniqueId());
+}
+
+/* Multi threaded */
+HgiTextureHandle
+HgiVulkan::CreateTextureForInterop(
+    HgiTextureDesc const & desc,
+    bool optimalTiling)
+{
+    return HgiTextureHandle(
+        new HgiVulkanTexture(this, desc,
+            optimalTiling, /*interop=*/true), GetUniqueId());
 }
 
 /* Multi threaded */
@@ -114,14 +144,10 @@ HgiVulkan::DestroyTexture(HgiTextureHandle* texHandle)
 
 /* Multi threaded */
 HgiTextureViewHandle
-HgiVulkan::CreateTextureView(HgiTextureViewDesc const & desc)
+HgiVulkan::_CreateTextureView(HgiTextureViewDesc const & desc)
 {
-    if (!desc.sourceTexture) {
-        TF_CODING_ERROR("Source texture is null");
-    }
-
     HgiTextureHandle src = HgiTextureHandle(
-        new HgiVulkanTexture(this, GetPrimaryDevice(),desc), GetUniqueId());
+        new HgiVulkanTexture(this, desc), GetUniqueId());
     HgiTextureView* view = new HgiTextureView(desc);
     view->SetViewTexture(src);
     return HgiTextureViewHandle(view, GetUniqueId());
@@ -156,10 +182,10 @@ HgiVulkan::DestroySampler(HgiSamplerHandle* smpHandle)
 
 /* Multi threaded */
 HgiBufferHandle
-HgiVulkan::CreateBuffer(HgiBufferDesc const & desc)
+HgiVulkan::_CreateBuffer(HgiBufferDesc const & desc)
 {
     return HgiBufferHandle(
-        new HgiVulkanBuffer(this, GetPrimaryDevice(), desc),
+        new HgiVulkanBuffer(this, desc),
         GetUniqueId());
 }
 
@@ -175,8 +201,8 @@ HgiShaderFunctionHandle
 HgiVulkan::CreateShaderFunction(HgiShaderFunctionDesc const& desc)
 {
     return HgiShaderFunctionHandle(
-        new HgiVulkanShaderFunction(GetPrimaryDevice(), desc),
-        GetUniqueId());
+        new HgiVulkanShaderFunction(GetPrimaryDevice(), this, desc,
+        GetCapabilities()->GetShaderVersion()), GetUniqueId());
 }
 
 /* Multi threaded */
@@ -204,7 +230,7 @@ HgiVulkan::DestroyShaderProgram(HgiShaderProgramHandle* shaderPrgHandle)
 
 /* Multi threaded */
 HgiResourceBindingsHandle
-HgiVulkan::CreateResourceBindings(HgiResourceBindingsDesc const& desc)
+HgiVulkan::_CreateResourceBindings(HgiResourceBindingsDesc const& desc)
 {
     return HgiResourceBindingsHandle(
         new HgiVulkanResourceBindings(GetPrimaryDevice(), desc),
@@ -252,6 +278,20 @@ HgiVulkan::GetAPIName() const {
     return HgiTokens->Vulkan;
 }
 
+/* Multi threaded */
+HgiVulkanCapabilities const*
+HgiVulkan::GetCapabilities() const
+{
+    return &_device->GetDeviceCapabilities();
+}
+
+
+HgiIndirectCommandEncoder*
+HgiVulkan::GetIndirectCommandEncoder() const
+{
+    return nullptr;
+}
+
 /* Single threaded */
 void
 HgiVulkan::StartFrame()
@@ -273,6 +313,19 @@ HgiVulkan::EndFrame()
         _EndFrameSync();
         HgiVulkanEndQueueLabel(GetPrimaryDevice());
     }
+}
+
+void
+HgiVulkan::GarbageCollect()
+{
+    if (ARCH_UNLIKELY(_threadId != std::this_thread::get_id())) {
+        TF_CODING_ERROR("Secondary thread violation");
+        return;
+    }
+    HgiVulkanDevice* device = GetPrimaryDevice();
+
+    // Perform garbage collection for each device.
+    _garbageCollector->PerformGarbageCollection(device);
 }
 
 /* Multi threaded */
@@ -347,6 +400,11 @@ HgiVulkan::_EndFrameSync()
 
     // Perform garbage collection for each device.
     _garbageCollector->PerformGarbageCollection(device);
+
+    if (TfDebug::IsEnabled(HGIVULKAN_DUMP_VMA_STATS)) {
+        TfDebug::Disable(HGIVULKAN_DUMP_VMA_STATS);
+        device->DumpMemoryStats();
+    }
 }
 
 

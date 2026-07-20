@@ -1,22 +1,22 @@
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.27)
 
 project(usd)
 
-if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8 AND NOT EMSCRIPTEN)
     if (WIN32)
         message(FATAL_ERROR "Compiler does not support 64-bit builds. "
                 "If you are using Visual Studio, make sure you are in the "
                 "x64 command prompt and have specified the Win64 cmake "
-                "generator (e.g., -G \"Visual Studio 14 2015 Win64\")")
+                "generator (e.g., -G \"Visual Studio 15 2017 Win64\")")
     else()
         message(FATAL_ERROR "Compiler does not support 64-bit builds.")
     endif()
 endif()
 
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH}
-                      ${CMAKE_SOURCE_DIR}/cmake/defaults
-                      ${CMAKE_SOURCE_DIR}/cmake/modules
-                      ${CMAKE_SOURCE_DIR}/cmake/macros)
+list(APPEND CMAKE_MODULE_PATH
+    ${PROJECT_SOURCE_DIR}/cmake/defaults
+    ${PROJECT_SOURCE_DIR}/cmake/modules
+    ${PROJECT_SOURCE_DIR}/cmake/macros)
 
 include(Options)
 include(ProjectDefaults)
@@ -45,19 +45,30 @@ add_subdirectory(pxr)
 add_subdirectory(extras)
 
 if (PXR_BUILD_PRMAN_PLUGIN)
-    set(prmanPluginPath "third_party/renderman-${RENDERMAN_VERSION_MAJOR}")
+    set(prmanPluginPath "third_party/renderman")
 
     get_filename_component(prmanPluginAbsPath "${prmanPluginPath}" ABSOLUTE)
     if (EXISTS "${prmanPluginAbsPath}")
         add_subdirectory("${prmanPluginPath}")
     else()
-        message(FATAL_ERROR "No RenderMan plugin available for "
-                "RenderMan ${RENDERMAN_VERSION_MAJOR}")
+        message(FATAL_ERROR "No RenderMan plugin not found at "
+                "${prmanPluginAbsPath}. Check client mapping")
     endif()
+endif()
+
+if (PXR_BUILD_TESTS)
+    pxr_tests_prologue()
 endif()
 
 if (PXR_BUILD_DOCUMENTATION)
     pxr_build_documentation()
+
+    # If building python doc strings, run script
+    # that uses doxygen build results and installed
+    # USD python modules
+    if (PXR_BUILD_PYTHON_DOCUMENTATION)
+        pxr_build_python_documentation()
+    endif()
 endif()   
 
 pxr_toplevel_epilogue()

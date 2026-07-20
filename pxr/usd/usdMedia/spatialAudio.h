@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef USDMEDIA_GENERATED_SPATIALAUDIO_H
 #define USDMEDIA_GENERATED_SPATIALAUDIO_H
@@ -62,7 +45,7 @@ class SdfAssetPath;
 /// transformed relative to the model, rather than copying its animation.
 /// 
 /// \section Usd_SpatialAudio_TimeScaling Timecode Attributes and Time Scaling
-/// \a startTime and \a endTime are \ref SdfTimeCode "timecode" valued 
+/// \a startTime and \a endTime are \ref GfTimeCode "timecode" valued 
 /// attributes which gives them the special behavior that 
 /// \ref SdfLayerOffset "layer offsets" affecting the layer in 
 /// which one of these values is authored are applied to the attribute's value 
@@ -83,22 +66,6 @@ class SdfAssetPath;
 /// it would still be impossible to flatten a stage or layer stack into a single
 /// layer and still retain the composed audio dilation using this schema.
 /// 
-/// #### Inverting startTime and endTime
-/// Although we do not expect it to be common, it is possible to apply a 
-/// negative time scale to USD layers, which mostly has the effect of reversing
-/// animation in the affected composition. If a negative scale is applied to a
-/// composition that contains authored \a startTime and \a endTime, it will
-/// reverse their relative ordering in time. Therefore, we stipulate when
-/// \a playbackMode is "onceFromStartToEnd" or "loopFromStartToEnd", if 
-/// \a endTime is less than \a startTime, then begin playback at \a endTime, 
-/// and continue until \a startTime. When \a startTime and \a endTime are 
-/// inverted, we do not, however, stipulate that playback of the audio media 
-/// itself be inverted, since doing so "successfully" would require perfect 
-/// knowledge of when, within the audio clip, relevant audio ends (so that we 
-/// know how to offset the reversed audio to align it so that we reach the 
-/// "beginning" at \a startTime), and sounds played in reverse are not likely 
-/// to produce desirable results. 
-/// 
 ///
 /// For any described attribute \em Fallback \em Value or \em Allowed \em Values below
 /// that are text/tokens, the actual token is published and defined in \ref UsdMediaTokens.
@@ -112,11 +79,6 @@ public:
     ///
     /// \sa UsdSchemaKind
     static const UsdSchemaKind schemaKind = UsdSchemaKind::ConcreteTyped;
-
-    /// \deprecated
-    /// Same as schemaKind, provided to maintain temporary backward 
-    /// compatibility with older generated schemas.
-    static const UsdSchemaKind schemaType = UsdSchemaKind::ConcreteTyped;
 
     /// Construct a UsdMediaSpatialAudio on UsdPrim \p prim .
     /// Equivalent to UsdMediaSpatialAudio::Get(prim.GetStage(), prim.GetPath())
@@ -192,12 +154,6 @@ protected:
     USDMEDIA_API
     UsdSchemaKind _GetSchemaKind() const override;
 
-    /// \deprecated
-    /// Same as _GetSchemaKind, provided to maintain temporary backward 
-    /// compatibility with older generated schemas.
-    USDMEDIA_API
-    UsdSchemaKind _GetSchemaType() const override;
-
 private:
     // needs to invoke _GetStaticTfType.
     friend class UsdSchemaRegistry;
@@ -220,7 +176,7 @@ public:
     /// requirements based on DMA and format support in browsers and consumer 
     /// devices. The allowed audio filetypes for usdz are M4A, MP3, WAV 
     /// (in order of preference).
-    /// \sa <a href="http://graphics.pixar.com/usd/docs/Usdz-File-Format-Specification.html#UsdzFileFormatSpecification-UsdzSpecification">Usdz Specification</a>
+    /// \sa <a href="https://openusd.org/release/spec_usdz.html">Usdz Specification</a>
     /// 
     ///
     /// | ||
@@ -332,7 +288,7 @@ public:
     /// | ||
     /// | -- | -- |
     /// | Declaration | `uniform timecode startTime = 0` |
-    /// | C++ Type | SdfTimeCode |
+    /// | C++ Type | GfTimeCode |
     /// | \ref Usd_Datatypes "Usd Type" | SdfValueTypeNames->TimeCode |
     /// | \ref SdfVariability "Variability" | SdfVariabilityUniform |
     USDMEDIA_API
@@ -366,7 +322,7 @@ public:
     /// | ||
     /// | -- | -- |
     /// | Declaration | `uniform timecode endTime = 0` |
-    /// | C++ Type | SdfTimeCode |
+    /// | C++ Type | GfTimeCode |
     /// | \ref Usd_Datatypes "Usd Type" | SdfValueTypeNames->TimeCode |
     /// | \ref SdfVariability "Variability" | SdfVariabilityUniform |
     USDMEDIA_API

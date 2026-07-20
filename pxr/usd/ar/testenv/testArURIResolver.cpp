@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 
@@ -149,6 +132,69 @@ TestCreateContextFromString()
             _TestURIResolverContext("context string")));
 }
 
+static void
+TestCreateDefaultContext()
+{
+    ArResolver& resolver = ArGetResolver();
+
+    // CreateDefaultContext should return an ArResolverContext containing
+    // the union of the default contexts returned by all registered resolvers.
+    // ArDefaultResolver returns an empty ArResolverContext object as its
+    // default so we can't test for that, but TestArURIResolver returns a
+    // _TestURIResolverContext which we can check for here.
+    const ArResolverContext defaultContext = resolver.CreateDefaultContext();
+
+    const _TestURIResolverContext* uriCtx =
+        defaultContext.Get<_TestURIResolverContext>();
+    TF_AXIOM(uriCtx);
+    TF_AXIOM(uriCtx->data == "CreateDefaultContext");
+}
+
+static void
+TestCreateDefaultContextForAsset()
+{
+    auto runTest = [](const std::string& assetPath) {
+        ArResolver& resolver = ArGetResolver();
+
+        // CreateDefaultContextForAsset should return an ArResolverContext
+        // containing the union of the default contexts returned by all
+        // registered resolvers.
+        const ArResolverContext defaultContext = 
+            resolver.CreateDefaultContextForAsset(assetPath);
+
+        // ArDefaultResolver returns an ArDefaultResolverContext whose search
+        // path is set to the directory of the asset.
+        {
+            const ArDefaultResolverContext* defaultCtx =
+                defaultContext.Get<ArDefaultResolverContext>();
+            TF_AXIOM(defaultCtx);
+
+            const ArDefaultResolverContext expectedCtx(
+                std::vector<std::string>{ 
+                    TfGetPathName(TfAbsPath(assetPath)) });
+            TF_AXIOM(*defaultCtx == expectedCtx);
+        }
+
+        // TestArURIResolver returns a _TestURIResolverContext whose data field
+        // is set to the absolute path of the asset.
+        {
+            const _TestURIResolverContext* uriCtx =
+                defaultContext.Get<_TestURIResolverContext>();
+            TF_AXIOM(uriCtx);
+        
+            const _TestURIResolverContext expectedCtx(
+                TfAbsPath("test/test.file"));
+            TF_AXIOM(*uriCtx == expectedCtx);
+        }
+    };
+
+    runTest("test/test.file");
+
+    // For a package-relative path, CreateDefaultContextForAsset should only
+    // consider the outer-most package path.
+    runTest("test/test.file[in_package]");
+}
+
 int main(int argc, char** argv)
 {
     SetupPlugins();
@@ -158,6 +204,12 @@ int main(int argc, char** argv)
 
     printf("TestCreateContextFromString ...\n");
     TestCreateContextFromString();
+
+    printf("TestCreateDefaultContext ...\n");
+    TestCreateDefaultContext();
+
+    printf("TestCreateDefaultContextForAsset ...\n");
+    TestCreateDefaultContextForAsset();
 
     printf("Test PASSED\n");
     return 0;

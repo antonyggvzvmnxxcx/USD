@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef USDVOL_TOKENS_H
 #define USDVOL_TOKENS_H
@@ -66,21 +49,25 @@ struct UsdVolTokensType {
     /// 
     /// Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr()
     const TfToken bool_;
+    /// \brief "cameraDistance"
+    /// 
+    /// Possible value for UsdVolParticleField3DGaussianSplat::GetSortingModeHintAttr()
+    const TfToken cameraDistance;
     /// \brief "Color"
     /// 
-    /// Possible value for UsdVolFieldAsset::GetVectorDataRoleHintAttr()
-    const TfToken color;
+    /// Possible value for UsdVolVolumeFieldAsset::GetVectorDataRoleHintAttr()
+    const TfToken Color;
     /// \brief "double2"
     /// 
     /// Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr()
     const TfToken double2;
     /// \brief "double3"
     /// 
-    /// Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr(), Possible value for UsdVolField3DAsset::GetFieldDataTypeAttr()
+    /// Possible value for UsdVolField3DAsset::GetFieldDataTypeAttr(), Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr()
     const TfToken double3;
     /// \brief "double"
     /// 
-    /// Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr(), Possible value for UsdVolField3DAsset::GetFieldDataTypeAttr()
+    /// Possible value for UsdVolField3DAsset::GetFieldDataTypeAttr(), Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr()
     const TfToken double_;
     /// \brief "field"
     /// 
@@ -92,15 +79,15 @@ struct UsdVolTokensType {
     const TfToken fieldClass;
     /// \brief "fieldDataType"
     /// 
-    /// UsdVolOpenVDBAsset, UsdVolField3DAsset, UsdVolFieldAsset
+    /// UsdVolVolumeFieldAsset, UsdVolField3DAsset, UsdVolOpenVDBAsset
     const TfToken fieldDataType;
     /// \brief "fieldIndex"
     /// 
-    /// UsdVolFieldAsset
+    /// UsdVolVolumeFieldAsset
     const TfToken fieldIndex;
     /// \brief "fieldName"
     /// 
-    /// UsdVolFieldAsset
+    /// UsdVolVolumeFieldAsset
     const TfToken fieldName;
     /// \brief "fieldPurpose"
     /// 
@@ -108,7 +95,7 @@ struct UsdVolTokensType {
     const TfToken fieldPurpose;
     /// \brief "filePath"
     /// 
-    /// UsdVolFieldAsset
+    /// UsdVolVolumeFieldAsset
     const TfToken filePath;
     /// \brief "float2"
     /// 
@@ -116,11 +103,11 @@ struct UsdVolTokensType {
     const TfToken float2;
     /// \brief "float3"
     /// 
-    /// Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr(), Possible value for UsdVolField3DAsset::GetFieldDataTypeAttr()
+    /// Possible value for UsdVolField3DAsset::GetFieldDataTypeAttr(), Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr()
     const TfToken float3;
     /// \brief "float"
     /// 
-    /// Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr(), Possible value for UsdVolField3DAsset::GetFieldDataTypeAttr()
+    /// Possible value for UsdVolField3DAsset::GetFieldDataTypeAttr(), Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr()
     const TfToken float_;
     /// \brief "fogVolume"
     /// 
@@ -128,7 +115,7 @@ struct UsdVolTokensType {
     const TfToken fogVolume;
     /// \brief "half"
     /// 
-    /// Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr(), Possible value for UsdVolField3DAsset::GetFieldDataTypeAttr()
+    /// Possible value for UsdVolField3DAsset::GetFieldDataTypeAttr(), Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr()
     const TfToken half;
     /// \brief "half2"
     /// 
@@ -136,7 +123,7 @@ struct UsdVolTokensType {
     const TfToken half2;
     /// \brief "half3"
     /// 
-    /// Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr(), Possible value for UsdVolField3DAsset::GetFieldDataTypeAttr()
+    /// Possible value for UsdVolField3DAsset::GetFieldDataTypeAttr(), Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr()
     const TfToken half3;
     /// \brief "int2"
     /// 
@@ -172,20 +159,80 @@ struct UsdVolTokensType {
     const TfToken matrix4d;
     /// \brief "None"
     /// 
-    /// Possible value for UsdVolFieldAsset::GetVectorDataRoleHintAttr(), Default value for UsdVolFieldAsset::GetVectorDataRoleHintAttr()
-    const TfToken none;
+    /// Fallback value for UsdVolVolumeFieldAsset::GetVectorDataRoleHintAttr()
+    const TfToken None_;
     /// \brief "Normal"
     /// 
-    /// Possible value for UsdVolFieldAsset::GetVectorDataRoleHintAttr()
-    const TfToken normal;
+    /// Possible value for UsdVolVolumeFieldAsset::GetVectorDataRoleHintAttr()
+    const TfToken Normal;
+    /// \brief "opacities"
+    /// 
+    /// UsdVolParticleFieldOpacityAttributeAPI
+    const TfToken opacities;
+    /// \brief "opacitiesh"
+    /// 
+    /// UsdVolParticleFieldOpacityAttributeAPI
+    const TfToken opacitiesh;
+    /// \brief "orientations"
+    /// 
+    /// UsdVolParticleFieldOrientationAttributeAPI
+    const TfToken orientations;
+    /// \brief "orientationsh"
+    /// 
+    /// UsdVolParticleFieldOrientationAttributeAPI
+    const TfToken orientationsh;
+    /// \brief "perspective"
+    /// 
+    /// Fallback value for UsdVolParticleField3DGaussianSplat::GetProjectionModeHintAttr()
+    const TfToken perspective;
     /// \brief "Point"
     /// 
-    /// Possible value for UsdVolFieldAsset::GetVectorDataRoleHintAttr()
-    const TfToken point;
+    /// Possible value for UsdVolVolumeFieldAsset::GetVectorDataRoleHintAttr()
+    const TfToken Point;
+    /// \brief "positions"
+    /// 
+    /// UsdVolParticleFieldPositionAttributeAPI
+    const TfToken positions;
+    /// \brief "positionsh"
+    /// 
+    /// UsdVolParticleFieldPositionAttributeAPI
+    const TfToken positionsh;
+    /// \brief "projectionModeHint"
+    /// 
+    /// UsdVolParticleField3DGaussianSplat
+    const TfToken projectionModeHint;
     /// \brief "quatd"
     /// 
     /// Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr()
     const TfToken quatd;
+    /// \brief "radiance:sphericalHarmonicsCoefficients"
+    /// 
+    /// UsdVolParticleFieldSphericalHarmonicsAttributeAPI
+    const TfToken radianceSphericalHarmonicsCoefficients;
+    /// \brief "radiance:sphericalHarmonicsCoefficientsh"
+    /// 
+    /// UsdVolParticleFieldSphericalHarmonicsAttributeAPI
+    const TfToken radianceSphericalHarmonicsCoefficientsh;
+    /// \brief "radiance:sphericalHarmonicsDegree"
+    /// 
+    /// UsdVolParticleFieldSphericalHarmonicsAttributeAPI
+    const TfToken radianceSphericalHarmonicsDegree;
+    /// \brief "rayHitDistance"
+    /// 
+    /// Possible value for UsdVolParticleField3DGaussianSplat::GetSortingModeHintAttr()
+    const TfToken rayHitDistance;
+    /// \brief "scales"
+    /// 
+    /// UsdVolParticleFieldScaleAttributeAPI
+    const TfToken scales;
+    /// \brief "scalesh"
+    /// 
+    /// UsdVolParticleFieldScaleAttributeAPI
+    const TfToken scalesh;
+    /// \brief "sortingModeHint"
+    /// 
+    /// UsdVolParticleField3DGaussianSplat
+    const TfToken sortingModeHint;
     /// \brief "staggered"
     /// 
     /// Possible value for UsdVolOpenVDBAsset::GetFieldClassAttr()
@@ -194,6 +241,10 @@ struct UsdVolTokensType {
     /// 
     /// Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr()
     const TfToken string;
+    /// \brief "tangential"
+    /// 
+    /// Possible value for UsdVolParticleField3DGaussianSplat::GetProjectionModeHintAttr()
+    const TfToken tangential;
     /// \brief "uint"
     /// 
     /// Possible value for UsdVolOpenVDBAsset::GetFieldDataTypeAttr()
@@ -204,12 +255,96 @@ struct UsdVolTokensType {
     const TfToken unknown;
     /// \brief "Vector"
     /// 
-    /// Possible value for UsdVolFieldAsset::GetVectorDataRoleHintAttr()
-    const TfToken vector;
+    /// Possible value for UsdVolVolumeFieldAsset::GetVectorDataRoleHintAttr()
+    const TfToken Vector;
     /// \brief "vectorDataRoleHint"
     /// 
-    /// UsdVolFieldAsset
+    /// UsdVolVolumeFieldAsset
     const TfToken vectorDataRoleHint;
+    /// \brief "zDepth"
+    /// 
+    /// Fallback value for UsdVolParticleField3DGaussianSplat::GetSortingModeHintAttr()
+    const TfToken zDepth;
+    /// \brief "Field3DAsset"
+    /// 
+    /// Schema identifer and family for UsdVolField3DAsset
+    const TfToken Field3DAsset;
+    /// \brief "FieldAsset"
+    /// 
+    /// Schema identifer and family for UsdVolFieldAsset
+    const TfToken FieldAsset;
+    /// \brief "FieldBase"
+    /// 
+    /// Schema identifer and family for UsdVolFieldBase
+    const TfToken FieldBase;
+    /// \brief "OpenVDBAsset"
+    /// 
+    /// Schema identifer and family for UsdVolOpenVDBAsset
+    const TfToken OpenVDBAsset;
+    /// \brief "ParticleField"
+    /// 
+    /// Schema identifer and family for UsdVolParticleField
+    const TfToken ParticleField;
+    /// \brief "ParticleField3DGaussianSplat"
+    /// 
+    /// Schema identifer and family for UsdVolParticleField3DGaussianSplat
+    const TfToken ParticleField3DGaussianSplat;
+    /// \brief "ParticleFieldKernelBaseAPI"
+    /// 
+    /// Schema identifer and family for UsdVolParticleFieldKernelBaseAPI
+    const TfToken ParticleFieldKernelBaseAPI;
+    /// \brief "ParticleFieldKernelConstantSurfletAPI"
+    /// 
+    /// Schema identifer and family for UsdVolParticleFieldKernelConstantSurfletAPI
+    const TfToken ParticleFieldKernelConstantSurfletAPI;
+    /// \brief "ParticleFieldKernelGaussianEllipsoidAPI"
+    /// 
+    /// Schema identifer and family for UsdVolParticleFieldKernelGaussianEllipsoidAPI
+    const TfToken ParticleFieldKernelGaussianEllipsoidAPI;
+    /// \brief "ParticleFieldKernelGaussianSurfletAPI"
+    /// 
+    /// Schema identifer and family for UsdVolParticleFieldKernelGaussianSurfletAPI
+    const TfToken ParticleFieldKernelGaussianSurfletAPI;
+    /// \brief "ParticleFieldOpacityAttributeAPI"
+    /// 
+    /// Schema identifer and family for UsdVolParticleFieldOpacityAttributeAPI
+    const TfToken ParticleFieldOpacityAttributeAPI;
+    /// \brief "ParticleFieldOrientationAttributeAPI"
+    /// 
+    /// Schema identifer and family for UsdVolParticleFieldOrientationAttributeAPI
+    const TfToken ParticleFieldOrientationAttributeAPI;
+    /// \brief "ParticleFieldPositionAttributeAPI"
+    /// 
+    /// Schema identifer and family for UsdVolParticleFieldPositionAttributeAPI
+    const TfToken ParticleFieldPositionAttributeAPI;
+    /// \brief "ParticleFieldPositionBaseAPI"
+    /// 
+    /// Schema identifer and family for UsdVolParticleFieldPositionBaseAPI
+    const TfToken ParticleFieldPositionBaseAPI;
+    /// \brief "ParticleFieldRadianceBaseAPI"
+    /// 
+    /// Schema identifer and family for UsdVolParticleFieldRadianceBaseAPI
+    const TfToken ParticleFieldRadianceBaseAPI;
+    /// \brief "ParticleFieldScaleAttributeAPI"
+    /// 
+    /// Schema identifer and family for UsdVolParticleFieldScaleAttributeAPI
+    const TfToken ParticleFieldScaleAttributeAPI;
+    /// \brief "ParticleFieldSphericalHarmonicsAttributeAPI"
+    /// 
+    /// Schema identifer and family for UsdVolParticleFieldSphericalHarmonicsAttributeAPI
+    const TfToken ParticleFieldSphericalHarmonicsAttributeAPI;
+    /// \brief "Volume"
+    /// 
+    /// Schema identifer and family for UsdVolVolume
+    const TfToken Volume;
+    /// \brief "VolumeFieldAsset"
+    /// 
+    /// Schema identifer and family for UsdVolVolumeFieldAsset
+    const TfToken VolumeFieldAsset;
+    /// \brief "VolumeFieldBase"
+    /// 
+    /// Schema identifer and family for UsdVolVolumeFieldBase
+    const TfToken VolumeFieldBase;
     /// A vector of all of the tokens listed above.
     const std::vector<TfToken> allTokens;
 };

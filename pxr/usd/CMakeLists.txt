@@ -2,7 +2,6 @@ set(DIRS
     ar
     kind
     sdf
-    ndr
     sdr
     pcp
     usd
@@ -10,13 +9,18 @@ set(DIRS
     usdVol
     usdMedia
     usdShade
+    usdLod
     usdLux
+    usdProc
+    usdProfiles
     usdRender
     usdHydra
     usdRi
+    usdSemantics
     usdSkel
     usdUI
     usdUtils
+    usdPhysics
     plugin
 )
 
@@ -28,4 +32,8 @@ if (PXR_BUILD_USD_TOOLS)
     add_subdirectory(bin)
 else()
     message(STATUS "Skipping commandline tools because PXR_BUILD_USD_TOOLS=OFF")
+endif()
+
+if (${PXR_ENABLE_MATERIALX_SUPPORT})
+    add_subdirectory(usdMtlx)
 endif()

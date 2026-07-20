@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 #include "pxr/usd/usdUtils/stitchClips.h"
@@ -572,20 +555,21 @@ namespace {
         resultLayer->SetStartTimeCode(startTimeCode);
     }
 
-    void _StitchLayersIgnoringTimeSamples(
+    void _StitchLayersIgnoringClipData(
         const SdfLayerHandle& strongLayer,
         const SdfLayerHandle& weakLayer)
     {
         namespace ph = std::placeholders;
-        UsdUtilsStitchValueFn ignoreTimeSamples = std::bind(
+        UsdUtilsStitchValueFn ignoreClipData = std::bind(
             [](const TfToken& field) {
-                if (field == SdfFieldKeys->TimeSamples) {
+                if (field == SdfFieldKeys->TimeSamples ||
+                    field == SdfFieldKeys->Spline) {
                     return UsdUtilsStitchValueStatus::NoStitchedValue;
                 }
                 return UsdUtilsStitchValueStatus::UseDefaultValue;
             }, ph::_1);
 
-        UsdUtilsStitchLayers(strongLayer, weakLayer, ignoreTimeSamples);
+        UsdUtilsStitchLayers(strongLayer, weakLayer, ignoreClipData);
     }
 
     struct _StitchLayersResult {
@@ -612,7 +596,7 @@ namespace {
                           SdfLayerRefPtrVector::const_iterator>& clipLayers)
         {
             for (const auto& layer : clipLayers) {
-                _StitchLayersIgnoringTimeSamples(topology, layer);
+                _StitchLayersIgnoringClipData(topology, layer);
                 if (clipPath != SdfPath::AbsoluteRootPath()) {
                     _StitchClipMetadata(root, layer, clipPath,  
                                         _GetStartTimeCode(layer),
@@ -622,7 +606,7 @@ namespace {
         }
 
         void join(_StitchLayersResult& rhs) {
-            _StitchLayersIgnoringTimeSamples(topology, rhs.topology);
+            _StitchLayersIgnoringClipData(topology, rhs.topology);
             if (clipPath != SdfPath::AbsoluteRootPath()) {
                 _MergeRootLayerMetadata(root, rhs.root, clipPath, clipSet);
             }
@@ -684,6 +668,15 @@ namespace {
                     manifestLayer->SetField(
                         path, SdfFieldKeys->Default, defaultValue);
                 }
+
+                // Keep the "spline" annotation in the manifest to
+                // indicate that the attribute is spline-valued.
+                TsSpline spline;
+                if (generatedManifest->HasField(
+                        path, SdfFieldKeys->Spline, &spline)) {
+                    manifestLayer->SetField(
+                        path, SdfFieldKeys->Spline, spline);
+                }
             });
     }
 
@@ -703,12 +696,12 @@ namespace {
     {
         auto result = _AggregateDataFromClips(
             topologyLayer, clipLayers, clipPath, clipSet);
-        _StitchLayersIgnoringTimeSamples(topologyLayer, result.topology);
+        _StitchLayersIgnoringClipData(topologyLayer, result.topology);
 
         // if the rootLayer has no clip-metadata authored 
         if (!resultLayer->GetPrimAtPath(clipPath)) {
             // we need to run traditional stitching to add the prim structure
-            _StitchLayersIgnoringTimeSamples(resultLayer, result.root);
+            _StitchLayersIgnoringClipData(resultLayer, result.root);
         } else {
             _MergeRootLayerMetadata(resultLayer, result.root, 
                                     clipPath, clipSet);
@@ -746,7 +739,7 @@ namespace {
         // Note that we don't specify a unique clipPath since we're only
         // interested in aggregating topology. 
         auto result  = _AggregateDataFromClips(topologyLayer, clipLayers);
-        _StitchLayersIgnoringTimeSamples(topologyLayer, result.topology);
+        _StitchLayersIgnoringClipData(topologyLayer, result.topology);
 
         return errorMark.IsClean();
     }

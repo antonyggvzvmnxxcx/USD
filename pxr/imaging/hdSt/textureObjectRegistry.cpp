@@ -1,29 +1,13 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/imaging/hdSt/textureObjectRegistry.h"
 
+#include "pxr/imaging/hdSt/resourceRegistry.h"
 #include "pxr/imaging/hdSt/ptexTextureObject.h"
 #include "pxr/imaging/hdSt/textureObject.h"
 #include "pxr/imaging/hdSt/udimTextureObject.h"
@@ -32,6 +16,7 @@
 #include "pxr/imaging/hdSt/textureIdentifier.h"
 #include "pxr/imaging/hf/perfLog.h"
 
+#include "pxr/base/tf/scopeDescription.h"
 #include "pxr/base/work/loops.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -45,35 +30,48 @@ HdSt_TextureObjectRegistry::HdSt_TextureObjectRegistry(
 
 HdSt_TextureObjectRegistry::~HdSt_TextureObjectRegistry() = default;
 
+namespace
+{
+
+template <typename SubTexIdType>
 bool
-static
-_IsDynamic(const HdStTextureIdentifier &textureId)
+_IsSubTexIdType(const HdStTextureIdentifier &textureId)
 {
     return
-        dynamic_cast<const HdStDynamicUvSubtextureIdentifier*>(
+        dynamic_cast<const SubTexIdType*>(
             textureId.GetSubtextureIdentifier());
+}
+
 }
 
 HdStTextureObjectSharedPtr
 HdSt_TextureObjectRegistry::_MakeTextureObject(
     const HdStTextureIdentifier &textureId,
-    const HdTextureType textureType)
+    const HdStTextureType textureType)
 {
     switch(textureType) {
-    case HdTextureType::Uv:
-        if (_IsDynamic(textureId)) {
+    case HdStTextureType::Uv:
+        if (_IsSubTexIdType<HdStDynamicUvSubtextureIdentifier>(textureId)) {
             return
                 std::make_shared<HdStDynamicUvTextureObject>(textureId, this);
         } else {
             return
                 std::make_shared<HdStAssetUvTextureObject>(textureId, this);
         }
-    case HdTextureType::Field:
+    case HdStTextureType::Field:
         return std::make_shared<HdStFieldTextureObject>(textureId, this);
-    case HdTextureType::Ptex:
+    case HdStTextureType::Ptex:
         return std::make_shared<HdStPtexTextureObject>(textureId, this);
-    case HdTextureType::Udim:
+    case HdStTextureType::Udim:
         return std::make_shared<HdStUdimTextureObject>(textureId, this);
+    case HdStTextureType::Cubemap:
+        if (_IsSubTexIdType<HdStDynamicCubemapSubtextureIdentifier>(
+                textureId)) {
+            return
+                std::make_shared<HdStDynamicUvTextureObject>(
+                    textureId,
+                    this);
+        }
     }
 
     TF_CODING_ERROR(
@@ -84,7 +82,7 @@ HdSt_TextureObjectRegistry::_MakeTextureObject(
 HdStTextureObjectSharedPtr
 HdSt_TextureObjectRegistry::AllocateTextureObject(
     const HdStTextureIdentifier &textureId,
-    const HdTextureType textureType)
+    const HdStTextureType textureType)
 {
     // Check with instance registry and allocate texture and sampler object
     // if first object.
@@ -177,7 +175,7 @@ HdSt_TextureObjectRegistry::Commit()
 
     {
         TRACE_FUNCTION_SCOPE("Loading textures");
-        HF_TRACE_FUNCTION_SCOPE("Loading textures");
+        TF_DESCRIBE_SCOPE("Loading %zu textures", result.size());
 
         if (_isGlfBaseTextureDataThreadSafe) {
             // Loading a texture file of a previously unseen type might
@@ -201,13 +199,18 @@ HdSt_TextureObjectRegistry::Commit()
         HF_TRACE_FUNCTION_SCOPE("Committing textures");
 
         // Commit loaded files to GPU.
+        size_t i = 1;
         for (const HdStTextureObjectSharedPtr &texture : result) {
+            TF_DESCRIBE_SCOPE("Comitting texture %zu / %zu", i++, result.size());
             texture->_Commit();
         }
     }
 
     _dirtyFilePaths.clear();
     _dirtyTextures.clear();
+
+    // MipMap generation for textures requiers us to submit blit work.
+    _resourceRegistry->SubmitBlitWork();
 
     return result;
 }

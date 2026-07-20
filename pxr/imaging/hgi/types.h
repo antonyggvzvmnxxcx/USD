@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HGI_TYPES_H
 #define PXR_IMAGING_HGI_TYPES_H
@@ -72,6 +55,12 @@ enum HgiFormat : int
     HgiFormatFloat32Vec3,
     HgiFormatFloat32Vec4,
 
+    // Int16 - a 2-byte signed integer
+    HgiFormatInt16,
+    HgiFormatInt16Vec2,
+    HgiFormatInt16Vec3,
+    HgiFormatInt16Vec4,
+
     // UInt16 - a 2-byte unsigned integer
     HgiFormatUInt16,
     HgiFormatUInt16Vec2,
@@ -116,6 +105,10 @@ enum HgiFormat : int
 
     // Depth stencil format (Float32 can be used for just depth)
     HgiFormatFloat32UInt8,
+
+    // Packed 32-bit value with four normalized signed two's complement
+    // integer values arranged as 10 bits, 10 bits, 10 bits, and 2 bits.
+    HgiFormatPackedInt1010102,
 
     HgiFormatCount
 };
@@ -162,6 +155,17 @@ HGI_API
 size_t HgiGetDataSize(
     HgiFormat f,
     const GfVec3i &dimensions);
+
+/// Returns the scalar type of the format, in the form of an HgiFormat, if
+/// possible.
+HGI_API
+HgiFormat HgiGetComponentBaseFormat(
+    HgiFormat f);
+
+/// Returns true if the scalar type of the format is a floating point type.
+HGI_API
+bool HgiIsFloatFormat(
+    HgiFormat f);
 
 /// Returns mip infos.
 ///

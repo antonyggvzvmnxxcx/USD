@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -31,10 +14,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 
 PXR_NAMESPACE_USING_DIRECTIVE
-
-ARCH_PRAGMA_DEPRECATED_POSIX_NAME
 
 static bool
 TestArchNormPath()
@@ -53,8 +35,10 @@ TestArchNormPath()
             "foo/bar/../../../../../../baz") == "../../../../baz");
 
 #if defined(ARCH_OS_WINDOWS)
-    ARCH_AXIOM(ArchNormPath("C:\\foo\\bar") == "c:/foo/bar");
-    ARCH_AXIOM(ArchNormPath("C:foo\\bar") == "c:foo/bar");
+    ARCH_AXIOM(ArchNormPath("C:\\foo\\bar") == "C:/foo/bar");
+    ARCH_AXIOM(ArchNormPath("C:foo\\bar") == "C:foo/bar");
+    ARCH_AXIOM(ArchNormPath("c:\\foo\\bar") == "c:/foo/bar");
+    ARCH_AXIOM(ArchNormPath("c:foo\\bar") == "c:foo/bar");
     ARCH_AXIOM(ArchNormPath(
             "C:\\foo\\bar", /* stripDriveSpecifier = */ true) == "/foo/bar");
     ARCH_AXIOM(ArchNormPath(
@@ -91,6 +75,157 @@ TestArchAbsPath()
     return true;
 }
 
+#ifdef ARCH_OS_WINDOWS
+
+namespace {
+
+std::string _CreateLongWindowsPath(bool dir, bool dotted) {
+    std::string p = ArchGetTmpDir();
+    for (size_t i = 0; i < 15; ++i) {
+        p += "\\abcdefghijklmnopqrs";
+    }
+    if (dotted) {
+        p += "\\.\\..\\abcdefghijklmnopqrs";
+    }
+    if (!dir) {
+        p += "\\foo.bar";
+    }
+    ARCH_AXIOM(p.size() > ARCH_PATH_MAX);
+    return p;
+}
+
+// slightly awkward way of creating and deleting a long path without having to
+// introduce recursive deletion etc.
+std::string _CreatePhysicalLongPathDirectory() {
+    static const std::string tmpDirPart0("UsdArchTestLongPaths");
+    static const std::string tmpDirPart1(150, 'a');
+    static const std::string tmpDirPart2(150, 'b');
+    std::string tmpDir(ArchGetTmpDir());
+    tmpDir = ArchMakeTmpSubdir(tmpDir, tmpDirPart0);
+    tmpDir = ArchMakeTmpSubdir(tmpDir, tmpDirPart1);
+    tmpDir = ArchMakeTmpSubdir(tmpDir, tmpDirPart2);
+    ARCH_AXIOM(tmpDir.size() > ARCH_PATH_MAX);
+    return tmpDir;
+}
+
+// implying structure from above
+void _RemoveLongPathDirectory(const std::string& longTmpDir) {
+    ARCH_AXIOM(ArchRmDir(longTmpDir.c_str()) == 0);
+
+    std::string::size_type lastSep = longTmpDir.find_last_of('\\');
+    ARCH_AXIOM(lastSep != std::string::npos);
+    ARCH_AXIOM(ArchRmDir(longTmpDir.substr(0, lastSep).c_str()) == 0);
+
+    lastSep = longTmpDir.find_last_of('\\', lastSep-1);
+    ARCH_AXIOM(lastSep != std::string::npos);
+    ARCH_AXIOM(ArchRmDir(longTmpDir.substr(0, lastSep).c_str()) == 0);
+}
+
+} // namespace
+
+static bool TestLongPaths()
+{
+    const std::string longFilePathDotted = _CreateLongWindowsPath(false, true);
+    const std::string longFilePath = _CreateLongWindowsPath(false, false);
+    const std::string longFilePathForwardSlash = [&longFilePath]() {
+        std::string t = longFilePath;
+        std::replace(t.begin(), t.end(), '\\', '/');
+        return t;
+    }();
+
+    {
+        const std::string actual = ArchNormPath(longFilePathDotted, false);
+        const std::string expected = longFilePathForwardSlash;
+        ARCH_AXIOM(actual == expected);
+    }
+    {
+        const std::string actual = ArchAbsPath(longFilePathDotted);
+        const std::string expected = longFilePath;
+        ARCH_AXIOM(actual == expected);
+    }
+
+    // A path that is long before normalization but short after.  This exercises
+    // _MakeWinPath's post-normalization length recheck -- the result should not
+    // get a \\?\ prefix or any other mangling.
+    {
+        std::string pathological = "C:\\x";
+        while (pathological.size() < ARCH_PATH_MAX) {
+            pathological += "\\..\\x";
+        }
+        ARCH_AXIOM(pathological.size() >= ARCH_PATH_MAX);
+        ARCH_AXIOM(ArchNormPath(pathological) == "C:/x");
+        ARCH_AXIOM(ArchAbsPath(pathological) == "C:\\x");
+    }
+
+    // Physical long-path operations: open, write, stat, access, length.
+    {
+        std::string longTmpDir = _CreatePhysicalLongPathDirectory();
+        const std::string longTmpFilePath = longTmpDir + '\\' + "foo.bar";
+
+        FILE *file;
+        ARCH_AXIOM((file = ArchOpenFile(longTmpFilePath.c_str(), "wb")) != NULL);
+        std::fprintf(file, "%s", "hello");
+        fclose(file);
+
+        ARCH_AXIOM(ArchFileAccess(longTmpFilePath.c_str(), F_OK) == 0);
+        ARCH_AXIOM(ArchFileAccess(longTmpFilePath.c_str(), R_OK) == 0);
+        ARCH_AXIOM(ArchFileAccess(longTmpFilePath.c_str(), W_OK) == 0);
+        ARCH_AXIOM(ArchGetFileLength(longTmpFilePath.c_str()) == 5);
+
+        double mtime = 0;
+        ARCH_AXIOM(ArchGetModificationTime(longTmpFilePath.c_str(), &mtime));
+        ARCH_AXIOM(mtime > 0);
+
+        int mode = 0;
+        ARCH_AXIOM(ArchGetStatMode(longTmpFilePath.c_str(), &mode));
+        ARCH_AXIOM(mode != 0);
+
+        // Access through a path with .. components -- verifies that
+        // _MakeWinPath resolves these via GetFullPathNameW before adding the
+        // long-path prefix.
+        const std::string dottedPath = longTmpDir + "\\x\\..\\foo.bar";
+        ARCH_AXIOM(dottedPath.size() > longTmpFilePath.size());
+        ARCH_AXIOM(ArchGetFileLength(dottedPath.c_str()) == 5 /*hello*/);
+
+        ARCH_AXIOM(ArchUnlinkFile(longTmpFilePath.c_str()) == 0);
+        _RemoveLongPathDirectory(longTmpDir);
+    }
+
+    // TouchFile with long path.
+    {
+        std::string longTmpDir = _CreatePhysicalLongPathDirectory();
+        const std::string longTmpFilePath = longTmpDir + '\\' + "foo.bar";
+        ARCH_AXIOM(ArchTouchFile(longTmpFilePath, true));
+        ARCH_AXIOM(ArchUnlinkFile(longTmpFilePath.c_str()) == 0);
+        _RemoveLongPathDirectory(longTmpDir);
+    }
+
+    // MakeTmpFile with long base directory.
+    {
+        std::string longTmpDir = _CreatePhysicalLongPathDirectory();
+        std::string longTmpFilePath;
+        int tmpFileHandle =
+            ArchMakeTmpFile(longTmpDir, "foo", &longTmpFilePath);
+        ARCH_AXIOM(tmpFileHandle != -1);
+        ArchCloseFile(tmpFileHandle);
+        ARCH_AXIOM(ArchUnlinkFile(longTmpFilePath.c_str()) == 0);
+        _RemoveLongPathDirectory(longTmpDir);
+    }
+
+    // MakeTmpSubdir with long base directory.
+    {
+        std::string longTmpDir = _CreatePhysicalLongPathDirectory();
+        std::string subdir = ArchMakeTmpSubdir(longTmpDir, "sub");
+        ARCH_AXIOM(!subdir.empty());
+        ARCH_AXIOM(ArchRmDir(subdir.c_str()) == 0);
+        _RemoveLongPathDirectory(longTmpDir);
+    }
+
+    return true;
+}
+
+#endif
+
 int main()
 {
     std::string firstName = ArchMakeTmpFileName("archFS");
@@ -107,6 +242,25 @@ int main()
     fclose(firstFile);
     ARCH_AXIOM(ArchGetFileLength(firstName.c_str()) == strlen(testContent));
 
+    // Open a file, check that the file path from FILE* handle is matched.
+    ARCH_AXIOM((firstFile = ArchOpenFile(firstName.c_str(), "rb")) != NULL);
+    std::string filePath = ArchGetFileName(firstFile);
+#if defined(ARCH_OS_WINDOWS)
+    ARCH_AXIOM(std::filesystem::equivalent(ArchWindowsUtf8ToUtf16(filePath),
+                   ArchWindowsUtf8ToUtf16(firstName)));
+#else
+    ARCH_AXIOM(std::filesystem::equivalent(filePath, firstName));
+#endif
+    fclose(firstFile);
+    
+    // Test utf-8 path
+    std::string secondName = ArchMakeTmpFileName("测试");
+    ARCH_AXIOM((firstFile = ArchOpenFile(secondName.c_str(), "w")) != NULL);
+    filePath = ArchGetFileName(firstFile);
+    ARCH_AXIOM(std::filesystem::equivalent(std::filesystem::u8path(filePath),
+               std::filesystem::u8path(secondName)));
+    fclose(firstFile);
+    
     // Map the file and assert the bytes are what we expect they are.
     ARCH_AXIOM((firstFile = ArchOpenFile(firstName.c_str(), "rb")) != NULL);
     ArchConstFileMapping cfm = ArchMapFileReadOnly(firstFile);
@@ -125,7 +279,7 @@ int main()
     mfm.get()[0] = 'T'; mfm.get()[2] = 's';
     ARCH_AXIOM(memcmp("Test", mfm.get(), strlen("Test")) == 0);
     mfm.reset();
-    ArchUnlinkFile(firstName.c_str());
+    ARCH_AXIOM(ArchUnlinkFile(firstName.c_str()) == 0);
 
     // Test ArchPWrite and ArchPRead.
     int64_t len = strlen(testContent);
@@ -141,6 +295,8 @@ int main()
     ARCH_AXIOM(ArchPRead(firstFile, buf2.get(), strlen("written in a"),
                      9/*index of 'written in a'*/) == strlen("written in a"));
     ARCH_AXIOM(memcmp("written in a", buf2.get(), strlen("written in a")) == 0);
+    fclose(firstFile);
+    ARCH_AXIOM(ArchUnlinkFile(firstName.c_str()) == 0);
 
     // create and remove a tmp subdir
     std::string retpath;
@@ -151,6 +307,10 @@ int main()
     // Test other utilities
     TestArchNormPath();
     TestArchAbsPath();
+
+#ifdef ARCH_OS_WINDOWS
+    TestLongPaths();
+#endif
 
     return 0;
 }

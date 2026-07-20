@@ -1,31 +1,16 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hgiVulkan/commandBuffer.h"
 #include "pxr/imaging/hgiVulkan/commandQueue.h"
 #include "pxr/imaging/hgiVulkan/device.h"
+#include "pxr/imaging/hgiVulkan/diagnostic.h"
 
 #include "pxr/base/tf/diagnostic.h"
+#include "pxr/base/tf/smallVector.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -44,12 +29,12 @@ _CreateCommandPool(HgiVulkanDevice* device)
 
     VkCommandPool pool = nullptr;
 
-    TF_VERIFY(
+    HGIVULKAN_VERIFY_VK_RESULT(
         vkCreateCommandPool(
             device->GetVulkanDevice(),
             &poolCreateInfo,
             HgiVulkanAllocator(),
-            &pool) == VK_SUCCESS
+            &pool)
     );
 
     HgiVulkanCommandQueue::HgiVulkan_CommandPool* newPool =
@@ -85,6 +70,8 @@ HgiVulkanCommandQueue::HgiVulkanCommandQueue(HgiVulkanDevice* device)
     , _inflightCounter(0)
     , _threadId(std::this_thread::get_id())
     , _resourceCommandBuffer(nullptr)
+    , _timelineNextVal(1)
+    , _timelineCachedVal(0)
 {
     // Acquire the graphics queue
     const uint32_t firstQueueInFamily = 0;
@@ -93,6 +80,24 @@ HgiVulkanCommandQueue::HgiVulkanCommandQueue(HgiVulkanDevice* device)
         device->GetGfxQueueFamilyIndex(),
         firstQueueInFamily,
         &_vkGfxQueue);
+
+    VkSemaphoreTypeCreateInfo timelineCreateInfo;
+    timelineCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    timelineCreateInfo.pNext = NULL;
+    timelineCreateInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    timelineCreateInfo.initialValue = 0;
+
+    VkSemaphoreCreateInfo createInfo;
+    createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    createInfo.pNext = &timelineCreateInfo;
+    createInfo.flags = 0;
+
+    HGIVULKAN_VERIFY_VK_RESULT(
+        vkCreateSemaphore(
+            device->GetVulkanDevice(),
+            &createInfo, 
+            HgiVulkanAllocator(),
+            &_timelineSemaphore));
 }
 
 HgiVulkanCommandQueue::~HgiVulkanCommandQueue()
@@ -101,6 +106,11 @@ HgiVulkanCommandQueue::~HgiVulkanCommandQueue()
         _DestroyCommandPool(_device, it.second);
     }
     _commandPools.clear();
+
+    vkDestroySemaphore(
+        _device->GetVulkanDevice(),
+        _timelineSemaphore,
+        HgiVulkanAllocator());
 }
 
 /* Externally synchronized */
@@ -109,67 +119,18 @@ HgiVulkanCommandQueue::SubmitToQueue(
     HgiVulkanCommandBuffer* cb,
     HgiSubmitWaitType wait)
 {
-    VkSemaphore semaphore = nullptr;
-
-    // If we have resource commands submit those before work commands.
-    // It would be more performant to submit both command buffers to the queue
-    // at the same time, but we have to signal the fence for each since we use
-    // the fence to determine when a command buffer can be reused.
-    if (_resourceCommandBuffer) {
-        _resourceCommandBuffer->EndCommandBuffer();
-        VkCommandBuffer rcb = _resourceCommandBuffer->GetVulkanCommandBuffer();
-        semaphore = _resourceCommandBuffer->GetVulkanSemaphore();
-        VkFence rFence = _resourceCommandBuffer->GetVulkanFence();
-
-        VkSubmitInfo resourceInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        resourceInfo.commandBufferCount = 1;
-        resourceInfo.pCommandBuffers = &rcb;
-        resourceInfo.signalSemaphoreCount = 1;
-        resourceInfo.pSignalSemaphores = &semaphore;
-
-        TF_VERIFY(
-            vkQueueSubmit(_vkGfxQueue, 1, &resourceInfo, rFence) == VK_SUCCESS
-        );
-
-        _resourceCommandBuffer = nullptr;
-    }
+    _FlushResourceCommandBuffer();
 
     // XXX Ideally EndCommandBuffer is called on the thread that used it since
     // this can be a heavy operation. However, currently Hgi does not provide
     // a 'EndRecording' function on its Hgi*Cmds that clients must call.
     cb->EndCommandBuffer();
-    VkCommandBuffer wcb = cb->GetVulkanCommandBuffer();
-    VkFence wFence = cb->GetVulkanFence();
+    cb->SetCompletedTimelineValue(_timelineNextVal);
+    _queuedBuffers.push_back(cb);
 
-    VkSubmitInfo workInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    workInfo.commandBufferCount = 1;
-    workInfo.pCommandBuffers = &wcb;
-    if (semaphore) {
-        workInfo.waitSemaphoreCount = 1;
-        workInfo.pWaitSemaphores = &semaphore;
-        VkPipelineStageFlags waitMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-        workInfo.pWaitDstStageMask = &waitMask;
-    }
-
-    // Submit provided command buffers to GPU queue.
-    // Record and submission order does not guarantee execution order.
-    // VK docs: "Execution Model" & "Implicit Synchronization Guarantees".
-    // The vulkan queue must be externally synchronized.
-    TF_VERIFY(
-        vkQueueSubmit(_vkGfxQueue, 1, &workInfo, wFence) == VK_SUCCESS
-    );
-
-    // Optional blocking wait
+    // Optional blocking flush and wait.
     if (wait == HgiSubmitWaitTypeWaitUntilCompleted) {
-        static const uint64_t timeOut = 100000000000;
-        VkDevice vkDevice = _device->GetVulkanDevice();
-        TF_VERIFY(
-            vkWaitForFences(vkDevice, 1, &wFence, VK_TRUE, timeOut)==VK_SUCCESS
-        );
-        // When the client waits for the cmd buf to finish on GPU they will
-        // expect to have the CompletedHandlers run. For example when the
-        // client wants to do a GPU->CPU read back (memcpy)
-        cb->RunAndClearCompletedHandlers();
+        Flush(wait);
     }
 }
 
@@ -184,7 +145,7 @@ HgiVulkanCommandQueue::AcquireCommandBuffer()
     // Grab one of the available command buffers.
     HgiVulkanCommandBuffer* cmdBuf = nullptr;
     for (HgiVulkanCommandBuffer* cb : pool->commandBuffers) {
-        if (!cb->IsInFlight()) {
+        if (cb->IsReset()) {
             cmdBuf = cb;
             break;
         }
@@ -197,11 +158,33 @@ HgiVulkanCommandQueue::AcquireCommandBuffer()
     }
 
     // Acquire an unique id for this cmd buffer amongst inflight cmd buffers.
-    uint8_t inflightId = _AcquireInflightIdBit();
-    _SetInflightBit(inflightId, /*enabled*/ true);
+    std::optional<uint8_t> inflightId = _AcquireInflightIdBit();
+
+    // No id available: check if any command buffers are no longer in-flight,
+    // and release their bit. Spin until we can acquire a bit.
+    if (!inflightId) {
+        do {
+            // To avoid a hot loop with high CPU usage, sleep a bit.
+            // We want to sleep as little as possible, but the actual
+            // sleep time is system dependent. This is unfortunate and
+            // will cause framerate hitches, but if we got here in the
+            // first place it's because the device is overloaded and things
+            // are not going well.
+            std::this_thread::sleep_for(std::chrono::microseconds(1));
+            for (HgiVulkanCommandBuffer* cb : pool->commandBuffers) {
+                if (cb->UpdateInFlightStatus(HgiSubmitWaitTypeNoWait) ==
+                    HgiVulkanCommandBuffer::InFlightUpdateResultFinishedFlight)
+                {
+                    _ReleaseInflightBit(cb->GetInflightId());
+                }
+            }
+
+            inflightId = _AcquireInflightIdBit();
+        } while (!inflightId);
+    }
 
     // Begin recording to ensure the caller has exclusive access to cmd buffer.
-    cmdBuf->BeginCommandBuffer(inflightId);
+    cmdBuf->BeginCommandBuffer(*inflightId);
     return cmdBuf;
 }
 
@@ -225,7 +208,8 @@ HgiVulkanCommandQueue::AcquireResourceCommandBuffer()
 uint64_t
 HgiVulkanCommandQueue::GetInflightCommandBuffersBits()
 {
-    return _inflightBits.load();
+    // See _AcquireInflightIdBit for explanation of memory order.
+    return _inflightBits.load(std::memory_order_relaxed);
 }
 
 /* Multi threaded */
@@ -237,7 +221,7 @@ HgiVulkanCommandQueue::GetVulkanGraphicsQueue() const
 
 /* Single threaded */
 void
-HgiVulkanCommandQueue::ResetConsumedCommandBuffers()
+HgiVulkanCommandQueue::ResetConsumedCommandBuffers(HgiSubmitWaitType wait)
 {
     // Lock the command pool map from concurrent access since we may insert.
     std::lock_guard<std::mutex> guard(_commandPoolsMutex);
@@ -246,11 +230,121 @@ HgiVulkanCommandQueue::ResetConsumedCommandBuffers()
     for (auto it : _commandPools) {
         HgiVulkan_CommandPool* pool = it.second;
         for (HgiVulkanCommandBuffer* cb : pool->commandBuffers) {
-            if (cb->ResetIfConsumedByGPU()) {
-                _SetInflightBit(cb->GetInflightId(), /*enabled*/ false);
+            if (cb->ResetIfConsumedByGPU(wait)) {
+                _ReleaseInflightBit(cb->GetInflightId());
             }
         }
     }
+}
+
+/* Single threaded */
+void
+HgiVulkanCommandQueue::Flush(
+    HgiSubmitWaitType wait,
+    TfSpan<const std::pair<VkSemaphore, uint64_t>> signalSemaphores)
+{
+    _FlushResourceCommandBuffer();
+
+    std::vector<VkCommandBuffer> commandBuffers;
+    commandBuffers.reserve(_queuedBuffers.size());
+    for (auto& buffer : _queuedBuffers) {
+        commandBuffers.push_back(buffer->GetVulkanCommandBuffer());
+    }
+
+    const uint32_t semaphoreSignalCount = signalSemaphores.size() + 1;
+
+    TfSmallVector<VkSemaphore, 3> parsedSignalSemaphores;
+    TfSmallVector<uint64_t, 3> parsedSignalValues;
+    for (const std::pair<VkSemaphore, uint64_t>& signal : signalSemaphores) {
+        parsedSignalSemaphores.push_back(signal.first);
+        parsedSignalValues.push_back(signal.second);
+    }
+    parsedSignalSemaphores.push_back(_timelineSemaphore);
+    parsedSignalValues.push_back(_timelineNextVal);
+
+    VkTimelineSemaphoreSubmitInfo timelineInfo;
+    timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+    timelineInfo.pNext = NULL;
+    timelineInfo.waitSemaphoreValueCount = 0;
+    timelineInfo.pWaitSemaphoreValues = nullptr;
+    timelineInfo.signalSemaphoreValueCount = semaphoreSignalCount;
+    timelineInfo.pSignalSemaphoreValues = parsedSignalValues.data();
+
+    VkSubmitInfo workInfo;
+    workInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    workInfo.pNext = &timelineInfo;
+    workInfo.pWaitDstStageMask = 0;
+    workInfo.waitSemaphoreCount = 0;
+    workInfo.pWaitSemaphores = nullptr;
+    workInfo.commandBufferCount = commandBuffers.size();
+    workInfo.pCommandBuffers = commandBuffers.data();
+    workInfo.signalSemaphoreCount = semaphoreSignalCount;
+    workInfo.pSignalSemaphores = parsedSignalSemaphores.data();
+
+    HGIVULKAN_VERIFY_VK_RESULT(
+        vkQueueSubmit(_vkGfxQueue, 1, &workInfo, VK_NULL_HANDLE));
+    
+    if (wait == HgiSubmitWaitTypeWaitUntilCompleted) {
+        VkSemaphoreWaitInfo waitInfo;
+        waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+        waitInfo.pNext = nullptr;
+        waitInfo.flags = 0;
+        waitInfo.semaphoreCount = 1;
+        waitInfo.pSemaphores = &_timelineSemaphore;
+        waitInfo.pValues = &_timelineNextVal;
+        HGIVULKAN_VERIFY_VK_RESULT(
+            vkWaitSemaphores(_device->GetVulkanDevice(),
+                &waitInfo, UINT64_MAX));
+
+        for (auto& buffer : _queuedBuffers) {
+            // When the client waits for the cmd buf to finish on GPU they will
+            // expect to have the CompletedHandlers run. For example when the
+            // client wants to do a GPU->CPU read back (memcpy)
+            buffer->RunAndClearCompletedHandlers();
+        }
+
+        _timelineCachedVal = _timelineNextVal;
+    }
+    _queuedBuffers.clear();
+
+    _timelineNextVal++;
+}
+
+/* Single threaded */
+bool
+HgiVulkanCommandQueue::IsTimelinePastValue(uint64_t desiredValue, bool wait)
+{
+    if (_timelineCachedVal >= desiredValue) {
+        return true;
+    }
+    if (_timelineNextVal == desiredValue) {
+        Flush(HgiSubmitWaitTypeNoWait);
+    }
+    HGIVULKAN_VERIFY_VK_RESULT(
+        vkGetSemaphoreCounterValue(
+            _device->GetVulkanDevice(),
+            _timelineSemaphore,
+            &_timelineCachedVal));
+    if (_timelineCachedVal >= desiredValue) {
+        return true;
+    }
+    if (wait) {
+        VkSemaphoreWaitInfo waitInfo;
+        waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+        waitInfo.pNext = nullptr;
+        waitInfo.flags = 0;
+        waitInfo.semaphoreCount = 1;
+        waitInfo.pSemaphores = &_timelineSemaphore;
+        waitInfo.pValues = &desiredValue;
+        HGIVULKAN_VERIFY_VK_RESULT(
+            vkWaitSemaphores(
+                _device->GetVulkanDevice(),
+                &waitInfo,
+                UINT64_MAX));
+        _timelineCachedVal = desiredValue;
+        return true;
+    }
+    return false;
 }
 
 /* Multi threaded */
@@ -271,41 +365,83 @@ HgiVulkanCommandQueue::_AcquireThreadCommandPool(
     }
 }
 
+void
+HgiVulkanCommandQueue::_FlushResourceCommandBuffer() {
+    if (_resourceCommandBuffer) {
+        _resourceCommandBuffer->EndCommandBuffer();
+        _resourceCommandBuffer->SetCompletedTimelineValue(
+            _timelineNextVal);
+        _queuedBuffers.push_back(_resourceCommandBuffer);
+
+        _resourceCommandBuffer = nullptr;
+    }
+}
+
 /* Multi threaded */
-uint8_t
+std::optional<uint8_t>
 HgiVulkanCommandQueue::_AcquireInflightIdBit()
 {
-    // Command buffers can be acquired by threads, so we need to do an
-    // increment that is thread safe. We circle back to the first bit after
-    // all bits have been used once. These means we can track the in-flight
-    // status of up to 64 consecutive command buffer usages.
-    // This becomes important in garbage collection and is explained more there.
-    return _inflightCounter.fetch_add(1) % 64;
+    // Command buffers can be acquired by threads, so we need to do an id
+    // acquire that is thread safe. We search for the next zero bit in a
+    // 64bit word. This means we can track the in-flight status of up to 64
+    // consecutive command buffer usages. This becomes important in garbage
+    // collection and is explained more there.
+    const uint8_t nextBitIndex = 0x3F & _inflightCounter.fetch_add(1,
+        std::memory_order_relaxed);
+    const uint64_t previousBits =
+        (static_cast<uint64_t>(1) << nextBitIndex) - 1;
+
+    // We need to set the bit atomically since this function can be called by
+    // multiple threads. Try to set the value and if it fails (another thread
+    // may have updated the `expected` value!), we re-apply our bit and try
+    // again. Relaxed memory order since this isn't used to order read/writes.
+    // If no bits are available, then exit with nothing. The caller will try
+    // to free some bits by updating the in-flight status of the existing 
+    // buffers.
+    uint64_t freeBit;
+    uint64_t expected = _inflightBits.load(std::memory_order_relaxed);
+    uint64_t desired;
+    do {
+        // Don't re-use lower bits if possible: mask them as used.
+        // _inflightCounter will wrap around when we run out.
+        const uint64_t usedBits = expected | previousBits;
+        freeBit = ~usedBits & (usedBits + 1);
+        if (freeBit == 0) {
+            return std::nullopt;
+        }
+
+        expected &= ~freeBit;
+        desired = expected | freeBit;
+    } while (!_inflightBits.compare_exchange_weak(expected, desired,
+        std::memory_order_relaxed));
+
+    // Based on: https://graphics.stanford.edu/~seander/bithacks.html#ZerosOnRightParallel
+    // C++20: use std::countr_zero instead
+    uint8_t id = 63;
+    if (freeBit & 0x00000000FFFFFFFF) id -= 32;
+    if (freeBit & 0x0000FFFF0000FFFF) id -= 16;
+    if (freeBit & 0x00FF00FF00FF00FF) id -= 8;
+    if (freeBit & 0x0F0F0F0F0F0F0F0F) id -= 4;
+    if (freeBit & 0x3333333333333333) id -= 2;
+    if (freeBit & 0x5555555555555555) id -= 1;
+
+    return id;
 }
 
 /* Multi threaded */
 void
-HgiVulkanCommandQueue::_SetInflightBit(uint8_t id, bool enabled)
+HgiVulkanCommandQueue::_ReleaseInflightBit(uint8_t id)
 {
     // We need to set the bit atomically since this function can be called by
     // multiple threads. Try to set the value and if it fails (another thread
-    // may have updated the `expected` value!), we re-apply our bit and
-    // try again.
-    uint64_t expect = _inflightBits.load();
-
-    if (enabled) {
-        // Spin if bit was already enabled. This means we have reached our max
-        // of 64 command buffers and must wait until it becomes available.
-        expect &= ~(1<<id);
-        while (!_inflightBits.compare_exchange_weak(
-            expect, expect | (1ULL<<id))) 
-        {
-            expect &= ~(1<<id);
-        }
-    } else {
-        while (!_inflightBits.compare_exchange_weak(
-            expect, expect & ~(1ULL<<id)));
-    }
+    // may have updated the `expected` value!), we re-apply our bit and try
+    // again. Relaxed memory order since this isn't used to order read/writes.
+    uint64_t expected = _inflightBits.load(std::memory_order_relaxed);
+    uint64_t desired;
+    do {
+        desired = expected & ~(1ULL << id);
+    } while (!_inflightBits.compare_exchange_weak( expected, desired,
+        std::memory_order_relaxed));
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

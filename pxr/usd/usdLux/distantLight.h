@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef USDLUX_GENERATED_DISTANTLIGHT_H
 #define USDLUX_GENERATED_DISTANTLIGHT_H
@@ -28,7 +11,7 @@
 
 #include "pxr/pxr.h"
 #include "pxr/usd/usdLux/api.h"
-#include "pxr/usd/usdLux/light.h"
+#include "pxr/usd/usdLux/nonboundableLightBase.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
 #include "pxr/usd/usdLux/tokens.h"
@@ -55,7 +38,7 @@ class SdfAssetPath;
 /// Light emitted from a distant source along the -Z axis.
 /// Also known as a directional light.
 ///
-class UsdLuxDistantLight : public UsdLuxLight
+class UsdLuxDistantLight : public UsdLuxNonboundableLightBase
 {
 public:
     /// Compile time constant representing what kind of schema this class is.
@@ -63,17 +46,12 @@ public:
     /// \sa UsdSchemaKind
     static const UsdSchemaKind schemaKind = UsdSchemaKind::ConcreteTyped;
 
-    /// \deprecated
-    /// Same as schemaKind, provided to maintain temporary backward 
-    /// compatibility with older generated schemas.
-    static const UsdSchemaKind schemaType = UsdSchemaKind::ConcreteTyped;
-
     /// Construct a UsdLuxDistantLight on UsdPrim \p prim .
     /// Equivalent to UsdLuxDistantLight::Get(prim.GetStage(), prim.GetPath())
     /// for a \em valid \p prim, but will not immediately throw an error for
     /// an invalid \p prim
     explicit UsdLuxDistantLight(const UsdPrim& prim=UsdPrim())
-        : UsdLuxLight(prim)
+        : UsdLuxNonboundableLightBase(prim)
     {
     }
 
@@ -81,7 +59,7 @@ public:
     /// Should be preferred over UsdLuxDistantLight(schemaObj.GetPrim()),
     /// as it preserves SchemaBase state.
     explicit UsdLuxDistantLight(const UsdSchemaBase& schemaObj)
-        : UsdLuxLight(schemaObj)
+        : UsdLuxNonboundableLightBase(schemaObj)
     {
     }
 
@@ -142,12 +120,6 @@ protected:
     USDLUX_API
     UsdSchemaKind _GetSchemaKind() const override;
 
-    /// \deprecated
-    /// Same as _GetSchemaKind, provided to maintain temporary backward 
-    /// compatibility with older generated schemas.
-    USDLUX_API
-    UsdSchemaKind _GetSchemaType() const override;
-
 private:
     // needs to invoke _GetStaticTfType.
     friend class UsdSchemaRegistry;
@@ -164,9 +136,16 @@ public:
     // --------------------------------------------------------------------- //
     // ANGLE 
     // --------------------------------------------------------------------- //
-    /// Angular size of the light in degrees.
+    /// Angular diameter of the light in degrees.
     /// As an example, the Sun is approximately 0.53 degrees as seen from Earth.
     /// Higher values broaden the light and therefore soften shadow edges.
+    /// 
+    /// This value is assumed to be in the range `0 <= angle < 360`, and will
+    /// be clipped to this range. Note that this implies that we can have a
+    /// distant light emitting from more than a hemispherical area of light
+    /// if angle > 180. While this is valid, it is possible that for large
+    /// angles a DomeLight may provide better performance. If angle is 0, the
+    /// DistantLight represents a perfectly parallel light source.
     /// 
     ///
     /// | ||
@@ -184,29 +163,6 @@ public:
     /// the default for \p writeSparsely is \c false.
     USDLUX_API
     UsdAttribute CreateAngleAttr(VtValue const &defaultValue = VtValue(), bool writeSparsely=false) const;
-
-public:
-    // --------------------------------------------------------------------- //
-    // INTENSITY 
-    // --------------------------------------------------------------------- //
-    /// Scales the emission of the light linearly.
-    /// The DistantLight has a high default intensity to approximate the Sun.
-    ///
-    /// | ||
-    /// | -- | -- |
-    /// | Declaration | `float inputs:intensity = 50000` |
-    /// | C++ Type | float |
-    /// | \ref Usd_Datatypes "Usd Type" | SdfValueTypeNames->Float |
-    USDLUX_API
-    UsdAttribute GetIntensityAttr() const;
-
-    /// See GetIntensityAttr(), and also 
-    /// \ref Usd_Create_Or_Get_Property for when to use Get vs Create.
-    /// If specified, author \p defaultValue as the attribute's default,
-    /// sparsely (when it makes sense to do so) if \p writeSparsely is \c true -
-    /// the default for \p writeSparsely is \c false.
-    USDLUX_API
-    UsdAttribute CreateIntensityAttr(VtValue const &defaultValue = VtValue(), bool writeSparsely=false) const;
 
 public:
     // ===================================================================== //

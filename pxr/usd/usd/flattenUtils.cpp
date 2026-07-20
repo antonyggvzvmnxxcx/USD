@@ -1,25 +1,8 @@
 //
 // Copyright 2019 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 #include "pxr/usd/usd/flattenUtils.h"
@@ -31,22 +14,27 @@
 #include "pxr/usd/sdf/primSpec.h"
 #include "pxr/usd/sdf/attributeSpec.h"
 #include "pxr/usd/sdf/relationshipSpec.h"
+#include "pxr/usd/sdf/variableExpression.h"
 #include "pxr/usd/sdf/variantSetSpec.h"
 #include "pxr/usd/sdf/variantSpec.h"
 #include "pxr/usd/sdf/pseudoRootSpec.h"
 #include "pxr/usd/sdf/schema.h"
 #include "pxr/usd/pcp/composeSite.h"
+#include "pxr/usd/pcp/expressionVariables.h"
 #include "pxr/usd/pcp/layerStack.h"
 #include "pxr/usd/usd/common.h"
 #include "pxr/usd/usd/clipsAPI.h"
 #include "pxr/usd/usd/stage.h"
 #include "pxr/usd/usd/tokens.h"
 #include "pxr/usd/usd/valueUtils.h"
+#include "pxr/usd/ar/resolver.h"
 #include "pxr/usd/ar/resolverContextBinder.h"
 #include "pxr/base/tf/staticData.h"
+#include "pxr/base/tf/pathUtils.h"
 
 #include <algorithm>
 #include <functional>
+#include <optional>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -65,9 +53,42 @@ PXR_NAMESPACE_OPEN_SCOPE
 //   particular value types and fields.  It uses _ApplyLayerOffset()
 //   to handle time-remapping needed, depending on the field.
 
+// This struct is used to maintain state during a call to _ReduceField.
+// Its purpose is to track the layer stack index which holds the most relevant
+// opinion for the field.  This index is used when applying layer offsets to
+// the computed value.
+struct Usd_ReduceFieldContext {
+Usd_ReduceFieldContext(const PcpLayerStackRefPtr &layerStack) 
+    : layerStack(layerStack) {}
+
+    // tracks the current index of the layer in the stack.
+    size_t currentLayerStackIndex;
+
+    // tracks the most relevant layer index (if any) for a field. Used for most
+    // fields.
+    std::optional<size_t> mostRelevantLayerStackIndex;
+
+    // holds a map of ListOpItem -> layer index. Used in the case where the
+    // field is a ListOp<T>
+    VtValue listOpToIndexMap;
+
+    // layer stack used in this redudction oper
+    const PcpLayerStackRefPtr &layerStack;
+
+    void MarkCurrentIndexAsMostRelevantIfEmpty() {
+        if (!mostRelevantLayerStackIndex) {
+            MarkCurrentIndexAsMostRelevant();
+        }
+    }
+
+    void MarkCurrentIndexAsMostRelevant() {
+        mostRelevantLayerStackIndex = currentLayerStackIndex;
+    }
+};
+
 template <typename T>
 VtValue
-_Reduce(const T &lhs, const T &rhs)
+_Reduce(const T &lhs, const T &rhs, Usd_ReduceFieldContext*)
 {
     // Generic base case: take stronger opinion.
     return VtValue(lhs);
@@ -78,6 +99,9 @@ template <typename T>
 SdfListOp<T>
 _FixListOp(SdfListOp<T> op)
 {
+    if (op.IsExplicit()) {
+        return op;
+    }
     std::vector<T> items;
     items = op.GetAppendedItems();
     for (const T& item: op.GetAddedItems()) {
@@ -91,20 +115,103 @@ _FixListOp(SdfListOp<T> op)
     return op;
 }
 
-template <typename T>
-VtValue
-_Reduce(const SdfListOp<T> &lhs, const SdfListOp<T> &rhs)
+// List ops that use added or reordered items cannot, in general, be
+// composed into another listop. In those cases, we fall back to a
+// best-effort approximation by discarding reorders and converting
+// adds to appends.
+static void
+_FixListOpValue(VtValue *v)
 {
-    boost::optional<SdfListOp<T>> r = lhs.ApplyOperations(rhs);
-    if (r) {
+#define FIX_LISTOP_TYPE(T) \
+    if (v->IsHolding<T>()) { \
+        *v = _FixListOp(v->UncheckedGet<T>()); \
+        return; \
+    }
+    FIX_LISTOP_TYPE(SdfIntListOp);
+    FIX_LISTOP_TYPE(SdfUIntListOp);
+    FIX_LISTOP_TYPE(SdfInt64ListOp);
+    FIX_LISTOP_TYPE(SdfUInt64ListOp);
+    FIX_LISTOP_TYPE(SdfTokenListOp);
+    FIX_LISTOP_TYPE(SdfStringListOp);
+    FIX_LISTOP_TYPE(SdfPathListOp);
+    FIX_LISTOP_TYPE(SdfPayloadListOp);
+    FIX_LISTOP_TYPE(SdfReferenceListOp);
+    FIX_LISTOP_TYPE(SdfUnregisteredValueListOp);
+}
+
+// Reduces list op fields.  Note this method populates a map between ListOp
+// the layer offset from the strongest layer.  This map is later used to apply
+// the correct layer offset after the field has been fully reduced across all
+// layers in the stack.
+template <typename RefOrPayload>
+VtValue
+_ReduceRefOrPayload(
+    const SdfListOp<RefOrPayload> &lhs, 
+    const SdfListOp<RefOrPayload> &rhs,
+    Usd_ReduceFieldContext* context)
+{
+    using ListOpToIndexMap = std::map<RefOrPayload, size_t>;
+
+    if (context->listOpToIndexMap.IsEmpty()) {
+        context->listOpToIndexMap = ListOpToIndexMap();
+    }
+
+    // We assume the caller has already applied _FixListOp()
+    if (std::optional<SdfListOp<RefOrPayload>> r = lhs.ApplyOperations(rhs)) {
+        // after applying operations we want to populate the cache with the
+        // current layer index. We specifically record the the index of the
+        // strongest layer for each item. The offset for this layer index will
+        // later be multiplied with the ref or payload's own layer offset to get
+        // the final result.
+        ListOpToIndexMap listOpToIndexMap;
+        context->listOpToIndexMap.UncheckedSwap(listOpToIndexMap);
+        (*r).ModifyOperations(
+        [&listOpToIndexMap, &context](const RefOrPayload& op){
+            listOpToIndexMap.insert({op, context->currentLayerStackIndex});
+            return std::optional(op);
+        });
+        context->listOpToIndexMap.UncheckedSwap(listOpToIndexMap);
         return VtValue(*r);
     }
-    // List ops that use added or reordered items cannot, in general, be
-    // composed into another listop. In those cases, we fall back to a
-    // best-effort approximation by discarding reorders and converting
-    // adds to appends.
-    r = _FixListOp(lhs).ApplyOperations(_FixListOp(rhs));
-    if (r) {
+    // The approximation used should always be composable,
+    // so error if that didn't work.
+    TF_CODING_ERROR("Could not reduce listOp %s over %s",
+                    TfStringify(lhs).c_str(), TfStringify(rhs).c_str());
+    return VtValue();
+}
+
+VtValue
+_Reduce(
+    const SdfReferenceListOp &lhs, 
+    const SdfReferenceListOp &rhs,
+    Usd_ReduceFieldContext* context)
+{
+    return _ReduceRefOrPayload(lhs, rhs, context);
+}
+
+VtValue
+_Reduce(
+    const SdfPayloadListOp &lhs, 
+    const SdfPayloadListOp &rhs,
+    Usd_ReduceFieldContext* context)
+{
+    return _ReduceRefOrPayload(lhs, rhs, context);
+}
+
+// Note: This particular overload uses a default implementation for
+// reducing all list ops except for SdfReferenceListOp and SdfPayloadListOp.
+// These list ops do not need to specifically track layer stack indicies for
+// layer offsets. 
+template <typename T>
+VtValue
+_Reduce(
+    const SdfListOp<T> &lhs, 
+    const SdfListOp<T> &rhs,
+    Usd_ReduceFieldContext*)
+{
+    // We assume the caller has already applied _FixListOp()
+    if (std::optional<SdfListOp<T>> r = lhs.ApplyOperations(rhs)) 
+    {
         return VtValue(*r);
     }
     // The approximation used should always be composable,
@@ -116,7 +223,10 @@ _Reduce(const SdfListOp<T> &lhs, const SdfListOp<T> &rhs)
 
 template <>
 VtValue
-_Reduce(const VtDictionary &lhs, const VtDictionary &rhs)
+_Reduce(
+    const VtDictionary &lhs, 
+    const VtDictionary &rhs, 
+    Usd_ReduceFieldContext*)
 {
     // Dictionaries compose keys recursively.
     return VtValue(VtDictionaryOverRecursive(lhs, rhs));
@@ -124,7 +234,10 @@ _Reduce(const VtDictionary &lhs, const VtDictionary &rhs)
 
 template <>
 VtValue
-_Reduce(const SdfVariantSelectionMap &lhs, const SdfVariantSelectionMap &rhs)
+_Reduce(
+    const SdfVariantSelectionMap &lhs, 
+    const SdfVariantSelectionMap &rhs, 
+    Usd_ReduceFieldContext*)
 {
     SdfVariantSelectionMap result(rhs);
     for (auto const& entry: lhs) {
@@ -135,7 +248,22 @@ _Reduce(const SdfVariantSelectionMap &lhs, const SdfVariantSelectionMap &rhs)
 
 template <>
 VtValue
-_Reduce(const SdfSpecifier &lhs, const SdfSpecifier &rhs)
+_Reduce(
+    const SdfRelocates &lhs, 
+    const SdfRelocates &rhs, 
+    Usd_ReduceFieldContext*)
+{
+    SdfRelocates result(lhs);
+    result.insert(result.end(), rhs.begin(), rhs.end());
+    return VtValue::Take(result);
+}
+
+template <>
+VtValue
+_Reduce(
+    const SdfSpecifier &lhs, 
+    const SdfSpecifier &rhs, 
+    Usd_ReduceFieldContext*)
 {
     // SdfSpecifierOver is the equivalent of "no opinion"
     //
@@ -148,10 +276,23 @@ _Reduce(const SdfSpecifier &lhs, const SdfSpecifier &rhs)
 
 // This function is an overload that also accepts a field name.
 VtValue
-_Reduce(const VtValue &lhs, const VtValue &rhs, const TfToken &field)
+_Reduce(
+    const VtValue &lhs, 
+    const VtValue &rhs, 
+    const TfToken &field, 
+    Usd_ReduceFieldContext* context)
 {
+    // default behavior is to take the strongest opinion for a field.
+    context->MarkCurrentIndexAsMostRelevantIfEmpty();
     // Handle easy generic cases first.
     if (lhs.IsEmpty()) {
+        if (rhs.IsHolding<SdfReferenceListOp>()) {
+            _Reduce(SdfReferenceListOp(), 
+                rhs.UncheckedGet<SdfReferenceListOp>(), context);
+        } else if (rhs.IsHolding<SdfPayloadListOp>()) {
+            _Reduce(SdfPayloadListOp(), 
+                rhs.UncheckedGet<SdfPayloadListOp>(), context);
+        } 
         return rhs;
     }
     if (rhs.IsEmpty()) {
@@ -161,6 +302,20 @@ _Reduce(const VtValue &lhs, const VtValue &rhs, const TfToken &field)
         // If the stronger value is a block, return it;
         // if the weaker value is a block, return the stronger value.
         return lhs;
+    }
+    if (lhs.IsHolding<SdfAnimationBlock>() && 
+            (rhs.IsHolding<SdfTimeSampleMap>() || rhs.IsHolding<TsSpline>())) {
+        // If stronger is an animation block and weaker is a time sample map or
+        // spline, return the stronger value, that is, the animation block.
+        return lhs;
+    }
+    if (lhs.IsHolding<SdfAnimationBlock>() &&
+            !(rhs.IsHolding<SdfTimeSampleMap>() || rhs.IsHolding<TsSpline>())) {
+        // If the stronger value is an animation block and the weaker value is
+        // not a time sample map or spline (default values), return the
+        // weaker default value.
+        context->MarkCurrentIndexAsMostRelevant();
+        return rhs;
     }
     if (lhs.GetType() != rhs.GetType()) {
         // If the types do not match, there is no reduction rule for
@@ -176,7 +331,8 @@ _Reduce(const VtValue &lhs, const VtValue &rhs, const TfToken &field)
 #define TYPE_DISPATCH(T) \
     if (lhs.IsHolding<T>()) { \
         return _Reduce(lhs.UncheckedGet<T>(),  \
-                       rhs.UncheckedGet<T>()); \
+                       rhs.UncheckedGet<T>(),  \
+                       context); \
     }
     TYPE_DISPATCH(SdfSpecifier);
     TYPE_DISPATCH(SdfIntListOp);
@@ -190,7 +346,9 @@ _Reduce(const VtValue &lhs, const VtValue &rhs, const TfToken &field)
     TYPE_DISPATCH(SdfReferenceListOp);
     TYPE_DISPATCH(SdfUnregisteredValueListOp);
     TYPE_DISPATCH(VtDictionary);
+    TYPE_DISPATCH(SdfRelocates);
     TYPE_DISPATCH(SdfTimeSampleMap);
+    TYPE_DISPATCH(TsSpline);
     TYPE_DISPATCH(SdfVariantSelectionMap);
 #undef TYPE_DISPATCH
 
@@ -220,23 +378,82 @@ _ApplyLayerOffsetToClipInfo(
     }
 }
 
+// Applies a layer offset to a SdfReferenceListOp or SdfPayloadListOp
+// Note: we do not want to apply offsets to deleted items  This is
+// because the offset is part of the identifier and we want to preserve the
+// item in the flattened stack.
 template <class RefOrPayloadType>
-static boost::optional<RefOrPayloadType>
-_ApplyLayerOffsetToRefOrPayload(const SdfLayerOffset &offset,
-                                const RefOrPayloadType &refOrPayload)
+SdfListOp<RefOrPayloadType>
+_ApplyLayerOffsetToRefOrPayloadListOp(
+    const SdfListOp<RefOrPayloadType> &source,
+    const Usd_ReduceFieldContext &context)
 {
-    RefOrPayloadType result = refOrPayload;
-    result.SetLayerOffset(offset * refOrPayload.GetLayerOffset());
-    return boost::optional<RefOrPayloadType>(result);
+    SdfListOp<RefOrPayloadType> listOp = source;
+
+    if (context.listOpToIndexMap.IsEmpty()) {
+        return listOp;
+    }
+
+    using ListOpToIndexMap = std::map<RefOrPayloadType, size_t>;
+    const ListOpToIndexMap listOpIndexMap = 
+        context.listOpToIndexMap.UncheckedGet<ListOpToIndexMap>();
+
+    // loop over all items in the list op and record the layer stack index
+    // for each new entry. This results in the map containing the layer
+    // stack index with the strongest opinion for each item.
+    listOp.ModifyOperations(
+        [&listOpIndexMap, &context](const RefOrPayloadType &refOrPayload) {
+            RefOrPayloadType result = refOrPayload;
+            auto layerStackIndex = listOpIndexMap.find(refOrPayload);
+
+            if (layerStackIndex != listOpIndexMap.end()) {
+                const SdfLayerOffset* offset = 
+                    context.layerStack->GetLayerOffsetForLayer(
+                        layerStackIndex->second);
+                if (offset && !offset->IsIdentity()) {
+                    result.SetLayerOffset(
+                        (*offset) * refOrPayload.GetLayerOffset());
+                }
+            }
+
+            return std::optional<RefOrPayloadType>(result);
+        });
+
+    // In the event that we modified any 'deleted' items, replace them with
+    // the source's to ensure compatibility
+    if (!listOp.IsExplicit()) {
+        listOp.SetDeletedItems(source.GetDeletedItems());
+    }
+
+    return listOp;
 }
 
 // Apply layer offsets (time remapping) to time-keyed metadata.
 static void
-_ApplyLayerOffset(const SdfLayerOffset &offset,
-                  const TfToken &field, 
-                  VtValue *val)
+_ApplyLayerOffset(
+    const TfToken &field, 
+    VtValue *val,
+    const Usd_ReduceFieldContext & context)
 {
-    if (offset.IsIdentity()) {
+    if (field == SdfFieldKeys->References) {
+        if (val->IsHolding<SdfReferenceListOp>()) {
+            SdfReferenceListOp refs =_ApplyLayerOffsetToRefOrPayloadListOp(
+                val->UncheckedGet<SdfReferenceListOp>(), context);
+            val->Swap(refs);
+        }
+    }
+    else if (field == SdfFieldKeys->Payload) {
+        if (val->IsHolding<SdfPayloadListOp>()) {
+            SdfPayloadListOp pls =_ApplyLayerOffsetToRefOrPayloadListOp(
+                val->UncheckedGet<SdfPayloadListOp>(), context);
+            val->Swap(pls);
+        }
+    }
+
+    const SdfLayerOffset* offset = context.layerStack->GetLayerOffsetForLayer(
+        *context.mostRelevantLayerStackIndex);
+
+    if (!offset || offset->IsIdentity()) {
         return;
     }
 
@@ -254,73 +471,59 @@ _ApplyLayerOffset(const SdfLayerOffset &offset,
                 VtDictionary clipInfo =
                     clipInfoVal.UncheckedGet<VtDictionary>();
                 _ApplyLayerOffsetToClipInfo(
-                    offset, UsdClipsAPIInfoKeys->active, &clipInfo);
+                    *offset, UsdClipsAPIInfoKeys->active, &clipInfo);
                 _ApplyLayerOffsetToClipInfo(
-                    offset, UsdClipsAPIInfoKeys->times, &clipInfo);
+                    *offset, UsdClipsAPIInfoKeys->times, &clipInfo);
                 clipInfoVal = VtValue(clipInfo);
             }
             val->Swap(clips);
         }
-    }
-    else if (field == SdfFieldKeys->References) {
-        if (val->IsHolding<SdfReferenceListOp>()) {
-            SdfReferenceListOp refs = val->UncheckedGet<SdfReferenceListOp>();
-            refs.ModifyOperations(std::bind(
-                _ApplyLayerOffsetToRefOrPayload<SdfReference>, 
-                offset, std::placeholders::_1));
-            val->Swap(refs);
-        }
-    }
-    else if (field == SdfFieldKeys->Payload) {
-        if (val->IsHolding<SdfPayloadListOp>()) {
-            SdfPayloadListOp pls = val->UncheckedGet<SdfPayloadListOp>();
-            pls.ModifyOperations(std::bind(
-                _ApplyLayerOffsetToRefOrPayload<SdfPayload>, 
-                offset, std::placeholders::_1));
-            val->Swap(pls);
-        }
     } else {
-        Usd_ApplyLayerOffsetToValue(val, offset);
+        Usd_ApplyLayerOffsetToValue(val, *offset);
     }
 }
 
+using _ResolveAssetPathFn = std::function<
+    std::string(const SdfLayerHandle& sourceLayer,
+                const std::string& assetPath)>;
+
 template <class RefOrPayloadType>
-static boost::optional<RefOrPayloadType>
-_FixReferenceOrPayload(const UsdFlattenResolveAssetPathFn& resolveAssetPathFn,
+static std::optional<RefOrPayloadType>
+_FixReferenceOrPayload(const _ResolveAssetPathFn& resolveAssetPathFn,
                        const SdfLayerHandle &sourceLayer,
                        const RefOrPayloadType &refOrPayload)
 {
     RefOrPayloadType result = refOrPayload;
     result.SetAssetPath(
         resolveAssetPathFn(sourceLayer, refOrPayload.GetAssetPath()));
-    return boost::optional<RefOrPayloadType>(result);
+    return std::optional<RefOrPayloadType>(result);
 }
 
 static void
 _FixAssetPaths(const SdfLayerHandle &sourceLayer,
                const TfToken &field,
-               const UsdFlattenResolveAssetPathFn& resolveAssetPathFn,
+               const _ResolveAssetPathFn& resolveAssetPathFn,
                VtValue *val)
 {
     static auto updateAssetPathFn = [](
         const SdfLayerHandle &sourceLayer,
-        const UsdFlattenResolveAssetPathFn& resolveAssetPathFn,
+        const _ResolveAssetPathFn& resolveAssetPathFn,
         VtValue &val) {
             SdfAssetPath ap;
             val.Swap(ap);
             ap = SdfAssetPath(
-                    resolveAssetPathFn(sourceLayer, ap.GetAssetPath()));
+                resolveAssetPathFn(sourceLayer, ap.GetAssetPath()));
             val.Swap(ap);
         };
     static auto updateAssetPathArrayFn = [](
         const SdfLayerHandle &sourceLayer,
-        const UsdFlattenResolveAssetPathFn& resolveAssetPathFn,
+        const _ResolveAssetPathFn& resolveAssetPathFn,
         VtValue &val) {
             VtArray<SdfAssetPath> a;
             val.Swap(a);
             for (SdfAssetPath &ap: a) {
                 ap = SdfAssetPath(
-                        resolveAssetPathFn(sourceLayer, ap.GetAssetPath()));
+                    resolveAssetPathFn(sourceLayer, ap.GetAssetPath()));
             }
             val.Swap(a);
         };
@@ -443,17 +646,21 @@ TF_MAKE_STATIC_DATA(std::set<TfToken>, _fieldsToSkip) {
     _fieldsToSkip->insert(SdfFieldKeys->SubLayerOffsets);
     // TimeSamples may be masked by Defaults, so handle them separately.
     _fieldsToSkip->insert(SdfFieldKeys->TimeSamples);
+    // Splines may also be masked by Defaults, so handle them separately.
+    _fieldsToSkip->insert(SdfFieldKeys->Spline);
 }
 
 static VtValue
 _ReduceField(const PcpLayerStackRefPtr &layerStack,
              const SdfSpecHandle &targetSpec,
              const TfToken &field,
-             const UsdFlattenResolveAssetPathFn& resolveAssetPathFn)
+             const _ResolveAssetPathFn& resolveAssetPathFn)
 {
     const SdfLayerRefPtrVector &layers = layerStack->GetLayers();
     const SdfPath &path = targetSpec->GetPath();
     const SdfSpecType specType = targetSpec->GetSpecType();
+
+    Usd_ReduceFieldContext context(layerStack);
 
     VtValue val;
     for (size_t i=0; i < layers.size(); ++i) {
@@ -476,14 +683,21 @@ _ReduceField(const PcpLayerStackRefPtr &layerStack,
         if (!layers[i]->HasField(path, field, &layerVal)) {
             continue;
         }
-        // Apply layer offsets.
-        if (const SdfLayerOffset *offset =
-            layerStack->GetLayerOffsetForLayer(i)) {
-            _ApplyLayerOffset(*offset, field, &layerVal);
-        }
         // Fix asset paths.
         _FixAssetPaths(layers[i], field, resolveAssetPathFn, &layerVal);
-        val = _Reduce(val, layerVal, field);
+        // Fix any list ops
+        _FixListOpValue(&layerVal);
+        context.currentLayerStackIndex = i;
+        val = _Reduce(val, layerVal, field, &context);
+
+    }
+    // Apply layer offsets.  We want to do this after reducing in order to
+    // ensure that layer identifiers are not modified by introducing
+    // compensating layer offsets too early.  Additionally doing it once at
+    // the end ensures that offset values do not compound due to being
+    // multiplied numerous times.
+    if (context.mostRelevantLayerStackIndex) {
+        _ApplyLayerOffset(field, &val, context);
     }
     return val;
 }
@@ -491,7 +705,7 @@ _ReduceField(const PcpLayerStackRefPtr &layerStack,
 static void
 _FlattenFields(const PcpLayerStackRefPtr &layerStack,
                const SdfSpecHandle &targetSpec,
-               const UsdFlattenResolveAssetPathFn& resolveAssetPathFn)
+               const _ResolveAssetPathFn& resolveAssetPathFn)
 {
     const SdfLayerRefPtrVector &layers = layerStack->GetLayers();
     const SdfSchemaBase &schema = targetSpec->GetLayer()->GetSchema();
@@ -506,18 +720,26 @@ _FlattenFields(const PcpLayerStackRefPtr &layerStack,
         targetSpec->GetLayer()->SetField(path, field, val);
     }
     if (specType == SdfSpecTypeAttribute) {
-        // Only flatten TimeSamples if not masked by stronger Defaults.
-        for (size_t i=0; i < layers.size(); ++i) {
-            if (layers[i]->HasField(path, SdfFieldKeys->TimeSamples)) {
-                VtValue val = _ReduceField(
-                        layerStack, targetSpec, SdfFieldKeys->TimeSamples, 
-                        resolveAssetPathFn);
-                targetSpec->GetLayer()
-                    ->SetField(path, SdfFieldKeys->TimeSamples, val);
+        // Only flatten TimeSamples or Spline if not masked by stronger 
+        // Defaults.
+        for (const SdfLayerRefPtr& layer : layers) {
+            auto _ProcessField = 
+                [&layerStack, &targetSpec, &resolveAssetPathFn, &path,
+                    &layer](const TfToken& field) {
+                if (layer->HasField(path, field)) {
+                    VtValue val = _ReduceField(
+                        layerStack, targetSpec, field, resolveAssetPathFn);
+                    targetSpec->GetLayer()->SetField(path, field, val);
+                    return true;
+                }
+                return false;
+            };
+            if (_ProcessField(SdfFieldKeys->TimeSamples) ||
+                _ProcessField(SdfFieldKeys->Spline)) {
                 break;
-            } else if (layers[i]->HasField(path, SdfFieldKeys->Default)) {
+            } else if (layer->HasField(path, SdfFieldKeys->Default)) {
                 // This layer has defaults that mask any underlying
-                // TimeSamples in weaker layers.
+                // TimeSamples or Spline in weaker layers.
                 break;
             }
         }
@@ -539,12 +761,12 @@ _GetSiteSpecType(const SdfLayerRefPtrVector &layers, const SdfPath &path)
 static void
 _FlattenSpec(const PcpLayerStackRefPtr &layerStack,
              const SdfPrimSpecHandle &prim,
-             const UsdFlattenResolveAssetPathFn& resolveAssetPathFn);
+             const _ResolveAssetPathFn& resolveAssetPathFn);
 
 static void
 _FlattenSpec(const PcpLayerStackRefPtr &layerStack,
              const SdfVariantSpecHandle &var,
-             const UsdFlattenResolveAssetPathFn& resolveAssetPathFn)
+             const _ResolveAssetPathFn& resolveAssetPathFn)
 {
     _FlattenSpec(layerStack, var->GetPrimSpec(), resolveAssetPathFn);
 }
@@ -552,7 +774,7 @@ _FlattenSpec(const PcpLayerStackRefPtr &layerStack,
 static void
 _FlattenSpec(const PcpLayerStackRefPtr &layerStack,
              const SdfVariantSetSpecHandle &vset,
-             const UsdFlattenResolveAssetPathFn& resolveAssetPathFn)
+             const _ResolveAssetPathFn& resolveAssetPathFn)
 {
     // Variants
     TfTokenVector nameOrder;
@@ -574,7 +796,7 @@ _FlattenTargetPaths(const PcpLayerStackRefPtr &layerStack,
                     const SdfSpecHandle &spec,
                     const TfToken &field,
                     SdfPathEditorProxy targetProxy,
-                    const UsdFlattenResolveAssetPathFn& resolveAssetPathFn)
+                    const _ResolveAssetPathFn& resolveAssetPathFn)
 {
     VtValue val = _ReduceField(layerStack, spec, field, resolveAssetPathFn);
     if (val.IsHolding<SdfPathListOp>()) {
@@ -596,10 +818,10 @@ _FlattenTargetPaths(const PcpLayerStackRefPtr &layerStack,
     }
 }
 
-void
+static void
 _FlattenSpec(const PcpLayerStackRefPtr &layerStack,
              const SdfPrimSpecHandle &prim,
-             const UsdFlattenResolveAssetPathFn& resolveAssetPathFn)
+             const _ResolveAssetPathFn& resolveAssetPathFn)
 {
     const SdfLayerRefPtrVector &layers = layerStack->GetLayers();
 
@@ -678,21 +900,67 @@ _FlattenSpec(const PcpLayerStackRefPtr &layerStack,
     }
 }
 
-SdfLayerRefPtr
-UsdFlattenLayerStack(const PcpLayerStackRefPtr &layerStack,
-                     const UsdFlattenResolveAssetPathFn& resolveAssetPathFn,
-                     const std::string &tag)
+static std::string
+_EvaluateAssetPathExpression(
+    const std::string& expression,
+    const VtDictionary& expressionVars)
 {
+    SdfVariableExpression::Result r = 
+        SdfVariableExpression(expression)
+        .EvaluateTyped<std::string>(expressionVars);
+            
+    if (!r.errors.empty()) {
+        const std::string combinedError = TfStringJoin(
+            r.errors.begin(), r.errors.end(), "; ");
+        TF_WARN(
+            "Error evaluating expression %s: %s",
+            expression.c_str(), combinedError.c_str());
+    }
+
+    return r.value.IsHolding<std::string>() ? 
+        r.value.UncheckedGet<std::string>() : std::string();
+}
+
+SdfLayerRefPtr
+UsdFlattenLayerStack(
+    const PcpLayerStackRefPtr &layerStack,
+    const UsdFlattenResolveAssetPathAdvancedFn& resolveAssetPathFn,
+    const std::string &tag)
+{
+    // Explicitly compute the expression variables for this layer stack instead
+    // of using the values from PcpLayerStack::GetExpressionVariables. This
+    // ensures we get the same variables as if we loaded layerStack as the
+    // root layer of a UsdStage.
+    //
+    // For example, if layerStack was referenced from some other layer stack R,
+    // and R had authored expression variables, those variables would show up
+    // in the object returned by layerStack->GetExpressionVariables(). However,
+    // if layerStack was used as a UsdStage's root layer stack, those variables
+    // from R would not show up.
+    const PcpExpressionVariables layerStackExprVars =
+        PcpExpressionVariables::Compute(
+            layerStack->GetIdentifier(), layerStack->GetIdentifier());
+
+    // Wrap the resolve function we're given to pass along the computed
+    // expression variables.
+    auto resolveFnWrapper = [&resolveAssetPathFn, &layerStackExprVars](
+        const SdfLayerHandle& sourceLayer, 
+        const std::string& assetPath) -> std::string
+    {
+        return resolveAssetPathFn(
+            {sourceLayer, assetPath, layerStackExprVars.GetVariables()});
+    };
+
     ArResolverContextBinder arBinder(
         layerStack->GetIdentifier().pathResolverContext);
     SdfChangeBlock changeBlock;
     // XXX Currently, SdfLayer::CreateAnonymous() examines the tag
     // file extension to determine the file type.  Provide an
-    // extension here if needed to ensure that we get a usda file.
-    SdfLayerRefPtr outputLayer = SdfLayer::CreateAnonymous(
-        TfStringEndsWith(tag, ".usda") ? tag : (tag + ".usda"));
-    _FlattenFields(layerStack, outputLayer->GetPseudoRoot(), resolveAssetPathFn);
-    _FlattenSpec(layerStack, outputLayer->GetPseudoRoot(), resolveAssetPathFn);
+    // extension here if needed.
+    const bool hasExtension = !TfGetExtension(tag).empty();
+    SdfLayerRefPtr outputLayer = SdfLayer::CreateAnonymous(hasExtension ? tag : tag+".usda");
+    _FlattenFields(layerStack, outputLayer->GetPseudoRoot(), resolveFnWrapper);
+    _FlattenSpec(layerStack, outputLayer->GetPseudoRoot(), resolveFnWrapper);
     return outputLayer;
 }
 
@@ -701,8 +969,48 @@ UsdFlattenLayerStack(const PcpLayerStackRefPtr &layerStack,
                      const std::string& tag)
 {
     return UsdFlattenLayerStack(layerStack,
-            UsdFlattenLayerStackResolveAssetPath, 
+            UsdFlattenLayerStackResolveAssetPathAdvanced, 
             tag);
+}
+
+SdfLayerRefPtr
+UsdFlattenLayerStack(const PcpLayerStackRefPtr &layerStack,
+                     const UsdFlattenResolveAssetPathFn& resolveAssetPathFn,
+                     const std::string &tag)
+{
+    // Wrap the resolve function we're given so that we evaluate any asset
+    // path expressions before passing them along to the callback.
+    auto resolveFnWrapper = [&resolveAssetPathFn](
+        const UsdFlattenResolveAssetPathContext& ctx) {
+
+        if (SdfVariableExpression::IsExpression(ctx.assetPath)) {
+            const std::string evaluatedAssetPath =
+                _EvaluateAssetPathExpression(
+                    ctx.assetPath, ctx.expressionVariables);
+            return resolveAssetPathFn(ctx.sourceLayer, evaluatedAssetPath);
+        }
+        return resolveAssetPathFn(ctx.sourceLayer, ctx.assetPath);
+    };
+
+    return UsdFlattenLayerStack(layerStack, resolveFnWrapper, tag);
+}
+
+std::string
+UsdFlattenLayerStackResolveAssetPathAdvanced(
+    const UsdFlattenResolveAssetPathContext& ctx)
+{
+    const std::string* assetPath = &ctx.assetPath;
+
+    // If the asset path is an expression, compute its value before anchoring
+    // it below.
+    std::string evaluatedAssetPath;
+    if (SdfVariableExpression::IsExpression(ctx.assetPath)) {
+        evaluatedAssetPath = _EvaluateAssetPathExpression(
+            ctx.assetPath, ctx.expressionVariables);
+        assetPath = &evaluatedAssetPath;
+    }
+
+    return UsdFlattenLayerStackResolveAssetPath(ctx.sourceLayer, *assetPath);
 }
 
 std::string 
@@ -712,9 +1020,24 @@ UsdFlattenLayerStackResolveAssetPath(
 {
     // Treat empty asset paths specially, since they cause coding errors in
     // SdfComputeAssetPathRelativeToLayer.
-    return assetPath.empty() ? 
-        assetPath : SdfComputeAssetPathRelativeToLayer(sourceLayer, assetPath);
-}
 
+    if (assetPath.empty()) {
+        return assetPath;
+    }
+
+    // If anchoring has no effect on asset path, return it as-is. For additional
+    // details, please see comments in _MakeResolvedAssetPathsImpl in stage.cpp.
+    const std::string anchoredPath =
+        SdfComputeAssetPathRelativeToLayer(sourceLayer, assetPath);
+
+    const std::string unanchoredPath = ArGetResolver().CreateIdentifier(
+        assetPath);
+
+    if (unanchoredPath == anchoredPath) {
+        return assetPath;
+    }
+
+    return anchoredPath;
+}
 
 PXR_NAMESPACE_CLOSE_SCOPE

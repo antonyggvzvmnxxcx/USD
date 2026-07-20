@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdSt/udimTextureObject.h"
 
@@ -107,7 +90,7 @@ _FindUdimTiles(const std::string &filePath)
 
     ArResolver& resolver = ArGetResolver();
 
-    for (int i = UDIM_START_TILE; i < UDIM_END_TILE; i++) {
+    for (int i = UDIM_START_TILE; i <= UDIM_END_TILE; i++) {
         // Add integer between prefix and suffix and see whether
         // the tile exists by consulting the resolver.
         const std::string resolvedPath =
@@ -127,6 +110,8 @@ HdStUdimTextureObject::HdStUdimTextureObject(
     const HdStTextureIdentifier &textureId,
     HdSt_TextureObjectRegistry * const textureObjectRegistry)
   : HdStTextureObject(textureId, textureObjectRegistry)
+  , _textureDataSize(0)
+  , _layoutDataSize(0)
   , _dimensions(0)
   , _mipCount(0)
   , _hgiFormat(HgiFormatInvalid)
@@ -206,8 +191,8 @@ HdStUdimTextureObject::_Load()
             firstImageMips, _hgiFormat, _tileCount, GetTargetMemory());
 
     // Texture array queries will use a float as the array specifier.
-    const unsigned int maxTileId = std::get<0>(tiles.back()) + 1;
-    _layoutData.resize(maxTileId, 0);
+    _layoutDataSize = std::get<0>(tiles.back()) + 1;
+    _layoutData.resize(_layoutDataSize, 0);
 
     // Use Hgi to compute the mip sizes from the dimensions
     const std::vector<HgiMipInfo> mipInfos =
@@ -217,8 +202,10 @@ HdStUdimTextureObject::_Load()
     const HgiMipInfo &lastMipInfo = mipInfos.back();
 
     // Allocate memory for the mipData, ready for upload to GPU
-    _textureData.resize(
-        lastMipInfo.byteOffset + _tileCount * lastMipInfo.byteSizePerLayer);
+    _textureDataSize = lastMipInfo.byteOffset +
+        _tileCount * lastMipInfo.byteSizePerLayer;
+
+    _textureData.resize(_textureDataSize);
 
     WorkParallelForN(tiles.size(), [&](size_t begin, size_t end) {
         for (size_t tileId = begin; tileId < end; ++tileId) {
@@ -250,10 +237,6 @@ HdStUdimTextureObject::_Commit()
 {
     TRACE_FUNCTION();
 
-    if (_hgiFormat == HgiFormatInvalid) {
-        return;
-    }
-
     Hgi * const hgi = _GetHgi();
     if (!TF_VERIFY(hgi)) {
         return;
@@ -261,17 +244,49 @@ HdStUdimTextureObject::_Commit()
 
     _DestroyTextures();
 
+    if (_hgiFormat == HgiFormatInvalid) {
+        // Create 1x1x1 black fallback texture.
+        HgiTextureDesc texDesc;
+        texDesc.debugName = "UdimTextureFallback";
+        texDesc.usage = HgiTextureUsageBitsShaderRead;
+        texDesc.format = HgiFormatUNorm8Vec4;
+        texDesc.type = HgiTextureType2DArray;
+        texDesc.dimensions = GfVec3i(1, 1, 1);;
+        texDesc.layerCount = 1;
+        texDesc.mipLevels = 1;
+        texDesc.pixelsByteSize = 4 * sizeof(unsigned char);
+        const unsigned char data[4] = {0, 0, 0, 255};
+        texDesc.initialData = &data[0];
+        _texelTexture = hgi->CreateTexture(texDesc);
+        
+        HgiTextureDesc layoutTexDesc;
+        layoutTexDesc.debugName = "UdimLayoutTextureFallback";
+        layoutTexDesc.usage = HgiTextureUsageBitsShaderRead;
+        layoutTexDesc.type = HgiTextureType1D;
+        layoutTexDesc.dimensions = GfVec3i(1, 1, 1);
+        layoutTexDesc.format = HgiFormatFloat32;
+        layoutTexDesc.layerCount = 1;
+        layoutTexDesc.mipLevels = 1;
+        layoutTexDesc.pixelsByteSize = sizeof(float);
+        const float layoutData[1] = {1};
+        layoutTexDesc.initialData = &layoutData[0];
+        _layoutTexture = hgi->CreateTexture(layoutTexDesc);
+
+        return;
+    }
+
     // Texel GPU texture creation
     {
         HgiTextureDesc texDesc;
         texDesc.debugName = _GetDebugName(GetTextureIdentifier());
+        texDesc.usage = HgiTextureUsageBitsShaderRead;
         texDesc.type = HgiTextureType2DArray;
         texDesc.dimensions = _dimensions;
         texDesc.layerCount = _tileCount;
         texDesc.format = _hgiFormat;
         texDesc.mipLevels = _mipCount;
         texDesc.initialData = _textureData.data();
-        texDesc.pixelsByteSize = _textureData.size();
+        texDesc.pixelsByteSize = _textureDataSize;
         _texelTexture = hgi->CreateTexture(texDesc);
     }
 
@@ -279,11 +294,12 @@ HdStUdimTextureObject::_Commit()
     {
         HgiTextureDesc texDesc;
         texDesc.debugName = _GetDebugName(GetTextureIdentifier());
+        texDesc.usage = HgiTextureUsageBitsShaderRead;
         texDesc.type = HgiTextureType1D;
-        texDesc.dimensions = GfVec3i(_layoutData.size(), 1, 1);
+        texDesc.dimensions = GfVec3i(_layoutDataSize, 1, 1);
         texDesc.format = HgiFormatFloat32;
         texDesc.initialData = _layoutData.data();
-        texDesc.pixelsByteSize = _layoutData.size() * sizeof(float);
+        texDesc.pixelsByteSize = _layoutDataSize * sizeof(float);
         _layoutTexture = hgi->CreateTexture(texDesc);
     }
 
@@ -295,14 +311,22 @@ HdStUdimTextureObject::_Commit()
 bool
 HdStUdimTextureObject::IsValid() const
 {
-    // Checking whether ptex texture is valid not supported yet.
-    return true;
+    return _hgiFormat != HgiFormatInvalid;
 }
 
-HdTextureType
+HdStTextureType
 HdStUdimTextureObject::GetTextureType() const
 {
-    return HdTextureType::Udim;
+    return HdStTextureType::Udim;
+}
+
+size_t
+HdStUdimTextureObject::GetCommittedSize() const
+{
+    if (_hgiFormat == HgiFormatInvalid) {
+        return 4 * sizeof(unsigned char) + sizeof(float);
+    }
+    return _textureDataSize + _layoutDataSize * sizeof(float);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

@@ -1,36 +1,23 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 
 from __future__ import print_function
 
+from pxr import Tf
+Tf.PreparePythonModule()
+
 import sys, argparse, os
 
-from .qt import QtWidgets, QtCore
-from .common import Timer
+from .qt import QtCore, QtGui, QtWidgets
+from .common import Timer, GetIconPath
 from .appController import AppController
+from .settings import ConfigManager
 
-from pxr import UsdAppUtils, Tf
+from pxr import Sdf, UsdUtils, UsdAppUtils
 
 
 class InvalidUsdviewOption(Exception):
@@ -38,6 +25,16 @@ class InvalidUsdviewOption(Exception):
     Launcher.ValidateOptions or any methods which override it.
     """
     pass
+
+
+def _AbsoluteFilePath(argStr):
+    """This should be used for args that are meant to absolute file paths (as
+    opposed to ones that may get resolved.  This is especially useful if you
+    have an app that uses this launcher but also changes the dir.
+    """
+    if argStr is None:
+        return None
+    return os.path.abspath(argStr)
 
 
 class Launcher(object):
@@ -64,7 +61,7 @@ class Launcher(object):
 
         traceCollector = None
 
-        with Timer() as totalTimer:
+        with Timer('open and close usdview') as totalTimer:
             self.RegisterPositionals(parser)
             self.RegisterOptions(parser)
             arg_parse_result = self.ParseOptions(parser)
@@ -79,13 +76,22 @@ class Launcher(object):
 
                 traceCollector.enabled = True
 
-            self.__LaunchProcess(arg_parse_result)
+            app, appController = self.LaunchPreamble(arg_parse_result)
+
+            if arg_parse_result.viewportSize and appController._stageView:
+                w, h = arg_parse_result.viewportSize
+                appController._stageView.SetPhysicalWindowSize(w, h)
+
+            if arg_parse_result.dumpFirstImage:
+                appController.SaveViewerImageToFile(arg_parse_result.dumpFirstImage)
+
+            self.LaunchProcess(arg_parse_result, app, appController)
 
         if traceCollector:
             traceCollector.enabled = False
 
         if arg_parse_result.timing and arg_parse_result.quitAfterStartup:
-            totalTimer.PrintTime('open and close usdview')
+            totalTimer.PrintTime()
 
         if traceCollector:
             if arg_parse_result.traceFormat == 'trace':
@@ -109,8 +115,9 @@ class Launcher(object):
         register positional arguments on the ArgParser
         '''
         parser.add_argument('usdFile', action='store',
+                            nargs='?',
                             type=str,
-                            help='The file to view')
+                            help='The file to view (Optional)')
 
     def RegisterOptions(self, parser):
         '''
@@ -118,14 +125,10 @@ class Launcher(object):
         '''
         from pxr import UsdUtils
 
-        parser.add_argument('--renderer', action='store',
-                            type=str, dest='renderer',
-                            choices=AppController.GetRendererOptionChoices(),
-                            help="Which render backend to use (named as it "
-                            "appears in the menu).  Use '%s' to "
-                            "turn off Hydra renderers." %
-                            AppController.HYDRA_DISABLED_OPTION_STRING,
-                            default='')
+        UsdAppUtils.rendererArgs.AddCmdlineArgs(parser,
+                altHelpText=("Which render backend to use (named as it "
+                            "appears in the menu). 'GL' and 'Storm' currently"
+                            "alias to the same renderer, Storm."))
         
         parser.add_argument('--select', action='store', default='/',
                             dest='primPath', type=str,
@@ -153,6 +156,18 @@ class Launcher(object):
                             dest='clearSettings',
                             help='Restores usdview settings to default')
 
+        parser.add_argument('--config', action='store',
+                            type=str,
+                            dest='config',
+                            default=ConfigManager.defaultConfig,
+                            choices=ConfigManager(
+                                AppController._outputBaseDirectory()
+                            ).getConfigs()[1:],
+                            help='Load usdview with the state settings found '
+                            'in the specified config. If not provided will '
+                            'use the previously saved application state and '
+                            'automatically persist state on close')
+
         parser.add_argument('--defaultsettings', action='store_true',
                             dest='defaultSettings',
                             help='Launch usdview with default settings')
@@ -169,12 +184,20 @@ class Launcher(object):
                             dest='unloaded',
                             help='Do not load payloads')
 
+        parser.add_argument('--bboxStandin', action='store_true',
+                            dest='bboxstandin',
+                            help='Display unloaded prims with bounding boxes')
+
         parser.add_argument('--timing', action='store_true',
                             dest='timing',
-                            help='Echo timing stats to console. NOTE: timings will be unreliable when the --mallocTagStats option is also in use')
+                            help='Echo timing stats to console. NOTE: timings will be unreliable when the --memstats option is also in use')
+
+        parser.add_argument('--allow-async', action='store_true',
+                            dest='allowAsync',
+                            help='Enable asynchronous hydra scene processing')
 
         parser.add_argument('--traceToFile', action='store',
-                            type=str,
+                            type=_AbsoluteFilePath,
                             dest='traceToFile',
                             default=None,
                             help='Start tracing at application startup and '
@@ -200,6 +223,19 @@ class Launcher(object):
                             dest='mallocTagStats', type=str,
                             choices=['none', 'stage', 'stageAndImaging'],
                             help='Use the Pxr MallocTags memory accounting system to profile USD, saving results to a tmp file, with a summary to the console.  Will have no effect if MallocTags are not supported in the USD installation.')
+
+        parser.add_argument('--dumpFirstImage', action='store',
+                            type=_AbsoluteFilePath,
+                            dest='dumpFirstImage',
+                            default=None,
+                            help='Dumps the first image to file (as png)')
+
+        parser.add_argument('--viewportSize', action='store',
+                            type=lambda s: tuple(int(x) for x in s.split('x')),
+                            dest='viewportSize',
+                            default=None,
+                            help='Fix the viewport to a specific size (WxH) '
+                                 'for deterministic rendering, e.g. 601x458')
 
         parser.add_argument('--numThreads', action='store',
                             type=int, default=0,
@@ -235,6 +271,38 @@ class Launcher(object):
                             "will include the opinions in the persistent "
                             "session layer.")
 
+        parser.add_argument('--mute', default=None, type=str,
+                            dest='muteLayersRe', action='append', nargs=1,
+                            help="Layer identifiers searched against this "
+                                 "regular expression will be muted on the "
+                                 "stage prior to, and after loading. Multiple "
+                                 "expressions can be supplied using the | "
+                                 "regex separator operator. Alternatively the "
+                                 "argument may be used multiple times.")
+
+        group = parser.add_argument_group(
+            'Detached Layers',
+            'Specify layers to be detached from their serialized data source '
+            'when loaded. This may increase time to load and memory usage but '
+            'will avoid issues like open file handles preventing other '
+            'processes from safely overwriting a loaded layer.')
+
+        group.add_argument(
+            '--detachLayers', action='store_true', help=("Detach all layers"))
+
+        group.add_argument(
+            '--detachLayersInclude', action='store', 
+            metavar='PATTERN[,PATTERN...]',
+            help=("Detach layers with identifiers containing any of the "
+                  "given patterns."))
+
+        group.add_argument(
+            '--detachLayersExclude', action='store',
+            metavar='PATTERN[,PATTERN,...]',
+            help=("Exclude layers with identifiers containing any of the "
+                  "given patterns from the set of detached layers specified "
+                  "by the --detachLayers or --detachLayerIncludes arguments."))
+
     def ParseOptions(self, parser):
         '''
         runs the parser on the arguments
@@ -251,13 +319,31 @@ class Launcher(object):
         overridden, derived classes should likely first call the base method.
         '''
 
-        # split arg_parse_result.populationMask into paths.
+        # Split arg_parse_result.populationMask into paths.
         if arg_parse_result.populationMask:
             arg_parse_result.populationMask = (
                 arg_parse_result.populationMask.replace(',', ' ').split())
 
+        # Process detached layer arguments.
+        if arg_parse_result.detachLayersInclude:
+            arg_parse_result.detachLayersInclude = [
+                s for s in arg_parse_result.detachLayersInclude.split(',') if s
+            ]
+
+        if arg_parse_result.detachLayersExclude:
+            arg_parse_result.detachLayersExclude = [
+                s for s in arg_parse_result.detachLayersExclude.split(',') if s
+            ]
+
         # Verify that the camera path is either an absolute path, or is just
         # the name of a camera.
+        if not arg_parse_result.camera:
+            from pxr import Sdf
+            primaryCameraName = UsdUtils.GetPrimaryCameraName()
+            if primaryCameraName:
+                arg_parse_result.camera = Sdf.Path(primaryCameraName)
+            else:
+                arg_parse_result.camera = Sdf.Path.emptyPath
         if arg_parse_result.camera:
             camPath = arg_parse_result.camera
             if camPath.isEmpty:
@@ -298,13 +384,27 @@ class Launcher(object):
         context is provided.  For usdview, configuring an asset context by
         default is reasonable, and allows clients that embed usdview to 
         achieve different behavior when needed.
+        
+        If usdFile path is not provided, it returns default context.
         """
         from pxr import Ar
         
         r = Ar.GetResolver()
-        r.ConfigureResolverForAsset(usdFile)
+        
+        if not usdFile:
+            return r.CreateDefaultContext()
+
+        # ConfigureResolverForAsset no longer exists under Ar 2.0; this
+        # is here for backwards compatibility with Ar 1.0.
+        if hasattr(r, "ConfigureResolverForAsset"):
+            r.ConfigureResolverForAsset(usdFile)
+
         return r.CreateDefaultContextForAsset(usdFile)
 
+    def OverrideMaxSamples(self):
+        # Return True if HdPrman's default max samples should be overridden,
+        # False otherwise.
+        return True
 
     def LaunchPreamble(self, arg_parse_result):
         # Initialize concurrency limit as early as possible so that it is
@@ -312,24 +412,73 @@ class Launcher(object):
         from pxr import Work
         Work.SetConcurrencyLimitArgument(arg_parse_result.numThreads)
 
+        # XXX Override HdPrman's defaults using the env var.  In the
+        # future we expect there may be more formal ways to represent
+        # per-app settings for particular Hydra plugins.
+        if self.OverrideMaxSamples():
+            os.environ.setdefault('HD_PRMAN_MAX_SAMPLES', '1024')
+
         if arg_parse_result.clearSettings:
             AppController.clearSettings()
 
+        # On Windows, set the AppUserModelID so that the taskbar groups
+        # usdview as its own application rather than under "Python".
+        if sys.platform == 'win32':
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                'pxr.usd.usdview')
+
+        # On MacOS, override the bundle name so the menu bar and Dock
+        # show "usdview" rather than "Python"
+        if sys.platform == 'darwin':
+            import ctypes
+            import ctypes.util
+            objc_lib = ctypes.util.find_library('objc')
+            if objc_lib:
+                objc = ctypes.cdll.LoadLibrary(objc_lib)
+                objc.objc_getClass.restype = ctypes.c_void_p
+                objc.sel_registerName.restype = ctypes.c_void_p
+                objc.objc_msgSend.restype = ctypes.c_void_p
+                objc.objc_msgSend.argtypes = [
+                    ctypes.c_void_p, ctypes.c_void_p]
+
+                NSBundle = objc.objc_getClass(b'NSBundle')
+                mainBundle = objc.objc_msgSend(
+                    NSBundle, objc.sel_registerName(b'mainBundle'))
+                info = objc.objc_msgSend(
+                    mainBundle, objc.sel_registerName(b'infoDictionary'))
+
+                objc.objc_msgSend.argtypes = [
+                    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p]
+                NSString = objc.objc_getClass(b'NSString')
+                strSel = objc.sel_registerName(b'stringWithUTF8String:')
+                setSel = objc.sel_registerName(b'setObject:forKey:')
+
+                for key in (b'CFBundleName', b'CFBundleDisplayName'):
+                    objc.objc_msgSend.argtypes = [
+                        ctypes.c_void_p, ctypes.c_void_p,
+                        ctypes.c_char_p]
+                    nsKey = objc.objc_msgSend(NSString, strSel, key)
+                    nsVal = objc.objc_msgSend(NSString, strSel, b'usdview')
+                    objc.objc_msgSend.argtypes = [
+                        ctypes.c_void_p, ctypes.c_void_p,
+                        ctypes.c_void_p, ctypes.c_void_p]
+                    objc.objc_msgSend(info, setSel, nsVal, nsKey)
+
         # Create the Qt application
         app = QtWidgets.QApplication(sys.argv)
+        app.setApplicationName("usdview")
+        app.setApplicationDisplayName("usdview")
 
         contextCreator = lambda usdFile: self.GetResolverContext(usdFile)
         appController = AppController(arg_parse_result, contextCreator)
 
         return (app, appController)
 
-    def __LaunchProcess(self, arg_parse_result):
+    def LaunchProcess(self, arg_parse_result, app, appController):
         '''
         after the arguments have been parsed, launch the UI in a forked process
         '''
-        # Initialize concurrency limit as early as possible so that it is
-        # respected by subsequent imports.
-        (app, appController) = self.LaunchPreamble(arg_parse_result)
         
         if arg_parse_result.quitAfterStartup:
             # Enqueue event to shutdown application. We don't use quit() because

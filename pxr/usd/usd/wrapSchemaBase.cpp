@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 #include "pxr/usd/usd/schemaBase.h"
@@ -30,20 +13,22 @@
 #include "pxr/base/tf/pyResultConversions.h"
 #include "pxr/base/tf/wrapTypeHelpers.h"
 
-#include <boost/python/class.hpp>
-#include <boost/python/operators.hpp>
+#include "pxr/external/boost/python/class.hpp"
+#include "pxr/external/boost/python/operators.hpp"
 
 using std::string;
 
-using namespace boost::python;
-
 PXR_NAMESPACE_USING_DIRECTIVE
+
+using namespace pxr_boost::python;
 
 // We override __getattribute__ for UsdSchemaBase to check object validity
 // and raise an exception instead of crashing from Python.
 
 // Store the original __getattribute__ so we can dispatch to it after verifying
-// validity.
+// validity. Note that this TfPyObjWrapper is intentionally leaked to avoid
+// running Python refcount operations in its d'tor during process shutdown, 
+// which is unsafe if Python has been finalized.
 static TfStaticData<TfPyObjWrapper> _object__getattribute__;
 
 // This function gets wrapped as __getattribute__ on UsdSchemaBase.
@@ -60,7 +45,6 @@ __getattribute__(object selfObj, const char *name) {
         strcmp(name, "GetPath") == 0 ||
         strcmp(name, "GetSchemaClassPrimDefinition") == 0 ||
         strcmp(name, "GetSchemaAttributeNames") == 0 ||
-        strcmp(name, "GetSchemaType") == 0 ||
         strcmp(name, "GetSchemaKind") == 0 ||
         strcmp(name, "IsAPISchema") == 0 ||
         strcmp(name, "IsConcrete") == 0 ||
@@ -103,7 +87,6 @@ void wrapUsdSchemaBase()
         .def("IsAppliedAPISchema", &UsdSchemaBase::IsAppliedAPISchema) 
         .def("IsMultipleApplyAPISchema", &UsdSchemaBase::IsMultipleApplyAPISchema) 
 
-        .def("GetSchemaType", &UsdSchemaBase::GetSchemaType)
         .def("GetSchemaKind", &UsdSchemaBase::GetSchemaKind)
 
         .def(!self)

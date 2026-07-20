@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -37,7 +20,6 @@
 
 #include "pxr/base/arch/demangle.h"
 
-#include <boost/noncopyable.hpp>
 #include "pxr/base/tf/hashmap.h"
 
 #include <tbb/spin_mutex.h>
@@ -56,13 +38,22 @@ TF_REGISTRY_FUNCTION(TfType)
     TfType::Define<TfEnum>();
 }
 
+namespace {
+struct _Names
+{
+    std::string name, fullName, displayName;
+};
+} // anon
+
 // Convenience typedefs for value/name tables.
-typedef TfHashMap<TfEnum, string, TfHash> _EnumToNameTableType;
+typedef TfHashMap<TfEnum, _Names, TfHash> _EnumToNamesTableType;
 typedef TfHashMap<string, TfEnum, TfHash> _NameToEnumTableType;
 typedef TfHashMap<string, vector<string>, TfHash> _TypeNameToNameVectorTableType;
 typedef TfHashMap<string, const type_info *, TfHash> _TypeNameToTypeTableType;
 
-class Tf_EnumRegistry : boost::noncopyable {
+class Tf_EnumRegistry {
+    Tf_EnumRegistry(const Tf_EnumRegistry&) = delete;
+    Tf_EnumRegistry& operator=(Tf_EnumRegistry&) = delete;
 private:
     static Tf_EnumRegistry& _GetInstance() {
         return TfSingleton<Tf_EnumRegistry>::GetInstance();
@@ -84,23 +75,19 @@ private:
 
         vector<string>& v = _typeNameToNameVector[val.GetType().name()];
         vector<string> original = v;
-        string name = _enumToName[val];
+        string name = _enumToNames[val].name;
 
         v.clear();
         for (size_t i = 0; i < original.size(); i++)
             if (original[i] != name)
                 v.push_back(original[i]);
         
-        _fullNameToEnum.erase(_enumToFullName[val]);
-        _enumToFullName.erase(val);
-        _enumToName.erase(val);
-        _enumToDisplayName.erase(val);
+        _fullNameToEnum.erase(_enumToNames[val].fullName);
+        _enumToNames.erase(val);
     }   
 
     tbb::spin_mutex            _tableLock;
-    _EnumToNameTableType       _enumToName;
-    _EnumToNameTableType       _enumToFullName;
-    _EnumToNameTableType       _enumToDisplayName;
+    _EnumToNamesTableType      _enumToNames;
     _NameToEnumTableType       _fullNameToEnum;
     _TypeNameToNameVectorTableType _typeNameToNameVector;
     _TypeNameToTypeTableType  _typeNameToType;
@@ -112,11 +99,15 @@ private:
 TF_INSTANTIATE_SINGLETON(Tf_EnumRegistry);
 
 void
-TfEnum::_AddName(TfEnum val, const string &valName, const string &displayName)
+TfEnum::_AddName(TfEnum val,
+                 char const *valNameCstr, char const *displayNameCstr)
 {
     TfAutoMallocTag2 tag("Tf", "TfEnum::_AddName");
     string typeName = ArchGetDemangled(val.GetType());
 
+    const string valName = TfSafeString(valNameCstr);
+    const string displayName = TfSafeString(displayNameCstr);
+    
     /*
      * In case valName looks like "stuff::VALUE", strip off the leading
      * prefix.
@@ -132,9 +123,9 @@ TfEnum::_AddName(TfEnum val, const string &valName, const string &displayName)
 
     string fullName = typeName + "::" + shortName;
 
-    r._enumToName[val] = shortName;
-    r._enumToFullName[val] = fullName;
-    r._enumToDisplayName[val] = displayName.empty() ? shortName : displayName;
+    r._enumToNames[val] = {
+        shortName, fullName, displayName.empty() ? shortName : displayName
+    };
     r._fullNameToEnum[fullName] = val;
     r._typeNameToNameVector[val.GetType().name()].push_back(shortName);
     r._typeNameToType[typeName] = &val.GetType();
@@ -152,8 +143,8 @@ TfEnum::GetName(TfEnum val)
     Tf_EnumRegistry& r = Tf_EnumRegistry::_GetInstance();
     tbb::spin_mutex::scoped_lock lock(r._tableLock);
 
-    _EnumToNameTableType::iterator i = r._enumToName.find(val);
-    return (i != r._enumToName.end() ? i->second : "");
+    _EnumToNamesTableType::iterator i = r._enumToNames.find(val);
+    return (i != r._enumToNames.end() ? i->second.name : "");
 }
 
 string
@@ -165,8 +156,8 @@ TfEnum::GetFullName(TfEnum val)
     Tf_EnumRegistry& r = Tf_EnumRegistry::_GetInstance();
     tbb::spin_mutex::scoped_lock lock(r._tableLock);
 
-    _EnumToNameTableType::iterator i = r._enumToFullName.find(val);
-    return (i != r._enumToFullName.end() ? i->second : "");
+    _EnumToNamesTableType::iterator i = r._enumToNames.find(val);
+    return (i != r._enumToNames.end() ? i->second.fullName : "");
 }
 
 string
@@ -178,8 +169,8 @@ TfEnum::GetDisplayName(TfEnum val)
     Tf_EnumRegistry& r = Tf_EnumRegistry::_GetInstance();
     tbb::spin_mutex::scoped_lock lock(r._tableLock);
 
-    _EnumToNameTableType::iterator i = r._enumToDisplayName.find(val);
-    return (i != r._enumToDisplayName.end() ? i->second : "");
+    _EnumToNamesTableType::iterator i = r._enumToNames.find(val);
+    return (i != r._enumToNames.end() ? i->second.displayName : "");
 }
 
 vector<string>

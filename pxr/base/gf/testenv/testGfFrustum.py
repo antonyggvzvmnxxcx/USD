@@ -2,25 +2,8 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 from __future__ import division
 
@@ -38,7 +21,7 @@ class TestGfFrustum(unittest.TestCase):
         # code coverage wonderfulness.
         f = Gf.Frustum()
         # force instantiation of the frustum planes
-        f.Intersects(Gf.Vec3d())
+        f.ComputePlanes()
         f2 = Gf.Frustum(f)
 
     def test_Operators(self):
@@ -50,8 +33,8 @@ class TestGfFrustum(unittest.TestCase):
         f1 = Gf.Frustum()
         f2 = Gf.Frustum()
         # force plane instantiation.
-        f1.Intersects(Gf.Vec3d())
-        f2.Intersects(Gf.Vec3d())
+        f1.ComputePlanes()
+        f2.ComputePlanes()
         self.assertEqual(f1, f2)
 
     def test_Position(self):
@@ -222,6 +205,18 @@ class TestGfFrustum(unittest.TestCase):
         self.assertEqual(corners[6], Gf.Vec3d(-3, 2, -10))
         self.assertEqual(corners[7], Gf.Vec3d(3, 2, -10))
 
+    def test_ComputeCorners(self):
+        f = Gf.Frustum()
+        f.projectionType = f.Orthographic
+        f.Transform(Gf.Matrix4d(Gf.Vec4d(3,2,1,1)))
+        planes = f.ComputePlanes()
+        self.assertEqual(planes[0], Gf.Plane(Gf.Vec3d( 1,  0,  0),  -3))
+        self.assertEqual(planes[1], Gf.Plane(Gf.Vec3d(-1,  0,  0),  -3))
+        self.assertEqual(planes[2], Gf.Plane(Gf.Vec3d( 0,  1,  0),  -2))
+        self.assertEqual(planes[3], Gf.Plane(Gf.Vec3d( 0, -1,  0),  -2))
+        self.assertEqual(planes[4], Gf.Plane(Gf.Vec3d( 0,  0, -1),   1))
+        self.assertEqual(planes[5], Gf.Plane(Gf.Vec3d( 0,  0,  1), -10))
+
     def test_ComputeNarrowedFrustum(self):
         f = Gf.Frustum()
         f.projectionType = f.Orthographic
@@ -233,6 +228,19 @@ class TestGfFrustum(unittest.TestCase):
         narrowF = f.ComputeNarrowedFrustum(Gf.Vec3d(0, 0, -1), Gf.Vec2d(0.1, 0.1))
         self.assertTrue(Gf.IsClose(narrowF.window.min, Gf.Vec2d(-0.3, -0.2), 0.0001))
         self.assertTrue(Gf.IsClose(narrowF.window.max, Gf.Vec2d(0.3, 0.2), 0.0001))
+
+        narrowF = f.ComputeNarrowedFrustum(Gf.Vec3d(.1, .2, -5), Gf.Vec2d(0.1, 0.1))
+        self.assertTrue(Gf.IsClose(narrowF.window.min, Gf.Vec2d(-0.2, 0.0), 0.0001))
+        self.assertTrue(Gf.IsClose(narrowF.window.max, Gf.Vec2d(0.4, 0.4), 0.0001))
+
+        f.projectionType = f.Perspective
+        narrowF = f.ComputeNarrowedFrustum(Gf.Vec3d(0, 0, -1), Gf.Vec2d(0.1, 0.1))
+        self.assertTrue(Gf.IsClose(narrowF.window.min, Gf.Vec2d(-0.3, -0.2), 0.0001))
+        self.assertTrue(Gf.IsClose(narrowF.window.max, Gf.Vec2d(0.3, 0.2), 0.0001))
+
+        narrowF = f.ComputeNarrowedFrustum(Gf.Vec3d(.1, .2, -5), Gf.Vec2d(0.1, 0.1))
+        self.assertTrue(Gf.IsClose(narrowF.window.min, Gf.Vec2d(-0.28, -0.16), 0.0001))
+        self.assertTrue(Gf.IsClose(narrowF.window.max, Gf.Vec2d(0.32, 0.24), 0.0001))
 
         # Given a point behind the eye should get the same frustum back
         narrowF = f.ComputeNarrowedFrustum(Gf.Vec3d(0, 0, 1), Gf.Vec2d(0.1, 0.1))
@@ -251,7 +259,8 @@ class TestGfFrustum(unittest.TestCase):
         f = Gf.Frustum()
         f.projectionType = f.Orthographic
         r = f.ComputePickRay(Gf.Vec2d(2, 2))
-        self.assertTrue(Gf.IsClose( r.startPoint, Gf.Vec3d(2, 2, -1), 0.00001 ))
+
+        self.assertTrue(Gf.IsClose( r.startPoint, Gf.Vec3d(2, 2, -2), 0.00001 ))
         self.assertTrue(Gf.IsClose( r.direction, Gf.Vec3d(0, 0, -1), 0.00001 ))
 
         r = Gf.Frustum().ComputePickRay(Gf.Vec3d(0, 0, -2))
@@ -394,7 +403,19 @@ class TestGfFrustum(unittest.TestCase):
             self.assertTrue(
                 Gf.IsClose(corners[i], (results[i] + results[i+4]) / 2.0,
                            0.0001))
-        
+
+    def test_Hash(self):
+        frustum = Gf.Frustum(
+                Gf.Vec3d(1.0, 2.0, 3.0),
+                Gf.Rotation(Gf.Vec3d(1.0, 0.0, 0.0), 90.0),
+                Gf.Range2d(Gf.Vec2d(-0.5, 0.5), Gf.Vec2d(-1.0, 1.0)),
+                Gf.Range1d(1.0, 1000.0),
+                Gf.Frustum.Perspective,
+                10.0
+        )
+
+        self.assertEqual(hash(frustum), hash(frustum))
+        self.assertEqual(hash(frustum), hash(Gf.Frustum(frustum)))
 
 if __name__ == '__main__':
     unittest.main()

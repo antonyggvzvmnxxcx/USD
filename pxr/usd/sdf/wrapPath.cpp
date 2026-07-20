@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -36,23 +19,20 @@
 #include "pxr/base/tf/hash.h"
 #include "pxr/base/vt/valueFromPython.h"
 
-#include <boost/python.hpp>
+#include "pxr/external/boost/python.hpp"
 
 #include <thread>
 #include <atomic>
 
-using namespace boost::python;
 using std::pair;
 using std::string;
 using std::vector;
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
-namespace {
+using namespace pxr_boost::python;
 
-static vector<SdfPath> GetPrefixesHelper( const SdfPath &path ) {
-    return path.GetPrefixes();
-}
+namespace {
 
 static string
 _Repr(const SdfPath &self) {
@@ -135,7 +115,7 @@ _WrapGetAllTargetPathsRecursively(SdfPath const self)
 }
 
 static bool
-__nonzero__(SdfPath const &self)
+_NonEmptyPath(SdfPath const &self)
 {
     return !self.IsEmpty();
 }
@@ -236,7 +216,7 @@ void Sdf_wrapAncestorsRange()
 
     using Iter = Sdf_PyPathAncestorsRangeIterator;
     class_<Iter>("_iterator", no_init)
-        .def(TfPyIteratorNextMethodName, &Iter::next)
+        .def("__next__", &Iter::next)
         ;
 }
 
@@ -246,6 +226,7 @@ void Sdf_wrapAncestorsRange()
 void wrapPath() {    
     typedef SdfPath This;
 
+    def("_PathGetDebuggerPathText", Sdf_PathGetDebuggerPathText);
     def("_PathStress", &_PathStress);
     def("_DumpPathStats", &Sdf_DumpPathStats);
 
@@ -317,15 +298,17 @@ void wrapPath() {
         .def("MakeAbsolutePath", &This::MakeAbsolutePath)
         .def("MakeRelativePath", &This::MakeRelativePath)
 
-        .def("GetPrefixes", GetPrefixesHelper,
-              return_value_policy< TfPySequenceToList >(), 
-            "Returns the prefix paths of this path.")
-
+        .def("GetPrefixes",
+             +[](SdfPath const &self, size_t n) { return self.GetPrefixes(n); },
+             (arg("numPrefixes") = 0),
+             return_value_policy<TfPySequenceToList>())
+        
         .def("GetAncestorsRange", &This::GetAncestorsRange)
 
         .def("GetParentPath", &This::GetParentPath)
         .def("GetPrimPath", &This::GetPrimPath)
-        .def("GetPrimOrPrimVariantSelectionPath", &This::GetPrimOrPrimVariantSelectionPath)
+        .def("GetPrimOrPrimVariantSelectionPath",
+             &This::GetPrimOrPrimVariantSelectionPath)
         .def("GetAbsoluteRootOrPrimPath", &This::GetAbsoluteRootOrPrimPath)
         .def("StripAllVariantSelections", &This::StripAllVariantSelections)
 
@@ -403,7 +386,7 @@ void wrapPath() {
 
         .def("__str__", make_function(&This::GetAsString))
 
-        .def(TfPyBoolBuiltinFuncName, __nonzero__)
+        .def("__bool__", _NonEmptyPath)
 
         .def(self == self)
         .def(self != self)
@@ -415,8 +398,6 @@ void wrapPath() {
         .def("__hash__", &This::GetHash)
         ;
 
-    s.attr("menvaStart") = SdfPathTokens->menvaStart;
-    s.attr("menvaEnd") = &SdfPathTokens->menvaEnd; 
     s.attr("absoluteIndicator") = &SdfPathTokens->absoluteIndicator; 
     s.attr("childDelimiter") = &SdfPathTokens->childDelimiter; 
     s.attr("propertyDelimiter") = &SdfPathTokens->propertyDelimiter; 

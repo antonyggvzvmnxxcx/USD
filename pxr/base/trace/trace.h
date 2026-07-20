@@ -1,25 +1,8 @@
 //
 // Copyright 2018 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #ifndef PXR_BASE_TRACE_TRACE_H
@@ -36,7 +19,11 @@
 
 #include <atomic>
 
-#if !defined(TRACE_DISABLE)
+#if !defined(TRACE_ENABLE)
+    #define TRACE_ENABLE 1
+#endif
+
+#if TRACE_ENABLE
 
 /// Records a timestamp when constructed and a timespan event when destructed,
 /// using the name of the function or method as the key.
@@ -183,7 +170,7 @@ PXR_NS::TraceAuto TF_PP_CAT(TraceAuto_, instance)(str)
 #define _TRACE_MARKER_DYNAMIC_INSTANCE(instance, name) \
     TraceCollector::GetInstance().MarkerEvent(name);
 
-#else // TRACE_DISABLE
+#else // TRACE_ENABLE
 
 #define TRACE_FUNCTION()
 #define TRACE_FUNCTION_DYNAMIC(name)
@@ -192,8 +179,10 @@ PXR_NS::TraceAuto TF_PP_CAT(TraceAuto_, instance)(str)
 #define TRACE_FUNCTION_SCOPE(name)
 #define TRACE_MARKER(name)
 #define TRACE_MARKER_DYNAMIC(name)
+#define TRACE_COUNTER_DELTA(name, delta)
+#define TRACE_COUNTER_VALUE(name, value)
 
-#endif // TRACE_DISABLE
+#endif // TRACE_ENABLE
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -207,39 +196,38 @@ class TraceScopeAuto {
 public:
     /// Constructor for TRACE_FUNCTION macro.
     ///
-    explicit TraceScopeAuto(const TraceStaticKeyData& key)
-        : _key(nullptr)
-        , _start(0) {
-
-        if (ARCH_UNLIKELY(TraceCollector::IsEnabled())) {
-            // Init the key if needed.
-            _key = &key;
-            _start = ArchGetTickTime();
-        }
-        
+    explicit TraceScopeAuto(const TraceStaticKeyData& key) noexcept
+        : _key(&key)
+        , _intervalTimer(/*start=*/TraceCollector::IsEnabled()) {
     }
 
     /// Constructor that also records scope arguments.
     ///
     template < typename... Args>
     TraceScopeAuto(const TraceStaticKeyData& key, Args&&... args)
-        : TraceScopeAuto(key) {
-        if (ARCH_UNLIKELY(_key)) {
-            TraceCollector::GetInstance().ScopeArgs(std::forward<Args>(args)...);
+        : _key(&key)
+        , _intervalTimer(/*start=*/false) {
+        if (TraceCollector::IsEnabled()) {
+            _intervalTimer.Start();
+            TraceCollector
+                ::GetInstance().ScopeArgs(std::forward<Args>(args)...);
         }
     }
 
     /// Destructor.
     ///
-    ~TraceScopeAuto() {
-        if (ARCH_UNLIKELY(_key)) {
-            TraceCollector::GetInstance().Scope(*_key, _start);
+    ~TraceScopeAuto() noexcept {
+        if (_intervalTimer.IsStarted()) {
+            TraceCollector::TimeStamp stopTicks =
+                _intervalTimer.GetCurrentTicks();
+            TraceCollector::Scope(
+                *_key, _intervalTimer.GetStartTicks(), stopTicks);
         }
     }
     
 private:
-    const TraceStaticKeyData* _key;
-    TraceEvent::TimeStamp _start;
+    const TraceStaticKeyData* const _key;
+    ArchIntervalTimer _intervalTimer;
 };
 
 ////////////////////////////////////////////////////////////////////////////////

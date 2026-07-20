@@ -6,8 +6,11 @@ pxr_library(usdVolImaging
         usdImaging
 
     PUBLIC_CLASSES
-        openvdbAssetAdapter
+        dataSourceFieldAsset
+        dataSourceParticleField
         field3dAssetAdapter
+        openvdbAssetAdapter
+        particleFieldAdapter
         tokens
 
     PUBLIC_HEADERS

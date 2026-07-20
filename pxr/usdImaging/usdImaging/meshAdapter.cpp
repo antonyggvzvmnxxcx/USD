@@ -1,31 +1,16 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usdImaging/usdImaging/meshAdapter.h"
 
+#include "pxr/usdImaging/usdImaging/dataSourceMesh.h"
 #include "pxr/usdImaging/usdImaging/debugCodes.h"
 #include "pxr/usdImaging/usdImaging/delegate.h"
 #include "pxr/usdImaging/usdImaging/indexProxy.h"
+#include "pxr/usdImaging/usdImaging/primvarUtils.h"
 #include "pxr/usdImaging/usdImaging/tokens.h"
 
 #include "pxr/imaging/hd/mesh.h"
@@ -56,6 +41,49 @@ UsdImagingMeshAdapter::~UsdImagingMeshAdapter()
 {
 }
 
+TfTokenVector
+UsdImagingMeshAdapter::GetImagingSubprims(UsdPrim const& prim)
+{
+    return { TfToken() };
+}
+
+TfToken
+UsdImagingMeshAdapter::GetImagingSubprimType(
+        UsdPrim const& prim,
+        TfToken const& subprim)
+{
+    if (subprim.IsEmpty()) {
+        return HdPrimTypeTokens->mesh;
+    }
+    return TfToken();
+}
+
+HdContainerDataSourceHandle
+UsdImagingMeshAdapter::GetImagingSubprimData(
+        UsdPrim const& prim,
+        TfToken const& subprim,
+        const UsdImagingDataSourceStageGlobals &stageGlobals)
+{
+    if (subprim.IsEmpty()) {
+        return UsdImagingDataSourceMeshPrim::New(
+            prim.GetPath(),
+            prim,
+            stageGlobals);
+    }
+    return nullptr;
+}
+
+HdDataSourceLocatorSet
+UsdImagingMeshAdapter::InvalidateImagingSubprim(
+        UsdPrim const& prim,
+        TfToken const& subprim,
+        TfTokenVector const& properties,
+        const UsdImagingPropertyInvalidationType invalidationType)
+{
+    return UsdImagingDataSourceMeshPrim::Invalidate(
+        prim, subprim, properties, invalidationType);
+}
+
 bool
 UsdImagingMeshAdapter::IsSupported(UsdImagingIndexProxy const* index) const
 {
@@ -70,11 +98,14 @@ UsdImagingMeshAdapter::Populate(UsdPrim const& prim,
     SdfPath cachePath = _AddRprim(HdPrimTypeTokens->mesh, prim, index,
                                   GetMaterialUsdPath(prim), instancerContext);
 
-    // Check for any UsdGeomSubset children and record dependencies for them.
-    if (UsdGeomImageable imageable = UsdGeomImageable(prim)) {
-        for (const UsdGeomSubset &subset:
-             UsdGeomSubset::GetAllGeomSubsets(imageable)) {
-
+    // Check for any UsdGeomSubset children of familyType 
+    // UsdShadeTokens->materialBind and record dependencies for them.
+    for (const UsdGeomSubset &subset:
+         UsdShadeMaterialBindingAPI(prim).GetMaterialBindSubsets()) {
+        // Only populate face subsets
+        TfToken elementType;
+        if (subset.GetElementTypeAttr().Get(&elementType) && 
+                elementType == UsdGeomTokens->face) {
             index->AddDependency(cachePath, subset.GetPrim());
 
             // Ensure the bound material has been populated.
@@ -85,6 +116,11 @@ UsdImagingMeshAdapter::Populate(UsdPrim const& prim,
                     index->GetMaterialAdapter(materialPrim);
                 if (materialAdapter) {
                     materialAdapter->Populate(materialPrim, index, nullptr);
+                    // We need to register a dependency on the material prim so
+                    // that geometry is updated when the material is
+                    // (specifically, DirtyMaterialId).
+                    // XXX: Eventually, it would be great to push this into hydra.
+                    index->AddDependency(cachePath, materialPrim);
                 }
             }
         }
@@ -182,30 +218,35 @@ UsdImagingMeshAdapter::TrackVariability(UsdPrim const& prim,
     // we determine the topology is time varying, because each call to
     // _IsVarying will clear the topology dirty bit if it's already set.
     if (((*timeVaryingBits) & HdChangeTracker::DirtyTopology) == 0) {
-        if (UsdGeomImageable imageable = UsdGeomImageable(prim)) {
-            for (const UsdGeomSubset &subset:
-                 UsdGeomSubset::GetAllGeomSubsets(imageable)) {
+        for (const UsdGeomSubset &subset:
+             UsdShadeMaterialBindingAPI(prim).GetMaterialBindSubsets()) {
 
-                // If the topology dirty flag is already set, exit the loop.
-                if (((*timeVaryingBits) & HdChangeTracker::DirtyTopology) != 0){
-                    break;
-                }
+            // If the topology dirty flag is already set, exit the loop.
+            if (((*timeVaryingBits) & HdChangeTracker::DirtyTopology) != 0){
+                break;
+            }
 
-                if (!_IsVarying(subset.GetPrim(),
-                           UsdGeomTokens->elementType,
+            // Skip non-face subsets
+            TfToken elementType;
+            if (!subset.GetElementTypeAttr().Get(&elementType) || 
+                elementType != UsdGeomTokens->face) {
+                continue;
+            }
+
+            if (!_IsVarying(subset.GetPrim(),
+                            UsdGeomTokens->elementType,
+                            HdChangeTracker::DirtyTopology,
+                            UsdImagingTokens->usdVaryingPrimvar,
+                            timeVaryingBits,
+                            /*isInherited*/false)) {
+                // Only do this check if the elementType is not already
+                // known to be varying.
+                _IsVarying(subset.GetPrim(),
+                           UsdGeomTokens->indices,
                            HdChangeTracker::DirtyTopology,
                            UsdImagingTokens->usdVaryingPrimvar,
                            timeVaryingBits,
-                           /*isInherited*/false)) {
-                    // Only do this check if the elementType is not already
-                    // known to be varying.
-                    _IsVarying(subset.GetPrim(),
-                               UsdGeomTokens->indices,
-                               HdChangeTracker::DirtyTopology,
-                               UsdImagingTokens->usdVaryingPrimvar,
-                               timeVaryingBits,
-                               /*isInherited*/false);
-                }
+                           /*isInherited*/false);
             }
         }
     }
@@ -258,7 +299,7 @@ UsdImagingMeshAdapter::UpdateForTime(UsdPrim const& prim,
                 if (mesh.GetNormalsAttr().Get(&normals, time)) {
                     _MergePrimvar(&primvars,
                         UsdGeomTokens->normals,
-                        _UsdToHdInterpolation(mesh.GetNormalsInterpolation()),
+                        UsdImagingUsdToHdInterpolation(mesh.GetNormalsInterpolation()),
                         HdPrimvarRoleTokens->normal);
                 } else {
                     _RemovePrimvar(&primvars, UsdGeomTokens->normals);
@@ -312,7 +353,7 @@ UsdImagingMeshAdapter::ProcessPropertyChange(UsdPrim const& prim,
         UsdGeomPointBased pb(prim);
         return UsdImagingPrimAdapter::_ProcessNonPrefixedPrimvarPropertyChange(
             prim, cachePath, propertyName, HdTokens->normals,
-            _UsdToHdInterpolation(pb.GetNormalsInterpolation()),
+            UsdImagingUsdToHdInterpolation(pb.GetNormalsInterpolation()),
             HdChangeTracker::DirtyNormals);
     }
     if (propertyName == UsdImagingTokens->primvarsNormals) {
@@ -325,7 +366,7 @@ UsdImagingMeshAdapter::ProcessPropertyChange(UsdPrim const& prim,
         UsdGeomMesh mesh(prim);
         return UsdImagingPrimAdapter::_ProcessNonPrefixedPrimvarPropertyChange(
             prim, cachePath, propertyName, HdTokens->normals,
-            _UsdToHdInterpolation(mesh.GetNormalsInterpolation()),
+            UsdImagingUsdToHdInterpolation(mesh.GetNormalsInterpolation()),
             HdChangeTracker::DirtyNormals);
     }
     // Handle prefixed primvars that use special dirty bits.
@@ -358,27 +399,25 @@ UsdImagingMeshAdapter::GetTopology(UsdPrim const& prim,
         _Get<VtIntArray>(prim, UsdGeomTokens->holeIndices, time));
 
     // Convert UsdGeomSubsets to HdGeomSubsets.
-    if (UsdGeomImageable imageable = UsdGeomImageable(prim)) {
-        HdGeomSubsets geomSubsets;
-        for (const UsdGeomSubset &subset:
-             UsdGeomSubset::GetAllGeomSubsets(imageable)) {
-             VtIntArray indices;
-             TfToken elementType;
-             if (subset.GetElementTypeAttr().Get(&elementType) &&
-                 subset.GetIndicesAttr().Get(&indices, time)) {
-                 if (elementType == UsdGeomTokens->face) {
-                     geomSubsets.emplace_back(
-                        HdGeomSubset {
-                            HdGeomSubset::TypeFaceSet,
-                            subset.GetPath(),
-                            GetMaterialUsdPath(subset.GetPrim()),
-                            indices });
-                 }
-             }
+    HdGeomSubsets geomSubsets;
+    for (const UsdGeomSubset &subset:
+         UsdShadeMaterialBindingAPI(prim).GetMaterialBindSubsets()) {
+        VtIntArray indices;
+        TfToken elementType;
+        if (subset.GetElementTypeAttr().Get(&elementType) &&
+            subset.GetIndicesAttr().Get(&indices, time)) {
+            if (elementType == UsdGeomTokens->face) {
+                geomSubsets.emplace_back(
+                   HdGeomSubset {
+                       HdGeomSubset::TypeFaceSet,
+                       subset.GetPath(),
+                       GetMaterialUsdPath(subset.GetPrim()),
+                       indices });
+            }
         }
-        if (!geomSubsets.empty()) {
-            meshTopo.SetGeomSubsets(geomSubsets);
-        }
+    }
+    if (!geomSubsets.empty()) {
+        meshTopo.SetGeomSubsets(geomSubsets);
     }
 
     return VtValue(meshTopo);
@@ -497,5 +536,6 @@ UsdImagingMeshAdapter::Get(UsdPrim const& prim,
 
     return BaseAdapter::Get(prim, cachePath, key, time, outIndices);
 }
+
 
 PXR_NAMESPACE_CLOSE_SCOPE

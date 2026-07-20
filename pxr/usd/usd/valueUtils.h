@@ -1,25 +1,8 @@
 //
 // Copyright 2017 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_USD_VALUE_UTILS_H
 #define PXR_USD_USD_VALUE_UTILS_H
@@ -31,52 +14,74 @@
 #include "pxr/usd/sdf/layer.h"
 #include "pxr/usd/sdf/types.h"
 
+#include "pxr/base/ts/spline.h"
+#include "pxr/base/gf/interval.h"
+#include "pxr/base/vt/array.h"
+#include "pxr/base/vt/arrayEdit.h"
 #include "pxr/base/vt/value.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-class Usd_InterpolatorBase;
+class Usd_Interpolator;
 
-/// Returns true if \p value contains an SdfValueBlock, false otherwise.
-template <class T>
+/// Returns true if \p value contains BlockType (SdfValueBlock or
+/// SdfAnimationBlock), false otherwise.
+template <typename BlockType, typename T>
 inline bool
-Usd_ValueContainsBlock(const T* value)
+Usd_ValueContainsBlock(const T* /*value*/)
 {
     return false;
 }
 
 /// \overload
-template <class T>
+template <typename BlockType, typename T>
 inline bool
-Usd_ValueContainsBlock(const SdfValueBlock* value)
+Usd_ValueContainsBlock(const BlockType* value)
 {
     return value;
 }
 
 /// \overload
+template <typename BlockType>
 inline bool 
 Usd_ValueContainsBlock(const VtValue* value) 
 {
-    return value && value->IsHolding<SdfValueBlock>();
+    return value && value->IsHolding<BlockType>();
 }
 
 /// \overload
+template <typename BlockType>
 inline bool
 Usd_ValueContainsBlock(const SdfAbstractDataValue* value) 
 {
-    return value && value->isValueBlock;
+    if constexpr (std::is_same_v<BlockType, SdfValueBlock>) {
+        return value && value->isValueBlock;
+    } else if constexpr (std::is_same_v<BlockType, SdfAnimationBlock>) {
+        return value && value->isAnimationBlock;
+    } else {
+        return false;
+    }
 }
 
 /// \overload
+template <typename BlockType>
 inline bool
 Usd_ValueContainsBlock(const SdfAbstractDataConstValue* value)
 {
-    return value && value->valueType == typeid(SdfValueBlock);
+    if constexpr (std::is_same_v<BlockType, SdfValueBlock>) {
+        return value && 
+            TfSafeTypeCompare(value->valueType, typeid(SdfValueBlock));
+    } else if constexpr (std::is_same_v<BlockType, SdfAnimationBlock>) {
+        return value && 
+            TfSafeTypeCompare(value->valueType ,typeid(SdfAnimationBlock));
+    } else {
+        return false;
+    }
 }
 
-/// If \p value contains an SdfValueBlock, clear the value and
-/// return true. Otherwise return false.
-template <class T>
+/// If \p value contains an SdfValueBlock or an SdfAnimationBlock, clear the 
+/// value and return true. Otherwise return false.
+template <typename BlockType, typename T>
 inline bool
 Usd_ClearValueIfBlocked(T* value)
 {
@@ -84,14 +89,15 @@ Usd_ClearValueIfBlocked(T* value)
     // no good API for doing so. If the value is holding a
     // block, we just return true and rely on the consumer
     // to act as if the value were cleared.
-    return Usd_ValueContainsBlock(value);
+    return Usd_ValueContainsBlock<BlockType>(value);
 }
 
 /// \overload
+template <typename BlockType>
 inline bool 
 Usd_ClearValueIfBlocked(VtValue* value) 
 {
-    if (Usd_ValueContainsBlock(value)) {
+    if (Usd_ValueContainsBlock<BlockType>(value)) {
         *value = VtValue();
         return true;
     }
@@ -99,38 +105,36 @@ Usd_ClearValueIfBlocked(VtValue* value)
     return false;
 }
 
-/// Helper function for setting a value into an SdfAbstractDataValue
-/// for generic programming.
-template <class T>
+/// Helper function for setting a value into an SdfAbstractDataValue, a VtValue
+/// or a T* for generic programming.  The `src` value can be a VtValue or a
+/// specific value type.  Return true if the value is stored successfully, false
+/// otherwise.
+template <class Dst, class Src>
 inline bool
-Usd_SetValue(SdfAbstractDataValue *dv, T const &val)
-{ 
-    return dv->StoreValue(val); 
-}
-
-/// \overload
-/// Helper function for setting a value into a VtValue
-/// for generic programming.
-template <class T>
-inline bool
-Usd_SetValue(VtValue *value, T const &val)
-{ 
-    *value = val; 
-    return true;
-}
-
-/// \overload
-/// Helper function for setting a value into a T* from a VtValue
-/// for generic programming.
-template <class T,
-          typename = std::enable_if_t<
-              !std::is_same<T, SdfAbstractDataValue>::value &&
-              !std::is_same<T, VtValue>::value>>
-inline bool
-Usd_SetValue(T* value, VtValue const &val)
+Usd_SetValue(Dst *dst, Src &&src)
 {
-    if (val.IsHolding<T>()) {
-        *value = val.UncheckedGet<T>();
+    using SrcType = std::decay_t<Src>;
+    if constexpr (std::is_same_v<Dst, VtValue>) {
+        *dst = std::forward<Src>(src);
+        return true;
+    }
+    else if constexpr (std::is_base_of_v<SdfAbstractDataValue, Dst>) {
+        return dst->StoreValue(std::forward<Src>(src));
+    }
+    else if constexpr (std::is_same_v<SrcType, VtValue>) {
+        if (src.template IsHolding<Dst>()) {
+            if constexpr (std::is_reference_v<Src>) {
+                *dst = src.template UncheckedGet<Dst>();
+            }
+            else {
+                *dst = src.template UncheckedRemove<Dst>();
+            }
+            return true;
+        }
+        return false;
+    }
+    else if constexpr (std::is_same_v<Dst, SrcType>) {
+        *dst = src;
         return true;
     }
     return false;
@@ -141,32 +145,54 @@ enum class Usd_DefaultValueResult
     None = 0,
     Found,
     Blocked,
+    BlockedAnimation,
 };
 
 template <class T, class Source>
 Usd_DefaultValueResult 
-Usd_HasDefault(const Source& source, const SdfPath& specPath, T* value)
+Usd_HasDefault(const Source& source, const SdfPath& specPath, T* value,
+               const std::type_info **valueTypeId=nullptr)
 {
 
     if (!value) {
         // Caller is not interested in the value, so avoid fetching it.
         std::type_info const &ti =
             source->GetFieldTypeid(specPath, SdfFieldKeys->Default);
-        if (ti == typeid(void)) {
+        if (TfSafeTypeCompare(ti, typeid(void))) {
             return Usd_DefaultValueResult::None;
         }
-        else if (ti == typeid(SdfValueBlock)) {
+        else if (TfSafeTypeCompare(ti, typeid(SdfValueBlock))) {
             return Usd_DefaultValueResult::Blocked;
         }
+        else if (TfSafeTypeCompare(ti, typeid(SdfAnimationBlock))) {
+            return Usd_DefaultValueResult::BlockedAnimation;
+        }
         else {
+            if (valueTypeId) {
+                *valueTypeId = &ti;
+            }
             return Usd_DefaultValueResult::Found;
         }
     }
     else {
         // Caller requests the value.
         if (source->HasField(specPath, SdfFieldKeys->Default, value)) {
-            if (Usd_ClearValueIfBlocked(value)) {
+            if (Usd_ClearValueIfBlocked<SdfValueBlock>(value)) {
                 return Usd_DefaultValueResult::Blocked;
+            }
+            if (Usd_ClearValueIfBlocked<SdfAnimationBlock>(value)) {
+                return Usd_DefaultValueResult::BlockedAnimation;
+            }
+            if (valueTypeId) {
+                if constexpr (std::is_same_v<T, VtValue>) {
+                    *valueTypeId = &value->GetTypeid();
+                }
+                else if constexpr (std::is_same_v<T, SdfAbstractDataValue>) {
+                    *valueTypeId = &value->valueType;
+                }
+                else {
+                    *valueTypeId = &typeid(T);
+                }
             }
             return Usd_DefaultValueResult::Found;
         }
@@ -179,9 +205,27 @@ template <class T>
 inline bool
 Usd_QueryTimeSample(
     const SdfLayerRefPtr& layer, const SdfPath& path,
-    double time, Usd_InterpolatorBase* interpolator, T* result)
+    double time, Usd_Interpolator const &interpolator, T* result)
 {
     return layer->QueryTimeSample(path, time, result);
+}
+
+/// Appends time samples from \p samples in the given \p interval to
+/// \p output.
+inline void
+Usd_CopyTimeSamplesInInterval(
+    const std::set<double>& samples, const GfInterval& interval,
+    std::vector<double>* output)
+{
+    const std::set<double>::iterator samplesBegin = interval.IsMinOpen() ?
+        samples.upper_bound(interval.GetMin()) : 
+        samples.lower_bound(interval.GetMin());
+
+    const std::set<double>::iterator samplesEnd = interval.IsMaxOpen() ?
+        samples.lower_bound(interval.GetMax()) :
+        samples.upper_bound(interval.GetMax());
+
+    output->insert(output->end(), samplesBegin, samplesEnd);
 }
 
 /// Merges sample times in \p additionalTimeSamples into the vector pointed to 
@@ -283,17 +327,27 @@ Usd_ApplyLayerOffsetToValue(VtValue *value, const SdfLayerOffset &offset);
 
 /// \overload
 inline void
-Usd_ApplyLayerOffsetToValue(SdfTimeCode *value, const SdfLayerOffset &offset)
+Usd_ApplyLayerOffsetToValue(GfTimeCode *value, const SdfLayerOffset &offset)
 {
     *value = offset * (*value);
 }
 
 /// \overload
 inline void
-Usd_ApplyLayerOffsetToValue(VtArray<SdfTimeCode> *value, 
+Usd_ApplyLayerOffsetToValue(VtArray<GfTimeCode> *value, 
                             const SdfLayerOffset &offset)
 {
-    for (SdfTimeCode &timeCode : *value) {
+    for (GfTimeCode &timeCode : *value) {
+        timeCode = offset * timeCode;
+    }
+}
+
+/// \overload
+inline void
+Usd_ApplyLayerOffsetToValue(VtArrayEdit<GfTimeCode> *value, 
+                            const SdfLayerOffset &offset)
+{
+    for (GfTimeCode &timeCode : value->GetMutableLiterals()) {
         timeCode = offset * timeCode;
     }
 }
@@ -316,6 +370,15 @@ Usd_ApplyLayerOffsetToValue(SdfTimeSampleMap *value,
     }
 }
 
+inline void
+Usd_ApplyLayerOffsetToValue(
+    TsSpline *spline, const SdfLayerOffset &offset)
+{
+    // Splines have their own optimized method.
+    Ts_SplineOffsetAccess::ApplyOffsetAndScale(
+        spline, offset.GetOffset(), offset.GetScale());
+}
+
 /// \overload
 inline void
 Usd_ApplyLayerOffsetToValue(VtDictionary *value, const SdfLayerOffset &offset)
@@ -326,6 +389,14 @@ Usd_ApplyLayerOffsetToValue(VtDictionary *value, const SdfLayerOffset &offset)
              Usd_ApplyLayerOffsetToValue(v, offset);
         });
 }
+
+template <class T>
+bool
+Usd_QuerySpline(
+    const TsSpline& spline,
+    UsdTimeCode timeCode,
+    const SdfLayerOffset& layerToStageOffset,
+    T* result);
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

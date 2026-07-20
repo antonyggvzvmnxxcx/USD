@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 /// \file debugger.cpp
 
@@ -34,9 +17,12 @@
 #if defined(ARCH_OS_LINUX) || defined(ARCH_OS_DARWIN)
 #include "pxr/base/arch/inttypes.h"
 #include <sys/types.h>
+#if !defined(ARCH_OS_IPHONE)
 #include <sys/ptrace.h>
+#endif
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <csignal>
@@ -45,12 +31,17 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string>
+#include <string_view>
+#include <system_error>
 #endif
 #if defined(ARCH_OS_DARWIN)
 #include <sys/sysctl.h>
 #endif
 #if defined(ARCH_OS_WINDOWS)
 #include <Windows.h>
+#endif
+#if defined(ARCH_OS_WASM_VM)
+#include <emscripten.h>
 #endif
 #include <atomic>
 
@@ -61,9 +52,15 @@ PXR_NAMESPACE_OPEN_SCOPE
 // we don't confuse the debugger's stack unwinding.
 static void Arch_DebuggerInit() ARCH_NOINLINE;
 
-static bool _archDebuggerInitialized = false;
+// Gate for one-time initialization in Arch_DebuggerInit().  Stored atomically
+// so a first call from a signal handler doesn't race with concurrent init on
+// another thread; release/acquire ordering on this flag also publishes the
+// non-atomic state set during init (_archDebuggerEnabled and the installed
+// SIGTRAP handler).
+static std::atomic<bool> _archDebuggerInitialized {false};
+static bool _archAvoidJIT = (getenv("ARCH_AVOID_JIT") != nullptr);
 static bool _archDebuggerEnabled = false;
-static std::atomic<bool> _archDebuggerWait(false);
+static std::atomic<bool> _archDebuggerWait {false};
 
 static char** _archDebuggerAttachArgs = 0;
 
@@ -87,8 +84,6 @@ static
 void
 Arch_DebuggerInitPosix()
 {
-    _archDebuggerInitialized = true;
-
     // Handle the SIGTRAP signal so if no debugger is attached then
     // nothing happens when ArchDebuggerTrap() is called.  If we
     // didn't handle this signal then the app would die.
@@ -96,19 +91,12 @@ Arch_DebuggerInitPosix()
     sigemptyset(&act.sa_mask);
     act.sa_flags   = SA_NODEFER;
     act.sa_handler = Arch_DebuggerTrapHandler;
-    if (sigaction(SIGTRAP, &act, 0)) {
-        ARCH_WARNING("Failed to set SIGTRAP handler;  "
-                     "debug trap not enabled");
-        _archDebuggerEnabled = false;
-    }
-    else {
-        _archDebuggerEnabled = true;
-    }
-}
-namespace {
-struct InitPosix {
-    InitPosix() { Arch_DebuggerInitPosix(); }
-};
+    _archDebuggerEnabled = (sigaction(SIGTRAP, &act, 0) == 0);
+
+    // Publish initialization last with release ordering so that a reader doing
+    // an acquire-load on _archDebuggerInitialized is guaranteed to see
+    // _archDebuggerEnabled and the installed SIGTRAP handler.
+    _archDebuggerInitialized.store(true, std::memory_order_release);
 }
 #endif
 
@@ -136,8 +124,20 @@ Arch_DebuggerInit()
         );
 #endif
 
-    // Initialize once.
-    static InitPosix initPosix;
+    // Initialize once.  Gate via an atomic-bool flag rather than a non-trivial
+    // function-local static, because Arch_DebuggerInit() can be reached from a
+    // signal handler via ArchDebuggerAttach() / ArchDebuggerIsAttached() on the
+    // crash path, and the C++11 thread-safe-static guard variable for
+    // non-trivial initializers is effectively a mutex that is not
+    // async-signal-safe -- a first call from a signal handler could deadlock
+    // against the guard.
+    //
+    // Arch_DebuggerInitPosix() is itself async-signal-safe and idempotent
+    // (sigaction with the same args is a no-op), so a race that two callers run
+    // benignly converges to the same state.
+    if (!_archDebuggerInitialized.load(std::memory_order_acquire)) {
+        Arch_DebuggerInitPosix();
+    }
 
 #if defined(ARCH_CPU_INTEL) && defined(ARCH_BITS_64)
     // Restore the saved registers.
@@ -154,8 +154,8 @@ Arch_DebuggerInit()
 
 #elif defined(ARCH_OS_WINDOWS)
 
-    _archDebuggerInitialized = true;
     _archDebuggerEnabled = true;
+    _archDebuggerInitialized.store(true, std::memory_order_release);
 
 #endif
 }
@@ -246,7 +246,8 @@ Arch_DebuggerRunUnrelatedProcessPosix(bool (*cb)(void*), void* data)
     // leader.  In addition, the process has no controlling terminal.
     if (setsid() == -1) {
         int result = errno;
-        write(ready[1], &result, sizeof(result));
+        // Suppress warn_unused_result by explicitly ignoring the return value.
+        std::ignore = write(ready[1], &result, sizeof(result));
         _exit(1);
     }
 
@@ -272,7 +273,8 @@ Arch_DebuggerRunUnrelatedProcessPosix(bool (*cb)(void*), void* data)
     if (pid == -1) {
         // fork failed!
         int result = errno;
-        write(ready[1], &result, sizeof(result));
+        // Suppress warn_unused_result by explicitly ignoring the return value.
+        std::ignore = write(ready[1], &result, sizeof(result));
         _exit(2);
     }
     if (pid > 0) {
@@ -286,7 +288,8 @@ Arch_DebuggerRunUnrelatedProcessPosix(bool (*cb)(void*), void* data)
     // Close all open file descriptors
     int result = ArchCloseAllFiles(1, &ready[1]);
     if (result == -1) {
-        write(ready[1], &result, sizeof(result));
+        // Suppress warn_unused_result by explicitly ignoring the return value.
+        std::ignore = write(ready[1], &result, sizeof(result));
         _exit(3);
     }
 
@@ -296,7 +299,8 @@ Arch_DebuggerRunUnrelatedProcessPosix(bool (*cb)(void*), void* data)
     //
     result = chdir("/");
     if (result == -1) {
-        write(ready[1], &result, sizeof(result));
+        // Suppress warn_unused_result by explicitly ignoring the return value.
+        std::ignore = write(ready[1], &result, sizeof(result));
         _exit(4);
     }
 
@@ -313,7 +317,8 @@ Arch_DebuggerRunUnrelatedProcessPosix(bool (*cb)(void*), void* data)
     if (fcntl(ready[1], F_SETFD, arg) == -1) {
         // We can't close on exec so we can't indicate success of exec.
         int result = errno;
-        write(ready[1], &result, sizeof(result));
+        // Suppress warn_unused_result by explicitly ignoring the return value.
+        std::ignore = write(ready[1], &result, sizeof(result));
         _exit(5);
     }
 
@@ -321,7 +326,8 @@ Arch_DebuggerRunUnrelatedProcessPosix(bool (*cb)(void*), void* data)
     // automatically without us writing to it, indicating success.
     if (!cb(data)) {
         result = errno;
-        write(ready[1], &result, sizeof(result));
+        // Suppress warn_unused_result by explicitly ignoring the return value.
+        std::ignore = write(ready[1], &result, sizeof(result));
         _exit(6);
     }
 
@@ -342,50 +348,56 @@ Arch_DebuggerAttachExecPosix(void* data)
 
 #if defined(ARCH_OS_LINUX)
 
+// Reads the "TracerPid:" field from /proc/self/status.
+// Returns the tracer PID, 0 if not traced, or -1 on error.
+//
+// This is called from the signal handler and needs to 
+// be async-signal-safe.
+static
+int Arch_ReadTracerPid()
+{
+    const int fd = ::open("/proc/self/status", O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+    char buf[4096];
+    const ssize_t n = ::read(fd, buf, sizeof(buf) - 1);
+    ::close(fd);
+    if (n <= 0) {
+        return -1;
+    }
+    buf[n] = '\0';
+
+    // Search line-by-line for "TracerPid:"
+    static constexpr char kField[] = "TracerPid:";
+    static constexpr size_t kFieldLen = sizeof(kField) - 1;
+    const char* p = buf;
+    const char* const end = buf + n;
+    while (p < end) {
+        const char* lineEnd = p;
+        while (lineEnd < end && *lineEnd != '\n') {
+            ++lineEnd;
+        }
+        if (static_cast<size_t>(lineEnd - p) >= kFieldLen &&
+                memcmp(p, kField, kFieldLen) == 0) {
+            p += kFieldLen;
+            while (p < lineEnd && (*p == ' ' || *p == '\t')) {
+                ++p;
+            }
+            int tracerPid = 0;
+            auto result = std::from_chars(p, lineEnd, tracerPid);
+            return result.ec == std::errc() ? tracerPid : -1;
+        }
+        p = (lineEnd < end) ? lineEnd + 1 : end;
+    }
+    return -1;
+}
+
 static
 bool
 Arch_DebuggerIsAttachedPosix()
 {
-    // Check for a ptrace based debugger by trying to ptrace.
-    pid_t parent = getpid();
-    pid_t pid = nonLockingFork();
-    if (pid < 0) {
-        // fork failed.  We'll guess there's no debugger.
-        return false;
-    }
-
-    // Child process.
-    if (pid == 0) {
-        // Attach to the parent with ptrace() this will fail if the
-        // parent is already being traced.
-        if (ptrace(PTRACE_ATTACH, parent, NULL, NULL) == -1) {
-            // A debugger is probably attached if the error is EPERM.
-            _exit(errno == EPERM ? 1 : 0);
-        }
-
-        // Wait for the parent to stop as a result of the attach.
-        int status;
-        while (waitpid(parent, &status, 0) == -1 && errno == EINTR) {
-            // Do nothing
-        }
-
-        // Detach and continue the parent.
-        ptrace(PTRACE_DETACH, parent, 0, SIGCONT);
-
-        // A debugger was not attached.
-        _exit(0);
-    }
-
-    // Parent process
-    int status;
-    while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {
-        // Do nothing
-    }
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status) != 0;
-    }
-    return false;
-
+    return Arch_ReadTracerPid() > 0;
 }
 
 #elif defined(ARCH_OS_DARWIN)
@@ -591,6 +603,8 @@ ArchDebuggerTrap()
             DebugBreak();
 #elif defined(ARCH_CPU_INTEL)
             asm("int $3");
+#elif defined(ARCH_OS_WASM_VM)
+            emscripten_debugger();
 #else
             raise(SIGTRAP);
 #endif
@@ -604,21 +618,17 @@ ArchDebuggerWait(bool wait)
     _archDebuggerWait = wait;
 }
 
-namespace {
-bool
-_ArchAvoidJIT()
-{
-    return (getenv("ARCH_AVOID_JIT") != nullptr);
-}
-}
-
+// This can be invoked by the crash handler and
+// needs to be async-signal-safe.
 bool
 ArchDebuggerAttach()
 {
-    return !_ArchAvoidJIT() &&
+    return !_archAvoidJIT &&
             (ArchDebuggerIsAttached() || Arch_DebuggerAttach());
 }
 
+// This can be invoked by the crash handler and
+// needs to be async-signal-safe.
 bool
 ArchDebuggerIsAttached()
 {
@@ -636,9 +646,9 @@ ArchDebuggerIsAttached()
 void
 ArchAbort(bool logging)
 {
-    if (!_ArchAvoidJIT() || ArchDebuggerIsAttached()) {
+    if (!_archAvoidJIT || ArchDebuggerIsAttached()) {
         if (!logging) {
-#if !defined(ARCH_OS_WINDOWS)
+#if !defined(ARCH_OS_WINDOWS) && !defined(ARCH_OS_WASM_VM)
             // Remove signal handler.
             struct sigaction act;
             act.sa_handler = SIG_DFL;
@@ -648,11 +658,19 @@ ArchAbort(bool logging)
 #endif
         }
 
+#if defined(ARCH_OS_WASM_VM)
+        emscripten_force_exit(134);
+#else
         abort();
+#endif
     }
 
     // The exit code for abort() (128 + SIGABRT).
-    _exit(134);
+    #if defined(ARCH_OS_WASM_VM)
+        emscripten_force_exit(134);
+    #else
+        _exit(134);
+    #endif
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

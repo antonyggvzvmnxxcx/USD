@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_SDF_VALUE_TYPE_NAME_H
 #define PXR_USD_SDF_VALUE_TYPE_NAME_H
@@ -37,6 +20,7 @@ PXR_NAMESPACE_OPEN_SCOPE
 class TfEnum;
 class TfType;
 class VtValue;
+class SdfAbstractDataConstValue;
 class Sdf_ValueTypeImpl;
 
 /// \struct SdfTupleDimensions
@@ -99,6 +83,18 @@ public:
     /// Returns the \c TfType of the type.
     SDF_API
     const TfType& GetType() const;
+
+    /// Return true if `value` holds an object whose type is compatible with
+    /// this scene description type in a strict sense.  Specifically, return
+    /// true if `value` holds an object of this type, or if this IsArray() and
+    /// `value` holds a VtArrayEdit whose element type matches this type's
+    /// element type.
+    SDF_API
+    bool CanRepresent(const VtValue &value) const;
+
+    /// \overload
+    SDF_API
+    bool CanRepresent(const SdfAbstractDataConstValue &value) const;
 
     /// Returns the C++ type name for this type.  This may not be the same
     /// as the type name returned by GetType().GetTypeName(), since that

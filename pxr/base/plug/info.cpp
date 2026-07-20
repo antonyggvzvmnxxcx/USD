@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/pxr.h"
@@ -32,9 +15,8 @@
 #include "pxr/base/tf/staticTokens.h"
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/tf/stopwatch.h"
+#include "pxr/base/work/dispatcher.h"
 #include "pxr/base/work/threadLimits.h"
-#include <tbb/task_arena.h>
-#include <tbb/task_group.h>
 #include <fstream>
 #include <regex>
 #include <set>
@@ -151,7 +133,17 @@ _ReadPlugInfoObject(const std::string& pathname, JsObject* result)
 
     // The file may not exist or be readable.
     std::ifstream ifs;
+#if defined(ARCH_OS_WINDOWS)
+    // XXX: This is a MSVC specific overload to std::ifstream::open which
+    // supports std::wstring as an argument.
+    // Other compilers on Windows may fail here since it's not
+    // enforced by the C++ standard. If another compiler for Windows is needed
+    // we could use ArchOpenFile / ArchGetFileLength / ArchPRead instead
+    // of std::ifstream
+    ifs.open(ArchWindowsUtf8ToUtf16(pathname).c_str());
+#else
     ifs.open(pathname.c_str());
+#endif
     if (!ifs.is_open()) {
         TF_DEBUG(PLUG_INFO_SEARCH).
             Msg("Failed to open plugin info %s\n", pathname.c_str());
@@ -435,26 +427,6 @@ _ReadPlugInfoWithWildcards(_ReadContext* context, const std::string& pathname)
         });
 }
 
-// Helper for running tasks.
-template <class Fn>
-struct _Run {
-    _Run(tbb::task_group *group, const Fn &fn) : group(group), fn(fn) {}
-    void operator()() const { group->run(fn); }
-    tbb::task_group *group;
-    Fn fn;
-};
-
-template <class Fn>
-_Run<Fn>
-_MakeRun(tbb::task_group *group, const Fn& fn)
-{
-    return _Run<Fn>(group, fn);
-}
-
-// A helper dispatcher object that runs tasks in a tbb::task_group inside a
-// tbb::task_arena, to ensure that when we wait, we only wait for our own tasks.
-// Otherwise if we run an unrelated task in the thread that holds our lock that
-// winds up trying to take the lock we get deadlock.
 class _TaskArenaImpl {
     _TaskArenaImpl(_TaskArenaImpl const &) = delete;
     _TaskArenaImpl &operator=(_TaskArenaImpl const &) = delete;
@@ -470,31 +442,30 @@ public:
     void Wait();
 
 private:
-    tbb::task_arena _arena;
-    tbb::task_group _group;
+    WorkDispatcher _dispatcher;
 };
 
-_TaskArenaImpl::_TaskArenaImpl() : _arena(WorkGetConcurrencyLimit()) 
+_TaskArenaImpl::_TaskArenaImpl()
 {
     // Do nothing
 }
 
 _TaskArenaImpl::~_TaskArenaImpl()
 {
-    Wait();
+    // Implicit _dispatcher.Wait();
 }
 
 template <class Fn>
 void
 _TaskArenaImpl::Run(Fn const &fn)
 {
-    _arena.execute(_MakeRun(&_group, fn));
+    _dispatcher.Run(fn);
 }
 
 void
 _TaskArenaImpl::Wait()
 {
-    _arena.execute([this]() { _group.wait(); });
+    _dispatcher.Wait();
 }
 
 } // anonymous namespace
@@ -721,7 +692,11 @@ Plug_ReadPlugInfo(
     const AddPluginCallback& addPlugin,
     Plug_TaskArena* taskArena)
 {
-    TF_DEBUG(PLUG_INFO_SEARCH).Msg("Will check plugin info paths\n");
+    if (TfDebug::IsEnabled(PLUG_INFO_SEARCH)) {
+        TF_DEBUG(PLUG_INFO_SEARCH).Msg(
+            "Will check plugin info paths:\n    %s\n",
+            TfStringJoin(pathnames, "\n    ").c_str());
+    }
     TfStopwatch stopwatch;
     stopwatch.Start();
 

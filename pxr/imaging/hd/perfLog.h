@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_PERF_LOG_H
 #define PXR_IMAGING_HD_PERF_LOG_H
@@ -42,6 +25,9 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
+#if !defined(HD_PERF_ENABLE)
+    #define HD_PERF_ENABLE 1
+#endif
 
 class SdfPath;
 class HdResourceRegistry;
@@ -49,6 +35,7 @@ class HdResourceRegistry;
 // XXX: it would be nice to move this into Trace or use the existing Trace
 // counter mechanism, however we are restricted to TraceLite in the rocks.
 
+#if HD_PERF_ENABLE
 //----------------------------------------------------------------------------//
 // PERFORMANCE INSTURMENTATION MACROS                                         //
 //----------------------------------------------------------------------------//
@@ -84,6 +71,34 @@ class HdResourceRegistry;
     HdPerfLog::GetInstance().AddCounter(name, value);
 #define HD_PERF_COUNTER_SUBTRACT(name, value) \
     HdPerfLog::GetInstance().SubtractCounter(name, value);
+
+// Add/Remove resource registry to/from HdPerfLog.
+#define HD_PERF_ADD_RESOURCE_REGISTRY(registry) \
+    HdPerfLog::GetInstance().AddResourceRegistry(registry);
+#define HD_PERF_REMOVE_RESOURCE_REGISTRY(registry) \
+    HdPerfLog::GetInstance().RemoveResourceRegistry(registry);
+
+#else // HD_PERF_ENABLE
+
+#define HD_TRACE_FUNCTION()
+#define HD_TRACE_SCOPE(tag)
+
+#define HD_PERF_CACHE_HIT(name, id)
+#define HD_PERF_CACHE_HIT_TAG(name, id, tag)
+
+#define HD_PERF_CACHE_MISS(name, id)
+#define HD_PERF_CACHE_MISS_TAG(name, id, tag)
+
+#define HD_PERF_COUNTER_INCR(name)
+#define HD_PERF_COUNTER_DECR(name)
+#define HD_PERF_COUNTER_SET(name, value) (void)(value)
+#define HD_PERF_COUNTER_ADD(name, value) (void)(value)
+#define HD_PERF_COUNTER_SUBTRACT(name, value) (void)(value)
+
+#define HD_PERF_ADD_RESOURCE_REGISTRY(registry)
+#define HD_PERF_REMOVE_RESOURCE_REGISTRY(registry)
+
+#endif
 
 //----------------------------------------------------------------------------//
 // PERFORMANCE LOG                                                            //

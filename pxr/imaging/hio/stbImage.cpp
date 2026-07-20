@@ -1,25 +1,8 @@
 //
 // Copyright 2018 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/imaging/hio/image.h"
@@ -39,14 +22,36 @@
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/tf/type.h"
 
+ARCH_PRAGMA_PUSH
+// To avoid exporting the stb_* functions from our shared library
+// we define the STB_IMAGE_..._STATIC macros so that stb marks
+// them as static. This causes many "unused function" warnings,
+// so we use ARCH_PRAGMA_UNUSED_FUNCTION to suppress them.
+ARCH_PRAGMA_UNUSED_FUNCTION
+// We also turn off the "maybe uninitialized" warning because the version of
+// stb we are currently using produces these warnings, though the particular
+// case in question appears to be benign.
+ARCH_PRAGMA_MAYBE_UNINITIALIZED
+
+#define STB_IMAGE_STATIC
+#ifdef ARCH_OS_WINDOWS
+#define STBI_WINDOWS_UTF8
+#endif
 #define STB_IMAGE_IMPLEMENTATION
 #include "pxr/imaging/hio/stb/stb_image.h"
 
+#define STB_IMAGE_RESIZE_STATIC
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
-#include "pxr/imaging/hio/stb/stb_image_resize.h"
+#include "pxr/imaging/hio/stb/stb_image_resize2.h"
 
+#define STB_IMAGE_WRITE_STATIC
+#ifdef ARCH_OS_WINDOWS
+#define STBIW_WINDOWS_UTF8
+#endif
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "pxr/imaging/hio/stb/stb_image_write.h"
+
+ARCH_PRAGMA_POP
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -158,7 +163,10 @@ Hio_StbImage::Hio_StbImage()
     : _width(0)
     , _height(0)
     , _gamma(0.0f)
+    , _outputType(HioTypeUnsignedByte)
     , _nchannels(0)
+    , _format(HioFormatInvalid)
+    , _sourceColorSpace(Auto)
 {
 }
 
@@ -216,8 +224,6 @@ Hio_StbImage::_CropAndResize(void const *sourceData, int const cropTop,
     if (resizeNeeded) {
         //resize and copy data into storage
         if (IsColorSpaceSRGB()) {
-            int alphaIndex = (_nchannels == 3)?
-                                 STBIR_ALPHA_CHANNEL_NONE : 3;
             stbir_resize_uint8_srgb((unsigned char *) croppedData, 
                                     cropWidth, cropHeight, 
                                     croppedStrideLength,
@@ -225,26 +231,26 @@ Hio_StbImage::_CropAndResize(void const *sourceData, int const cropTop,
                                     storage.width,
                                     storage.height,
                                     storage.width * bpp,
-                                    _nchannels, alphaIndex, 0);
+                                    (stbir_pixel_layout)_nchannels);
         } else {
             if (_outputType == HioTypeFloat) {
-                    stbir_resize_float((float *) croppedData, 
+                    stbir_resize_float_linear((float *) croppedData,
                                        cropWidth, cropHeight, 
                                        croppedStrideLength,
                                        (float *)storage.data, 
                                        storage.width,
                                        storage.height,
                                        storage.width * bpp,
-                                       _nchannels);
+                                              (stbir_pixel_layout)_nchannels);
             } else {
-                stbir_resize_uint8((unsigned char *) croppedData, 
+                stbir_resize_uint8_linear((unsigned char *) croppedData,
                                    cropWidth, cropHeight,
                                    croppedStrideLength,
                                    (unsigned char *)storage.data,
                                    storage.width,
                                    storage.height,
                                    storage.width * bpp,
-                                   _nchannels);
+                                          (stbir_pixel_layout)_nchannels);
             }
         }
     }
@@ -402,6 +408,12 @@ Hio_StbImage::ReadCropped(int const cropTop,
                           int const cropRight,
                           StorageSpec const & storage)
 {
+    // check if the image is already in the desired format
+    if (storage.format != _format) {
+        TF_RUNTIME_ERROR("Image format mismatch");
+        return false;
+    }
+
     // read from file
     // NOTE: stbi_load will always return image data as a contiguous block 
     //       of memory for every image format (i.e. image data is packed 
@@ -414,7 +426,7 @@ Hio_StbImage::ReadCropped(int const cropTop,
     // thus we explicitly call stbi__vertical_flip below - assuming
     // that no other client called stbi_set_flip_vertically_on_load(true).
     
-#if defined(ARCH_OS_IOS)
+#if defined(ARCH_OS_IPHONE)
     stbi_convert_iphone_png_to_rgb(true);
 #endif
 
@@ -422,7 +434,7 @@ Hio_StbImage::ReadCropped(int const cropTop,
         ArResolvedPath(_filename));
     if (!asset) 
     {
-        TF_CODING_ERROR("Cannot open image %s for reading", _filename.c_str());
+        TF_RUNTIME_ERROR("Cannot open image %s for reading", _filename.c_str());
         return false;
     }
 
@@ -453,7 +465,7 @@ Hio_StbImage::ReadCropped(int const cropTop,
     //// Read pixel data
     if (!imageData)
     {
-        TF_CODING_ERROR("unable to get_pixels");
+        TF_RUNTIME_ERROR("unable to get_pixels");
         return false;
     }
    
@@ -470,7 +482,7 @@ Hio_StbImage::ReadCropped(int const cropTop,
         if (!_CropAndResize(imageData, cropTop, cropBottom, cropLeft, cropRight, 
               resizeNeeded, storage))
         {
-            TF_CODING_ERROR("Unable to crop and resize");
+            TF_RUNTIME_ERROR("Unable to crop and resize");
             stbi_image_free(imageData);
             return false;
         }
@@ -486,8 +498,6 @@ Hio_StbImage::ReadCropped(int const cropTop,
         if (resizeNeeded) {
             // XXX STB only has a sRGB resize for 8bit
             if (IsColorSpaceSRGB() && _outputType == HioTypeUnsignedByte) {
-                const int alphaIndex = (_nchannels != 4)?
-                                       STBIR_ALPHA_CHANNEL_NONE : 3;
                 stbir_resize_uint8_srgb((unsigned char*)imageData, 
                                         _width, 
                                         _height, 
@@ -496,10 +506,10 @@ Hio_StbImage::ReadCropped(int const cropTop,
                                         storage.width,
                                         storage.height,
                                         storage.width * bpp,
-                                        _nchannels, alphaIndex, 0);
+                                        (stbir_pixel_layout)_nchannels);
             } else {
                 if (_outputType == HioTypeFloat) {
-                    stbir_resize_float((float *)imageData, 
+                    stbir_resize_float_linear((float *)imageData,
                                        _width, 
                                        _height,
                                        inputStrideInBytes,
@@ -507,9 +517,9 @@ Hio_StbImage::ReadCropped(int const cropTop,
                                        storage.width,
                                        storage.height,
                                        storage.width * bpp,
-                                       _nchannels);
+                                              (stbir_pixel_layout)_nchannels);
                 } else {
-                    stbir_resize_uint8((unsigned char *)imageData, 
+                    stbir_resize_uint8_linear((unsigned char *)imageData,
                                        _width, 
                                        _height,
                                        inputStrideInBytes,
@@ -517,7 +527,7 @@ Hio_StbImage::ReadCropped(int const cropTop,
                                        storage.width,
                                        storage.height,
                                        storage.width * bpp,
-                                       _nchannels);
+                                              (stbir_pixel_layout)_nchannels);
                 }
             }
 
@@ -534,7 +544,7 @@ Hio_StbImage::ReadCropped(int const cropTop,
 
     if (!storage.data)
     {
-        TF_CODING_ERROR("Failed to copy data to storage.data");
+        TF_RUNTIME_ERROR("Failed to copy data to storage.data");
     }
 
     stbi_image_free(imageData);
@@ -619,13 +629,13 @@ Hio_StbImage::Write(StorageSpec const & storageIn,
         quantizedSpec = _Quantize<GfHalf>(storageIn, quantizedData, isSRGB);
     }
     else if (type != HioTypeUnsignedByte && fileExtension != "hdr") {
-        TF_CODING_ERROR("stb expects unsigned byte data to write filetype %s",
+        TF_RUNTIME_ERROR("stb expects unsigned byte data to write filetype %s",
                         fileExtension.c_str());
         return false;
     }
     else if (type != HioTypeFloat && fileExtension == "hdr")
     {
-        TF_CODING_ERROR("stb expects linear float data to write filetype hdr");
+        TF_RUNTIME_ERROR("stb expects linear float data to write filetype hdr");
         return false;
     }
 
@@ -693,4 +703,3 @@ Hio_StbImage::Write(StorageSpec const & storageIn,
 
 
 PXR_NAMESPACE_CLOSE_SCOPE
-

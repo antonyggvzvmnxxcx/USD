@@ -8,12 +8,7 @@ pxr_library(plug
         js
         trace
         work
-        ${Boost_PYTHON_LIBRARY}
-        ${TBB_tbb_LIBRARY}
-
-    INCLUDE_DIRS
-        ${Boost_INCLUDE_DIRS}
-        ${TBB_INCLUDE_DIRS}
+        TBB::tbb
 
     PUBLIC_CLASSES
         interfaceFactory
@@ -34,9 +29,6 @@ pxr_library(plug
     CPPFILES
         initConfig.cpp
 
-    PYTHON_CPPFILES
-        moduleDeps.cpp
-
     PYMODULE_CPPFILES
         module.cpp
         wrapNotice.cpp
@@ -51,12 +43,18 @@ pxr_library(plug
         overview.dox
 )
 
+if(NOT "${PXR_APPLE_FRAMEWORK_RELATIVE_RESOURCES}" STREQUAL "")
+    target_compile_definitions(plug
+        PRIVATE
+        PXR_APPLE_FRAMEWORK_RELATIVE_RESOURCES="${PXR_APPLE_FRAMEWORK_RELATIVE_RESOURCES}"
+    )
+endif()
+
 pxr_test_scripts(
     testPlug.py
 )
 
 pxr_build_test_shared_lib(TestPlugDso1
-    CREATE_FRAMEWORK
     INSTALL_PREFIX PlugPlugins
     LIBRARIES
         tf
@@ -166,8 +164,22 @@ pxr_create_test_module(TestPlugModuleIncomplete
     INSTALL_PREFIX PlugPlugins
 )
 
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    # Create a test module that has a unicode character in it's path
+    # for Windows
+    pxr_create_test_module(TestPlugModuleUnicode
+        INSTALL_PREFIX PlugPlugins
+        DEST_DIR TestPlugMödüleÜnicöde
+    )
+else()
+    # Create a test module without a unicode character in the path
+    # to make this test consistent on other OSes
+    pxr_create_test_module(TestPlugModuleUnicode
+        INSTALL_PREFIX PlugPlugins
+    )
+endif()
+
 pxr_register_test(testPlug
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testPlug"
 )
-

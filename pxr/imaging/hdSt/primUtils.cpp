@@ -1,43 +1,29 @@
 //
 // Copyright 2019 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 #include "pxr/imaging/hdSt/primUtils.h"
 
+#include "pxr/imaging/hdSt/computation.h"
 #include "pxr/imaging/hdSt/debugCodes.h"
 #include "pxr/imaging/hdSt/drawItem.h"
+#include "pxr/imaging/hdSt/glslfxShader.h"
 #include "pxr/imaging/hdSt/instancer.h"
 #include "pxr/imaging/hdSt/material.h"
-#include "pxr/imaging/hdSt/mixinShader.h"
+#include "pxr/imaging/hdSt/materialNetworkShader.h"
+#include "pxr/imaging/hdSt/package.h"
 #include "pxr/imaging/hdSt/renderParam.h"
 #include "pxr/imaging/hdSt/resourceRegistry.h"
 #include "pxr/imaging/hdSt/shaderCode.h"
+#include "pxr/imaging/hdSt/subdivision.h"
 #include "pxr/imaging/hdSt/tokens.h"
 
 #include "pxr/imaging/hd/bufferArrayRange.h"
 #include "pxr/imaging/hd/bufferSpec.h"
 #include "pxr/imaging/hd/bufferSource.h"
-#include "pxr/imaging/hd/computation.h"
 #include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/renderDelegate.h"
 #include "pxr/imaging/hd/rprim.h"
@@ -45,12 +31,14 @@
 #include "pxr/imaging/hd/types.h"
 #include "pxr/imaging/hd/vtBufferSource.h"
 
-#include "pxr/imaging/glf/contextCaps.h"
 #include "pxr/imaging/hf/diagnostic.h"
 
 #include "pxr/imaging/hio/glslfx.h"
 
+#include "pxr/imaging/hgi/capabilities.h"
+
 #include "pxr/base/tf/envSetting.h"
+#include "pxr/base/tf/staticData.h"
 #include "pxr/base/arch/hash.h"
 
 #include <algorithm>
@@ -59,6 +47,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 TF_DEFINE_ENV_SETTING(HDST_ENABLE_SHARED_VERTEX_PRIMVAR, 1,
                       "Enable sharing of vertex primvar");
+
+TF_MAKE_STATIC_DATA(
+    HdSt_MaterialNetworkShaderSharedPtr,
+    _fallbackOverlayShader)
+{
+    *_fallbackOverlayShader = std::make_shared<HdStGLSLFXShader>(
+        std::make_shared<HioGlslfx>(HdStPackageOverlayShader()));
+}
 
 // -----------------------------------------------------------------------------
 // Draw invalidation utilities
@@ -84,6 +80,16 @@ HdStMarkMaterialTagsDirty(HdRenderParam *renderParam)
 }
 
 void
+HdStMarkGeomSubsetDrawItemsDirty(HdRenderParam *renderParam)
+{
+    if (TF_VERIFY(renderParam)) {
+        HdStRenderParam *stRenderParam =
+            static_cast<HdStRenderParam*>(renderParam);
+        stRenderParam->MarkGeomSubsetDrawItemsDirty();
+    }
+}
+
+void
 HdStMarkGarbageCollectionNeeded(HdRenderParam *renderParam)
 {
     if (TF_VERIFY(renderParam)) {
@@ -97,9 +103,25 @@ HdStMarkGarbageCollectionNeeded(HdRenderParam *renderParam)
 // Primvar descriptor filtering utilities
 // -----------------------------------------------------------------------------
 static bool
-_IsEnabledPrimvarFiltering(HdStDrawItem const * drawItem) {
-    HdStShaderCodeSharedPtr materialShader = drawItem->GetMaterialShader();
-    return materialShader && materialShader->IsEnabledPrimvarFiltering();
+_IsEnabledPrimvarFiltering(HdStDrawItem const * drawItem)
+{
+    HdSt_MaterialNetworkShaderSharedPtr materialNetworkShader =
+        drawItem->GetMaterialNetworkShader();
+    return materialNetworkShader &&
+           materialNetworkShader->IsEnabledPrimvarFiltering();
+}
+
+static TfTokenVector const &
+_GetFilterNamesForMaterial(HdStDrawItem const * drawItem)
+{
+    HdSt_MaterialNetworkShaderSharedPtr materialNetworkShader =
+        drawItem->GetMaterialNetworkShader();
+    if (materialNetworkShader) {
+        return materialNetworkShader->GetPrimvarNames();
+    }
+
+    static const TfTokenVector fallback = TfTokenVector();
+    return fallback;
 }
 
 static TfTokenVector
@@ -109,11 +131,10 @@ _GetFilterNames(HdRprim const * prim,
 {
     TfTokenVector filterNames = prim->GetBuiltinPrimvarNames();
 
-    HdStShaderCodeSharedPtr materialShader = drawItem->GetMaterialShader();
-    if (materialShader) {
-        TfTokenVector const & names = materialShader->GetPrimvarNames();
-        filterNames.insert(filterNames.end(), names.begin(), names.end());
-    }
+    const TfTokenVector &matPvNames = _GetFilterNamesForMaterial(drawItem);
+    filterNames.insert(filterNames.end(), matPvNames.begin(), 
+        matPvNames.end());
+
     if (instancer) {
         TfTokenVector const & names = instancer->GetBuiltinPrimvarNames();
         filterNames.insert(filterNames.end(), names.begin(), names.end());
@@ -141,18 +162,49 @@ HdStGetPrimvarDescriptors(
     HdRprim const * prim,
     HdStDrawItem const * drawItem,
     HdSceneDelegate * delegate,
-    HdInterpolation interpolation)
+    HdInterpolation interpolation,
+    HdReprSharedPtr const &repr,
+    HdMeshGeomStyle descGeomStyle,
+    int geomSubsetDescIndex,
+    size_t numGeomSubsets)
 {
+    HD_TRACE_FUNCTION();
+
     HdPrimvarDescriptorVector primvars =
         prim->GetPrimvarDescriptors(delegate, interpolation);
 
+    TfTokenVector filterNames;
     if (_IsEnabledPrimvarFiltering(drawItem)) {
-        TfTokenVector filterNames = _GetFilterNames(prim, drawItem);
-
-        return _FilterPrimvarDescriptors(primvars, filterNames);
+        filterNames = _GetFilterNames(prim, drawItem);
     }
 
-    return primvars;
+    if (numGeomSubsets != 0 && 
+        repr && 
+        descGeomStyle != HdMeshGeomStyleInvalid && 
+        descGeomStyle != HdMeshGeomStylePoints) {
+        for (size_t i = 0; i < numGeomSubsets; ++i) {
+            HdStDrawItem const * subsetDrawItem =
+                static_cast<HdStDrawItem*>(repr->GetDrawItemForGeomSubset(
+                    geomSubsetDescIndex, numGeomSubsets, i));
+            if (!TF_VERIFY(subsetDrawItem)) {
+                continue;
+            }
+            if (_IsEnabledPrimvarFiltering(subsetDrawItem)) {
+                const TfTokenVector matPvNames = _GetFilterNamesForMaterial(
+                    subsetDrawItem);
+                filterNames.insert(filterNames.end(), matPvNames.begin(), 
+                    matPvNames.end());
+            }
+        }
+        std::sort(filterNames.begin(), filterNames.end());
+        filterNames.erase(std::unique(filterNames.begin(), filterNames.end()),
+            filterNames.end());
+    }
+
+    if (filterNames.empty()) {
+        return primvars;
+    }
+    return _FilterPrimvarDescriptors(primvars, filterNames);
 }
 
 HdPrimvarDescriptorVector
@@ -166,6 +218,28 @@ HdStGetInstancerPrimvarDescriptors(
 
     // XXX: Can we do filtering?
     return primvars;
+}
+
+// -----------------------------------------------------------------------------
+// Tracking render tag changes
+// -----------------------------------------------------------------------------
+
+void
+HdStUpdateRenderTag(HdSceneDelegate *delegate,
+                    HdRenderParam *renderParam,
+                    HdRprim *rprim)
+{
+    HdStRenderParam * const stRenderParam =
+        static_cast<HdStRenderParam*>(renderParam);
+
+    const TfToken prevRenderTag = rprim->GetRenderTag();
+    rprim->HdRprim::UpdateRenderTag(delegate, renderParam);
+    const TfToken &renderTag = rprim->GetRenderTag();
+    if (renderTag == prevRenderTag) {
+        return;
+    }
+    stRenderParam->DecreaseRenderTagCount(prevRenderTag);
+    stRenderParam->IncreaseRenderTagCount(renderTag);
 }
 
 // -----------------------------------------------------------------------------
@@ -188,68 +262,123 @@ HdStSetMaterialId(HdSceneDelegate *delegate,
 }
 
 void
-HdStSetMaterialTag(HdSceneDelegate *delegate,
-                   HdRenderParam *renderParam,
-                   HdRprim *rprim,
-                   bool hasDisplayOpacityPrimvar,
-                   bool occludedSelectionShowsThrough)
+HdStSetMaterialTag(HdRenderParam * const renderParam,
+                   HdDrawItem *drawItem,
+                   const TfToken &materialTag)
 {
-    TfToken prevMaterialTag = rprim->GetMaterialTag();
-    TfToken newMaterialTag;
+    HdStRenderParam * const stRenderParam =
+        static_cast<HdStRenderParam*>(renderParam);
 
-    // Opinion precedence:
-    //   Show occluded selection > Material opinion > displayOpacity primvar
+    {
+        // prevMaterialTag scoped to express that it is a reference
+        // to a field modified by SetMaterialTag later.
+        const TfToken &prevMaterialTag = drawItem->GetMaterialTag();
 
-    if (occludedSelectionShowsThrough) {
-        newMaterialTag = HdStMaterialTagTokens->translucentToSelection;
-    } else {
-        const HdStMaterial *material =
-            static_cast<const HdStMaterial *>(
-                    delegate->GetRenderIndex().GetSprim(
-                        HdPrimTypeTokens->material, rprim->GetMaterialId()));
-        if (material) {
-            newMaterialTag = material->GetMaterialTag();
-        } else {
-            newMaterialTag = hasDisplayOpacityPrimvar?
-                HdStMaterialTagTokens->masked :
-                HdMaterialTagTokens->defaultMaterialTag;
+        if (materialTag == prevMaterialTag) {
+            return;
         }
+        
+        stRenderParam->DecreaseMaterialTagCount(prevMaterialTag);
+    }
+    {
+        stRenderParam->IncreaseMaterialTagCount(materialTag);
+        drawItem->SetMaterialTag(materialTag);
     }
 
-    if (prevMaterialTag != newMaterialTag) {
-        rprim->SetMaterialTag(newMaterialTag);
-        // Trigger invalidation of the draw items cache of the render pass(es).
-        HdStMarkMaterialTagsDirty(renderParam);
-    }
+    // Trigger invalidation of the draw items cache of the render pass(es).
+    HdStMarkMaterialTagsDirty(renderParam);
 }
 
-HdStShaderCodeSharedPtr
-HdStGetMaterialShader(
+// Opinion precedence:
+//   Display In Overlay >
+//     Show occluded selection >
+//       Material opinion >
+//         displayOpacity primvar
+static
+TfToken
+_ComputeMaterialTag(HdSceneDelegate * const delegate,
+                    HdDrawItem *drawItem,
+                    SdfPath const & materialId,
+                    const bool hasDisplayOpacityPrimvar,
+                    const bool displayInOverlay,
+                    const bool occludedSelectionShowsThrough)
+{
+    if (displayInOverlay) {
+        return HdStMaterialTagTokens->displayInOverlay;
+    }
+
+    if (occludedSelectionShowsThrough) {
+        return HdStMaterialTagTokens->translucentToSelection;
+    }
+
+    const HdStMaterial *material =
+        static_cast<const HdStMaterial *>(
+            delegate->GetRenderIndex().GetSprim(
+                HdPrimTypeTokens->material, materialId));
+    if (material && !material->IsUsingFallbackShader()) {
+        return material->GetMaterialTag();
+    }
+
+    if (hasDisplayOpacityPrimvar) {
+        return HdStMaterialTagTokens->masked;
+    }
+
+    return HdMaterialTagTokens->defaultMaterialTag;
+}
+
+void
+HdStSetMaterialTag(HdSceneDelegate * const delegate,
+                   HdRenderParam * const renderParam,
+                   HdDrawItem *drawItem,
+                   SdfPath const & materialId,
+                   const bool hasDisplayOpacityPrimvar,
+                   const bool displayInOverlay,
+                   const bool occludedSelectionShowsThrough)
+{
+    HdStSetMaterialTag(
+        renderParam, drawItem,
+        _ComputeMaterialTag(
+            delegate, drawItem, materialId, hasDisplayOpacityPrimvar,
+            displayInOverlay, occludedSelectionShowsThrough));
+}
+
+HdSt_MaterialNetworkShaderSharedPtr
+HdStGetMaterialNetworkShader(
+    HdRprim const * prim,
+    HdSceneDelegate * delegate)
+{
+    return HdStGetMaterialNetworkShader(prim, delegate, prim->GetMaterialId());
+}
+
+HdSt_MaterialNetworkShaderSharedPtr
+HdStGetMaterialNetworkShader(
     HdRprim const * prim,
     HdSceneDelegate * delegate,
-    std::string const & mixinSource)
+    SdfPath const & materialId)
 {
-    SdfPath const & materialId = prim->GetMaterialId();
-
     // Resolve the prim's material or use the fallback material.
     HdRenderIndex &renderIndex = delegate->GetRenderIndex();
     HdStMaterial const * material = static_cast<HdStMaterial const *>(
             renderIndex.GetSprim(HdPrimTypeTokens->material, materialId));
     if (material == nullptr) {
-        TF_DEBUG(HD_RPRIM_UPDATED).Msg("Using fallback material for %s\n",
-            prim->GetId().GetText());
+        const bool displayInOverlay =
+            delegate->GetDisplayStyle(prim->GetId()).displayInOverlay;
 
-        material = static_cast<HdStMaterial const *>(
+        if (displayInOverlay) {
+            TF_DEBUG(HD_RPRIM_UPDATED).Msg("Using built-in overlay material for"
+                " %s\n", prim->GetId().GetText());
+
+            return *_fallbackOverlayShader;
+        } else {
+            TF_DEBUG(HD_RPRIM_UPDATED).Msg("Using fallback material for %s\n",
+                prim->GetId().GetText());
+
+            material = static_cast<HdStMaterial const *>(
                 renderIndex.GetFallbackSprim(HdPrimTypeTokens->material));
+        }
     }
 
-    // Augment the shader source if mixinSource is provided.
-    HdStShaderCodeSharedPtr shaderCode = material->GetShaderCode();
-    if (!mixinSource.empty()) {
-        shaderCode.reset(new HdStMixinShader(mixinSource, shaderCode));
-    }
-
-    return shaderCode;
+    return material->GetMaterialNetworkShader();
 }
 
 // -----------------------------------------------------------------------------
@@ -264,7 +393,7 @@ HdStIsValidBAR(HdBufferArrayRangeSharedPtr const& range)
 bool
 HdStCanSkipBARAllocationOrUpdate(
     HdBufferSourceSharedPtrVector const& sources,
-    HdStComputationSharedPtrVector const& computations,
+    HdStComputationComputeQueuePairVector const& computations,
     HdBufferArrayRangeSharedPtr const& curRange,
     HdDirtyBits dirtyBits)
 {
@@ -290,21 +419,17 @@ HdStCanSkipBARAllocationOrUpdate(
     HdDirtyBits dirtyBits)
 {
     return HdStCanSkipBARAllocationOrUpdate(
-        sources, HdStComputationSharedPtrVector(), curRange, dirtyBits);
+        sources, HdStComputationComputeQueuePairVector(), curRange, dirtyBits);
 }
 
 HdBufferSpecVector
-HdStGetRemovedPrimvarBufferSpecs(
-    HdBufferArrayRangeSharedPtr const& curRange,
+_GetRemovedPrimvarBufferSpecs(
+    HdBufferSpecVector const& curBarSpecs,
     HdPrimvarDescriptorVector const& newPrimvarDescs,
     HdExtComputationPrimvarDescriptorVector const& newCompPrimvarDescs,
     TfTokenVector const& internallyGeneratedPrimvarNames,
     SdfPath const& rprimId)
 {
-    if (!HdStIsValidBAR(curRange)) {
-        return HdBufferSpecVector();
-    }
-
     HdBufferSpecVector removedPrimvarSpecs;
     // Get the new list of primvar sources for the BAR. We need to use both
     // the primvar descriptor list (that we get via the scene delegate), as
@@ -320,12 +445,8 @@ HdStGetRemovedPrimvarBufferSpecs(
         newPrimvarNames.emplace_back(desc.name);
     }
 
-    // Get the buffer specs for the existing BAR...
-    HdBufferSpecVector curBarSpecs;
-    curRange->GetBufferSpecs(&curBarSpecs);
-
-    // ... and check if it has buffers that are neither in the new source list
-    // nor are internally generated.
+    // Check if the existing BAR has buffers that are neither in the new source
+    // list nor are internally generated.
     for (auto const& spec : curBarSpecs) {
 
         bool isInNewList =
@@ -356,12 +477,95 @@ HdBufferSpecVector
 HdStGetRemovedPrimvarBufferSpecs(
     HdBufferArrayRangeSharedPtr const& curRange,
     HdPrimvarDescriptorVector const& newPrimvarDescs,
+    HdExtComputationPrimvarDescriptorVector const& newCompPrimvarDescs,
+    TfTokenVector const& internallyGeneratedPrimvarNames,
+    SdfPath const& rprimId)
+{
+    if (!HdStIsValidBAR(curRange)) {
+        return HdBufferSpecVector();
+    }
+
+    HdBufferSpecVector curBarSpecs;
+    curRange->GetBufferSpecs(&curBarSpecs);
+
+    return _GetRemovedPrimvarBufferSpecs(curBarSpecs, newPrimvarDescs,
+        newCompPrimvarDescs, internallyGeneratedPrimvarNames, rprimId);
+}
+
+HdBufferSpecVector
+HdStGetRemovedPrimvarBufferSpecs(
+    HdBufferArrayRangeSharedPtr const& curRange,
+    HdPrimvarDescriptorVector const& newPrimvarDescs,
     TfTokenVector const& internallyGeneratedPrimvarNames,
     SdfPath const& rprimId)
 {
     return HdStGetRemovedPrimvarBufferSpecs(curRange, newPrimvarDescs,
         HdExtComputationPrimvarDescriptorVector(),
         internallyGeneratedPrimvarNames, rprimId);
+}
+
+// XXX: Not currently exported; does anyone else need it?
+HdBufferSpecVector
+HdStGetRemovedOrReplacedPrimvarBufferSpecs(
+    HdBufferArrayRangeSharedPtr const& curRange,
+    HdPrimvarDescriptorVector const& newPrimvarDescs,
+    HdExtComputationPrimvarDescriptorVector const& newCompPrimvarDescs,
+    TfTokenVector const& internallyGeneratedPrimvarNames,
+    HdBufferSpecVector const& updatedSpecs,
+    SdfPath const& rprimId)
+{
+    if (!HdStIsValidBAR(curRange)) {
+        return HdBufferSpecVector();
+    }
+
+    HdBufferSpecVector curBarSpecs;
+    curRange->GetBufferSpecs(&curBarSpecs);
+
+    HdBufferSpecVector removedOrReplacedSpecs = _GetRemovedPrimvarBufferSpecs(
+        curBarSpecs, newPrimvarDescs, newCompPrimvarDescs,
+        internallyGeneratedPrimvarNames, rprimId);
+
+    // Sometimes the buffer spec for a given named primvar has changed, e.g.,
+    // when an array-valued primvar has changed size. Such specs are not
+    // in removedSpecs at this point, so we need to add them to ensure that
+    // the old spec gets removed. Otherwise we will get shader compilation
+    // errors after the new spec has been added because the primvar variable
+    // will be defined twice.
+
+    for (const auto& curSpec : curBarSpecs) {
+        const auto newSpec = std::find_if(updatedSpecs.begin(),
+            updatedSpecs.end(), 
+            [&](const auto& spec) { return spec.name == curSpec.name; });
+        // If we find a new spec that matches by name, we check if it is
+        // different from the old spec. If it is, it needs to be removed.
+        // The call to UpdateShaderStorageBufferArrayRange below will add
+        // the new spec regardless, but will only remove the old one if it
+        // is in removedSpecs. This fixes the case where resized array-valued
+        // constant primvars were being declared multiple times causing
+        // shader compilation failures.
+        if (newSpec != updatedSpecs.end() && 
+            curSpec != *newSpec) {
+                TF_DEBUG(HD_RPRIM_UPDATED).Msg(
+                    "%s: Found primvar %s that has been replaced\n",
+                    rprimId.GetText(), curSpec.name.GetText());
+                removedOrReplacedSpecs.push_back(curSpec);
+        }
+    }
+    return removedOrReplacedSpecs;
+}
+
+HdBufferSpecVector
+HdStGetRemovedOrReplacedPrimvarBufferSpecs(
+    HdBufferArrayRangeSharedPtr const& curRange,
+    HdPrimvarDescriptorVector const& newPrimvarDescs,
+    TfTokenVector const& internallyGeneratedPrimvarNames,
+    HdBufferSpecVector const& updatedSpecs,
+    SdfPath const& rprimId)
+{
+    return HdStGetRemovedOrReplacedPrimvarBufferSpecs(
+        curRange, newPrimvarDescs,
+        HdExtComputationPrimvarDescriptorVector(),
+        internallyGeneratedPrimvarNames, updatedSpecs, rprimId);
 }
 
 void
@@ -506,6 +710,67 @@ bool HdStIsPrimvarExistentAndValid(
     return false;
 }
 
+bool HdStIsPrimvarValidForDrawItem(
+    const HdStDrawItem *drawItem,
+    TfToken const &primvarName,
+    VtValue const &primvarValue)
+{
+    if (primvarValue.IsEmpty()) {
+        TF_DEBUG_MSG(HDST_LOG_SKIPPED_PRIMVAR, 
+            "Prim: %s Primvar: %s is empty! Skipping...\n",
+            drawItem->GetRprimID().GetString().c_str(),
+            primvarName.GetString().c_str());
+        return false;
+    }
+
+    // XXX Storm doesn't support string or token primvars yet
+    if (primvarValue.IsHolding<std::string>() ||
+        primvarValue.IsHolding<VtStringArray>() ||
+        primvarValue.IsHolding<TfToken>() ||
+        primvarValue.IsHolding<VtTokenArray>()) {
+        TF_DEBUG_MSG(HDST_LOG_SKIPPED_PRIMVAR,
+            "Prim: %s Primvar: %s holds an incompatible type!"
+            "Type: %s Skipping...\n",
+            drawItem->GetRprimID().GetString().c_str(),
+            primvarName.GetString().c_str(),
+            primvarValue.GetTypeName().c_str());
+        return false;
+    }
+
+    if (!drawItem->GetMaterialNetworkShader()) {
+        return true;
+    }
+
+    const VtValue* fallback = drawItem->GetMaterialNetworkShader()
+        ->GetFallbackValueForParam(primvarName);
+    if (!fallback) {
+        return true;
+    }
+
+    if (primvarName == HdTokens->displayColor
+        && (primvarValue.CanCastToTypeid(typeid(GfVec4f))
+        || primvarValue.CanCastToTypeid(typeid(VtArray<GfVec4f>)))) {
+        // Allowing 'displayColor' to be a vec4 or vec3 to support
+        // clients expecting this behavior
+        return true;
+    }
+
+    if (primvarValue.CanCastToTypeOf(*fallback) ||
+        primvarValue.GetElementTypeid() == fallback->GetTypeid()) {
+        return true;
+    } else {
+        TF_WARN(
+            "Value input not compatible with default! Prim: %s Primvar: %s\n"
+            "Default: Type - %s\n"
+            "Input: Type - %s",
+            drawItem->GetRprimID().GetString().c_str(),
+            primvarName.GetString().c_str(),
+            fallback->GetTypeName().c_str(),
+            primvarValue.GetTypeName().c_str());
+        return false;
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Constant primvar processing utilities
 // -----------------------------------------------------------------------------
@@ -514,10 +779,12 @@ HdStShouldPopulateConstantPrimvars(
     HdDirtyBits const *dirtyBits,
     SdfPath const& id)
 {
-    return HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, id) ||
-           HdChangeTracker::IsTransformDirty(*dirtyBits, id) ||
-           HdChangeTracker::IsExtentDirty(*dirtyBits, id) ||
-           HdChangeTracker::IsPrimIdDirty(*dirtyBits, id);
+    return (*dirtyBits & HdChangeTracker::DirtyNormals ||
+            *dirtyBits & HdChangeTracker::DirtyWidths ||
+            *dirtyBits & HdChangeTracker::DirtyPrimvar ||
+            HdChangeTracker::IsTransformDirty(*dirtyBits, id) ||
+            HdChangeTracker::IsExtentDirty(*dirtyBits, id) ||
+            HdChangeTracker::IsPrimIdDirty(*dirtyBits, id));
 }
 
 void
@@ -526,10 +793,16 @@ HdStPopulateConstantPrimvars(
     HdRprimSharedData *sharedData,
     HdSceneDelegate *delegate,
     HdRenderParam *renderParam,
-    HdDrawItem *drawItem,
+    HdStDrawItem *drawItem,
     HdDirtyBits *dirtyBits,
-    HdPrimvarDescriptorVector const& constantPrimvars,
-    bool *hasMirroredTransform)
+    HdReprSharedPtr const &repr,
+    HdMeshGeomStyle descGeomStyle,
+    int geomSubsetDescIndex,
+    size_t numGeomSubsets,
+    HdBufferSpecVector const& customSpecs,
+    bool *hasMirroredTransform,
+    bool *hasDisplayOpacity,
+    bool *hasNormals)
 {
     HD_TRACE_FUNCTION();
     HF_MALLOC_TAG_FUNCTION();
@@ -545,16 +818,22 @@ HdStPopulateConstantPrimvars(
     // Update uniforms
     HdBufferSourceSharedPtrVector sources;
     if (HdChangeTracker::IsTransformDirty(*dirtyBits, id)) {
-        GfMatrix4d transform = delegate->GetTransform(id);
+        const GfMatrix4d transform = delegate->GetTransform(id);
         sharedData->bounds.SetMatrix(transform); // for CPU frustum culling
 
-        HdBufferSourceSharedPtr source(new HdVtBufferSource(
-                                           HdTokens->transform,
-                                           transform));
-        sources.push_back(source);
-        source.reset(new HdVtBufferSource(HdTokens->transformInverse,
-                                          transform.GetInverse()));
-        sources.push_back(source);
+        HgiCapabilities const * capabilities =
+            hdStResourceRegistry->GetHgi()->GetCapabilities();
+        bool const doublesSupported = capabilities->IsSet(
+            HgiDeviceCapabilitiesBitsShaderDoublePrecision);
+
+        sources.push_back(
+            std::make_shared<HdVtBufferSource>(
+                HdTokens->transform, transform, doublesSupported));
+
+        sources.push_back(
+            std::make_shared<HdVtBufferSource>(
+                HdTokens->transformInverse, transform.GetInverse(),
+                doublesSupported));
 
         bool leftHanded = transform.IsLeftHanded();
 
@@ -562,35 +841,43 @@ HdStPopulateConstantPrimvars(
         // also push the instancer transform separately.
         if (!instancerId.IsEmpty()) {
             // Gather all instancer transforms in the instancing hierarchy
-            VtMatrix4dArray rootTransforms = 
-                prim->GetInstancerTransforms(delegate);
-            VtMatrix4dArray rootInverseTransforms(rootTransforms.size());
-            for (size_t i = 0; i < rootTransforms.size(); ++i) {
-                rootInverseTransforms[i] = rootTransforms[i].GetInverse();
+            VtMatrix4dArray rootTransforms;
+            VtMatrix4dArray rootInverseTransforms;
+            SdfPath nextInstancerId = instancerId;
+
+            while (!nextInstancerId.IsEmpty()) {
+                HdStInstancer *instancer = 
+                    static_cast<HdStInstancer*>(
+                        renderIndex.GetInstancer(nextInstancerId));
+                if (!instancer) {
+                    break;
+                }
+                rootTransforms.push_back(instancer->GetTransform());
+                rootInverseTransforms.push_back(
+                    instancer->GetTransformInverse());
                 // Flip the handedness if necessary
-                leftHanded ^= rootTransforms[i].IsLeftHanded();
+                leftHanded ^= rootTransforms.back().IsLeftHanded();
+                nextInstancerId = instancer->GetParentId();
             }
 
-            source.reset(new HdVtBufferSource(
-                             HdInstancerTokens->instancerTransform,
-                             rootTransforms,
-                             rootTransforms.size()));
-            sources.push_back(source);
-            source.reset(new HdVtBufferSource(
-                             HdInstancerTokens->instancerTransformInverse,
-                             rootInverseTransforms,
-                             rootInverseTransforms.size()));
-            sources.push_back(source);
-
-            // XXX: It might be worth to consider to have isFlipped
-            // for non-instanced prims as well. It can improve
-            // the drawing performance on older-GPUs by reducing
-            // fragment shader cost, although it needs more GPU memory.
+            sources.push_back(
+                std::make_shared<HdVtBufferSource>(
+                    HdInstancerTokens->instancerTransform,
+                    rootTransforms,
+                    rootTransforms.size(),
+                    doublesSupported));
+            sources.push_back(
+                std::make_shared<HdVtBufferSource>(
+                    HdInstancerTokens->instancerTransformInverse,
+                    rootInverseTransforms,
+                    rootInverseTransforms.size(),
+                    doublesSupported));
 
             // Set as int (GLSL needs 32-bit align for bool)
-            source.reset(new HdVtBufferSource(
-                             HdTokens->isFlipped, VtValue(int(leftHanded))));
-            sources.push_back(source);
+            sources.push_back(
+                std::make_shared<HdVtBufferSource>(
+                    HdTokens->isFlipped,
+                    VtValue(int(leftHanded))));
         }
 
         if (hasMirroredTransform) {
@@ -604,62 +891,121 @@ HdStPopulateConstantPrimvars(
         sharedData->bounds.SetRange(prim->GetExtent(delegate));
 
         GfVec3d const & localMin = drawItem->GetBounds().GetBox().GetMin();
-        HdBufferSourceSharedPtr sourceMin(new HdVtBufferSource(
+        HdBufferSourceSharedPtr sourceMin = std::make_shared<HdVtBufferSource>(
                                            HdTokens->bboxLocalMin,
                                            VtValue(GfVec4f(
                                                localMin[0],
                                                localMin[1],
                                                localMin[2],
-                                               1.0f))));
+                                               1.0f)));
         sources.push_back(sourceMin);
 
         GfVec3d const & localMax = drawItem->GetBounds().GetBox().GetMax();
-        HdBufferSourceSharedPtr sourceMax(new HdVtBufferSource(
+        HdBufferSourceSharedPtr sourceMax = std::make_shared<HdVtBufferSource>(
                                            HdTokens->bboxLocalMax,
                                            VtValue(GfVec4f(
                                                localMax[0],
                                                localMax[1],
                                                localMax[2],
-                                               1.0f))));
+                                               1.0f)));
         sources.push_back(sourceMax);
     }
 
     if (HdChangeTracker::IsPrimIdDirty(*dirtyBits, id)) {
         int32_t primId = prim->GetPrimId();
-        HdBufferSourceSharedPtr source(new HdVtBufferSource(
+        HdBufferSourceSharedPtr source = std::make_shared<HdVtBufferSource>(
                                            HdTokens->primID,
-                                           VtValue(primId)));
+                                           VtValue(primId));
         sources.push_back(source);
     }
 
-    if (HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, id)) {
+    HdPrimvarDescriptorVector constantPrimvars;
+    if ((*dirtyBits & HdChangeTracker::DirtyNormals) ||
+        (*dirtyBits & HdChangeTracker::DirtyWidths) ||
+        (*dirtyBits & HdChangeTracker::DirtyPrimvar)) {
+
+        // Note: avoid pulling the primvar list until we know we need it...
+        constantPrimvars = HdStGetPrimvarDescriptors(
+            prim, drawItem, delegate, HdInterpolationConstant,
+            repr, descGeomStyle, geomSubsetDescIndex, numGeomSubsets);
+
         sources.reserve(sources.size()+constantPrimvars.size());
         for (const HdPrimvarDescriptor& pv: constantPrimvars) {
+            if (pv.name == HdTokens->points) {
+                HF_VALIDATION_WARN(id, "constant-interpolation points!");
+                continue;
+            }
+
             if (HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, pv.name)) {
                 VtValue value = delegate->Get(id, pv.name);
-
-                // XXX Storm doesn't support string primvars yet
-                if (value.IsHolding<std::string>() ||
-                    value.IsHolding<VtStringArray>()) {
+                if (!HdStIsPrimvarValidForDrawItem(drawItem, pv.name, value)) {
                     continue;
                 }
 
                 if (value.IsArrayValued() && value.GetArraySize() == 0) {
                     // A value holding an empty array does not count as an
                     // empty value. Catch that case here.
-                    //
-                    // Do nothing in this case.
-                } else if (!value.IsEmpty()) {
-                    // Given that this is a constant primvar, if it is
-                    // holding VtArray then use that as a single array
-                    // value rather than as one value per element.
-                    HdBufferSourceSharedPtr source(
-                        new HdVtBufferSource(pv.name, value,
-                            value.IsArrayValued() ? value.GetArraySize() : 1));
+                    TF_DEBUG_MSG(HDST_LOG_SKIPPED_PRIMVAR, 
+                        "Prim: %s Primvar: %s is an empty array! Skipping...\n",
+                        drawItem->GetRprimID().GetString().c_str(),
+                        pv.name.GetString().c_str());
+                    continue;
+                }
 
-                    TF_VERIFY(source->GetTupleType().type != HdTypeInvalid);
-                    TF_VERIFY(source->GetTupleType().count > 0);
-                    sources.push_back(source);
+                const HdSt_MaterialNetworkShaderSharedPtr material =
+                    drawItem->GetMaterialNetworkShader();
+                const VtValue* fallback = material ? material
+                    ->GetFallbackValueForParam(pv.name) : nullptr;
+                if (fallback) {
+                    size_t valSize = value.IsArrayValued()
+                        ? value.GetArraySize() : 1;
+                    size_t fallbackSize = fallback->IsArrayValued()
+                        ? fallback->GetArraySize() : 1;
+                    // Don't perform size validation on constant array primvars
+                    bool bothArrays = value.IsArrayValued() 
+                        && fallback->IsArrayValued();
+                    if (!bothArrays && valSize != fallbackSize) {
+                        TF_WARN("Value input not compatible with default! "
+                            "Prim: %s Primvar: %s\n"
+                            "Default: Type - %s, IsArray - %i, "
+                            "ArraySize - %zu\n"
+                            "Input: Type - %s, IsArray - %i, "
+                            "ArraySize - %zu\n",
+                            sharedData->rprimID.GetString().c_str(),
+                            pv.name.GetString().c_str(),
+                            fallback->GetTypeName().c_str(),
+                            fallback->IsArrayValued(),
+                            fallback->GetArraySize(),
+                            value.GetTypeName().c_str(),
+                            value.IsArrayValued(),
+                            value.GetArraySize());
+                        continue;
+                    }
+                }
+
+                // Given that this is a constant primvar, if it is
+                // holding VtArray then use that as a single array
+                // value rather than as one value per element.
+                HdBufferSourceSharedPtr source =
+                    std::make_shared<HdVtBufferSource>(pv.name, value,
+                        value.IsArrayValued() ? value.GetArraySize() : 1);
+
+                // Skip buffer source if tuple type is invalid.
+                if (!TF_VERIFY(
+                        source->GetTupleType().type != HdTypeInvalid)) {
+                    continue;
+                }
+                if (!TF_VERIFY(source->GetTupleType().count > 0)) {
+                    continue;
+                }
+
+                sources.push_back(source);
+
+                if (hasDisplayOpacity && pv.name == HdTokens->displayOpacity) {
+                    *hasDisplayOpacity = true;
+                }
+                if (hasNormals && pv.name == HdTokens->normals) {
+                    *hasNormals = true;
                 }
             }
         }
@@ -672,8 +1018,21 @@ HdStPopulateConstantPrimvars(
         return;
     }
 
+    HdBufferSpecVector bufferSpecs;
+    HdBufferSpec::GetBufferSpecs(sources, &bufferSpecs);
+
+    if (!customSpecs.empty()) {
+        bufferSpecs.insert(bufferSpecs.end(),
+                           customSpecs.begin(),
+                           customSpecs.end());
+    }
+
     // XXX: This should be based off the DirtyPrimvarDesc bit.
-    bool hasDirtyPrimvarDesc = (*dirtyBits & HdChangeTracker::DirtyPrimvar);
+    bool hasDirtyPrimvarDesc =
+        (*dirtyBits & HdChangeTracker::DirtyPrimvar) ||
+        (*dirtyBits & HdChangeTracker::DirtyNormals) ||
+        (*dirtyBits & HdChangeTracker::DirtyWidths);
+
     HdBufferSpecVector removedSpecs;
     if (hasDirtyPrimvarDesc) {
         static TfTokenVector internallyGeneratedPrimvars =
@@ -687,17 +1046,14 @@ HdStPopulateConstantPrimvars(
             HdTokens->bboxLocalMax,
             HdTokens->primID
         };
-        removedSpecs = HdStGetRemovedPrimvarBufferSpecs(bar, constantPrimvars, 
-            internallyGeneratedPrimvars, id);
+        removedSpecs = HdStGetRemovedOrReplacedPrimvarBufferSpecs(bar,
+            constantPrimvars, internallyGeneratedPrimvars, bufferSpecs, id);
     }
-
-    HdBufferSpecVector bufferSpecs;
-    HdBufferSpec::GetBufferSpecs(sources, &bufferSpecs);
 
     HdBufferArrayRangeSharedPtr range =
         hdStResourceRegistry->UpdateShaderStorageBufferArrayRange(
             HdTokens->primvar, bar, bufferSpecs, removedSpecs,
-            HdBufferArrayUsageHint());
+            HdBufferArrayUsageHintBitsStorage);
     
      HdStUpdateDrawItemBAR(
         range,
@@ -714,6 +1070,42 @@ HdStPopulateConstantPrimvars(
     }
 }
 
+void
+HdStPopulateConstantPrimvars(
+    HdRprim *prim,
+    HdRprimSharedData *sharedData,
+    HdSceneDelegate *delegate,
+    HdRenderParam *renderParam,
+    HdStDrawItem *drawItem,
+    HdDirtyBits *dirtyBits,
+    HdReprSharedPtr const &repr,
+    HdMeshGeomStyle descGeomStyle,
+    int geomSubsetDescIndex,
+    size_t numGeomSubsets,
+    bool *hasMirroredTransform,
+    bool *hasDisplayOpacity,
+    bool *hasNormals)
+{
+    HD_TRACE_FUNCTION();
+    HF_MALLOC_TAG_FUNCTION();
+
+    HdStPopulateConstantPrimvars(
+        prim,
+        sharedData,
+        delegate,
+        renderParam,
+        drawItem,
+        dirtyBits,
+        repr,
+        descGeomStyle,
+        geomSubsetDescIndex,
+        numGeomSubsets,
+        HdBufferSpecVector(),
+        hasMirroredTransform,
+        hasDisplayOpacity,
+        hasNormals);
+}
+
 // -----------------------------------------------------------------------------
 // Instancer processing utilities
 // -----------------------------------------------------------------------------
@@ -725,11 +1117,20 @@ HdStUpdateInstancerData(
     HdRprim *prim,
     HdStDrawItem *drawItem,
     HdRprimSharedData *sharedData,
-    HdDirtyBits rprimDirtyBits)
+    HdDirtyBits rprimDirtyBits,
+    bool *hasDisplayOpacity,
+    bool *hasNormals)
 {
     // If there's nothing to do, bail.
     if (!(rprimDirtyBits & HdChangeTracker::DirtyInstancer)) {
         return;
+    }
+
+    if (hasDisplayOpacity) {
+        *hasDisplayOpacity = false;
+    }
+    if (hasNormals) {
+        *hasNormals = false;
     }
 
     // XXX: This belongs in HdRenderIndex!!!
@@ -742,21 +1143,19 @@ HdStUpdateInstancerData(
     // rebuild even if the index dirty bit isn't set...
     bool forceIndexRebuild = false;
 
-    if (rprimDirtyBits & HdChangeTracker::DirtyInstancer) {
-        // If the instancer topology has changed, we might need to change
-        // how many levels we allocate in the drawing coord.
-        int instancerLevels = HdInstancer::GetInstancerNumLevels(
+    // If the instancer topology has changed, we might need to change
+    // how many levels we allocate in the drawing coord.
+    int instancerLevels = HdInstancer::GetInstancerNumLevels(
             renderIndex, *prim); 
 
-        if (instancerLevels != sharedData->instancerLevels) {
-            sharedData->barContainer.Resize(
+    if (instancerLevels != sharedData->instancerLevels) {
+        sharedData->barContainer.Resize(
                 drawingCoord->GetInstancePrimvarIndex(0) + instancerLevels);
-            sharedData->instancerLevels = instancerLevels;
+        sharedData->instancerLevels = instancerLevels;
 
-            HdStMarkGarbageCollectionNeeded(renderParam);
-            HdStMarkDrawBatchesDirty(renderParam);
-            forceIndexRebuild = true;
-        }
+        HdStMarkGarbageCollectionNeeded(renderParam);
+        HdStMarkDrawBatchesDirty(renderParam);
+        forceIndexRebuild = true;
     }
 
     /* INSTANCE PRIMVARS */
@@ -764,12 +1163,12 @@ HdStUpdateInstancerData(
     int level = 0;
     SdfPath parentId = prim->GetInstancerId();
     while (!parentId.IsEmpty()) {
-        HdInstancer *instancer = renderIndex.GetInstancer(parentId);
+        HdInstancer * const instancer = renderIndex.GetInstancer(parentId);
         if(!TF_VERIFY(instancer)) {
             return;
         }
-        int drawCoordIndex = drawingCoord->GetInstancePrimvarIndex(level);
-        HdBufferArrayRangeSharedPtr instancerRange =
+        const int drawCoordIndex = drawingCoord->GetInstancePrimvarIndex(level);
+        HdBufferArrayRangeSharedPtr const instancerRange =
             static_cast<HdStInstancer*>(instancer)->GetInstancePrimvarRange();
 
         // If we need to update the BAR, that indicates an instancing topology
@@ -786,6 +1185,15 @@ HdStUpdateInstancerData(
             renderParam,
             &changeTracker);
 
+        if (hasDisplayOpacity) {
+            *hasDisplayOpacity = *hasDisplayOpacity ||
+                static_cast<HdStInstancer*>(instancer)->HasDisplayOpacity();
+        }
+        if (hasNormals) {
+            *hasNormals = *hasNormals ||
+                static_cast<HdStInstancer*>(instancer)->HasNormals();
+        }
+
         parentId = instancer->GetParentId();
         ++level;
     }
@@ -798,19 +1206,32 @@ HdStUpdateInstancerData(
         forceIndexRebuild) {
         parentId = prim->GetInstancerId();
         if (!parentId.IsEmpty()) {
-            HdInstancer *instancer = renderIndex.GetInstancer(parentId);
+            HdInstancer * const instancer = renderIndex.GetInstancer(parentId);
             if (!TF_VERIFY(instancer)) {
                 return;
             }
 
             // update instance indices
-            VtIntArray instanceIndices =
+            //
+            // We add a zero as the first value in instanceIndices. This is 
+            // added as a way of avoiding correctness issues in the instance
+            // frustum cull vertex shader. This issue happens when an instanced 
+            // prim has geom subsets resulting in multiple draw items. See
+            // ViewFrustumCull.VertexInstancing in frustumCull.glslfx for
+            // details.
+            VtIntArray const originalInstanceIndices =
                 static_cast<HdStInstancer*>(instancer)->
                 GetInstanceIndices(prim->GetId());
+            VtIntArray instanceIndices =
+                VtIntArray(originalInstanceIndices.size() + 1);
+            instanceIndices[0] = 0;
+            std::copy(originalInstanceIndices.cbegin(),
+                      originalInstanceIndices.cend(),
+                      instanceIndices.begin() + 1);
 
-            HdStResourceRegistrySharedPtr const& resourceRegistry =
-                std::static_pointer_cast<HdStResourceRegistry>(
-                    renderIndex.GetResourceRegistry());
+            HdStResourceRegistry* const resourceRegistry =
+                static_cast<HdStResourceRegistry*>(
+                    renderIndex.GetResourceRegistry().get());
 
             // Create the bar if needed.
             if (!drawItem->GetInstanceIndexRange()) {
@@ -819,14 +1240,22 @@ HdStUpdateInstancerData(
                 // culling can compute culledInstanceIndices as instanceIndices
                 // masked by visibility.
                 HdBufferSpecVector bufferSpecs;
-                bufferSpecs.emplace_back(HdInstancerTokens->instanceIndices,
+                bufferSpecs.emplace_back(
+                    HdInstancerTokens->instanceIndices,
                     HdTupleType {HdTypeInt32, 1});
-                bufferSpecs.emplace_back(HdInstancerTokens->culledInstanceIndices,
+                bufferSpecs.emplace_back(
+                    HdInstancerTokens->culledInstanceIndices,
                     HdTupleType {HdTypeInt32, 1});
 
-                HdBufferArrayRangeSharedPtr range =
+                HdBufferArrayUsageHint usageHint = 
+                    HdBufferArrayUsageHintBitsIndex | 
+                    HdBufferArrayUsageHintBitsStorage;
+
+                HdBufferArrayRangeSharedPtr const range =
                     resourceRegistry->AllocateNonUniformBufferArrayRange(
-                    HdTokens->topology, bufferSpecs, HdBufferArrayUsageHint());
+                        HdTokens->topology,
+                        bufferSpecs,
+                        usageHint);
 
                 HdStUpdateDrawItemBAR(
                     range,
@@ -848,14 +1277,14 @@ HdStUpdateInstancerData(
             }
 
             HdBufferSourceSharedPtrVector sources;
-            HdBufferSourceSharedPtr source(
-                new HdVtBufferSource(HdInstancerTokens->instanceIndices,
+            sources.push_back(
+                std::make_shared<HdVtBufferSource>(
+                    HdInstancerTokens->instanceIndices,
                     VtValue(instanceIndices)));
-            sources.push_back(source);
-            source.reset(
-                new HdVtBufferSource(HdInstancerTokens->culledInstanceIndices,
+            sources.push_back(
+                std::make_shared<HdVtBufferSource>(
+                    HdInstancerTokens->culledInstanceIndices,
                     VtValue(instanceIndices)));
-            sources.push_back(source);
 
             resourceRegistry->AddSources(
                 drawItem->GetInstanceIndexRange(), std::move(sources));
@@ -870,12 +1299,12 @@ bool HdStIsInstancePrimvarExistentAndValid(
 {
     SdfPath parentId = rprim->GetInstancerId();
     while (!parentId.IsEmpty()) {
-        HdInstancer *instancer = renderIndex.GetInstancer(parentId);
+        HdInstancer * const instancer = renderIndex.GetInstancer(parentId);
         if (!TF_VERIFY(instancer)) {
             return false;
         }
 
-        HdPrimvarDescriptorVector primvars =
+        HdPrimvarDescriptorVector const primvars =
             instancer->GetDelegate()->GetPrimvarDescriptors(instancer->GetId(),
                 HdInterpolationInstance);
         
@@ -884,7 +1313,7 @@ bool HdStIsInstancePrimvarExistentAndValid(
             // (since instance primvars aggregate).  Note: the value check here
             // must match HdStIsPrimvarExistentAndValid.
             if (pv.name == primvarName) {
-                VtValue value =
+                const VtValue value =
                     instancer->GetDelegate()->Get(instancer->GetId(), pv.name);
                 if (value.IsHolding<std::string>() ||
                     value.IsHolding<VtStringArray>()) {
@@ -925,18 +1354,16 @@ _GetBitmaskEncodedVisibilityBuffer(VtIntArray invisibleIndices,
     for (VtIntArray::const_iterator i = invisibleIndices.begin(),
                                   end = invisibleIndices.end(); i != end; ++i) {
         if (*i >= numTotalIndices || *i < 0) {
-            HF_VALIDATION_WARN(rprimId,
-                "Topological invisibility data (%d) is not in the range [0, %d)"
-                ".", *i, numTotalIndices);
+            // This invisible index is out of range.  Ignore it silently.
             continue;
         }
-        size_t arrayIndex = *i/numBitsPerUInt;
-        size_t bitIndex   = *i % numBitsPerUInt;
+        const size_t arrayIndex = *i/numBitsPerUInt;
+        const size_t bitIndex   = *i % numBitsPerUInt;
         visibility[arrayIndex] &= ~(1 << bitIndex); // set bit to 0
     }
 
-    return HdBufferSourceSharedPtr(
-        new HdVtBufferSource(bufferName, VtValue(visibility), numUIntsNeeded));
+    return std::make_shared<HdVtBufferSource>(
+        bufferName, VtValue(visibility), numUIntsNeeded);
 }
 
 void HdStProcessTopologyVisibility(
@@ -995,7 +1422,7 @@ void HdStProcessTopologyVisibility(
             resourceRegistry->AllocateShaderStorageBufferArrayRange(
                 HdTokens->topologyVisibility,
                 bufferSpecs,
-                HdBufferArrayUsageHint());
+                HdBufferArrayUsageHintBitsStorage);
         sharedData->barContainer.Set(
             drawItem->GetDrawingCoord()->GetTopologyVisibilityIndex(), range);
 
@@ -1024,7 +1451,7 @@ uint64_t
 HdStComputeSharedPrimvarId(
     uint64_t baseId,
     HdBufferSourceSharedPtrVector const &sources,
-    HdStComputationSharedPtrVector const &computations)
+    HdStComputationComputeQueuePairVector const &computations)
 {
     size_t primvarId = baseId;
     for (HdBufferSourceSharedPtr const &bufferSource : sources) {
@@ -1045,6 +1472,14 @@ HdStComputeSharedPrimvarId(
         }
     }
 
+    for (const auto& computation : computations) {
+        if (std::shared_ptr<HdSt_OsdRefineComputationGPU> refinedComputation =
+            std::dynamic_pointer_cast<HdSt_OsdRefineComputationGPU>(
+                computation.first)) {
+            primvarId = TfHash::Combine(primvarId, 
+                                        refinedComputation->GetInterpolation());
+        }   
+    }
     HdBufferSpecVector bufferSpecs;
     HdStGetBufferSpecsFromCompuations(computations, &bufferSpecs);
 
@@ -1053,11 +1488,11 @@ HdStComputeSharedPrimvarId(
 
 void 
 HdStGetBufferSpecsFromCompuations(
-    HdStComputationSharedPtrVector const& computations,
+    HdStComputationComputeQueuePairVector const& computations,
     HdBufferSpecVector *bufferSpecs) 
 {
     for (auto const &compQueuePair : computations) {
-        HdComputationSharedPtr const& comp = compQueuePair.first;
+        HdStComputationSharedPtr const& comp = compQueuePair.first;
         if (comp->IsValid()) {
             comp->GetBufferSpecs(bufferSpecs);
         }

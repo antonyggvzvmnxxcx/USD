@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_SDF_LAYER_OFFSET_H
 #define PXR_USD_SDF_LAYER_OFFSET_H
@@ -28,14 +11,12 @@
 
 #include "pxr/pxr.h"
 #include "pxr/usd/sdf/api.h"
+#include "pxr/base/gf/timeCode.h"
 
-#include <boost/operators.hpp>
 #include <iosfwd>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
-
-class SdfTimeCode;
 
 /// \class SdfLayerOffset 
 ///
@@ -58,15 +39,15 @@ class SdfTimeCode;
 /// GetReferenceLayerOffset() methods (the latter is the referenceLayerOffset 
 /// property in Python) of the SdfPrimSpec class.
 ///
-class SdfLayerOffset : public boost::totally_ordered<SdfLayerOffset>
+class SdfLayerOffset
 {
 public:
     /// \name Constructors
     /// @{
 
     /// Constructs a new SdfLayerOffset instance.
-    SDF_API
-    explicit SdfLayerOffset(double offset = 0.0, double scale = 1.0);
+    explicit SdfLayerOffset(double offset = 0.0, double scale = 1.0)
+        : _offset(offset), _scale(scale) {}
 
     /// @}
 
@@ -85,10 +66,17 @@ public:
     /// Sets the time scale factor.
     void SetScale(double newScale) { _scale = newScale; }
 
-    /// Returns \c true if this is an identity transformation, with
-    /// an offset of 0.0 and a scale of 1.0.
-    SDF_API
-    bool IsIdentity() const;
+    /// Returns \c true if this is an identity transformation, with an offset of
+    /// 0.0 and a scale of 1.0.  Note that for historical reasons this uses
+    /// operator==() against a default-constructed instance, which, as noted in
+    /// the documentation for equality comparison, is a "fuzzy" equality.
+    bool IsIdentity() const {
+        // Check for the common case of exact identity.
+        if (_offset == 0.0 && _scale == 1.0) {
+            return true;
+        }
+        return *this == SdfLayerOffset {};
+    }
 
     /// Returns \c true if this offset is valid, i.e. both the offset and
     /// scale are finite (not infinite or NaN).  Note that a valid layer
@@ -123,14 +111,38 @@ public:
     /// \name Operators
     /// @{
 
-    /// Returns whether the offsets are equal.
+    /// Returns whether the offsets are equal.  For historical reasons, this
+    /// performs a "fuzzy" equality comparison.  If neither `*this` nor `rhs`
+    /// are valid by IsValid(), return true.  If both are valid and their scales
+    /// and offsets are within an implementation-defined epsilon, return true.
+    /// Otherwise return false.
     SDF_API
     bool operator==(const SdfLayerOffset &rhs) const;
+
+    /// \sa SdfLayerOffset::operator==
+    bool operator!=(const SdfLayerOffset &rhs) const {
+        return !(*this == rhs);
+    }
 
     /// Returns whether this offset is less than another.  The meaning
     /// of less than is somewhat arbitrary.
     SDF_API
     bool operator<(const SdfLayerOffset &rhs) const;
+
+    /// \sa SdfLayerOffset::operator<
+    bool operator>(const SdfLayerOffset& rhs) const {
+        return rhs < *this;
+    }
+
+    /// \sa SdfLayerOffset::operator<
+    bool operator>=(const SdfLayerOffset& rhs) const {
+        return !(*this < rhs);
+    }
+
+    /// \sa SdfLayerOffset::operator<
+    bool operator<=(const SdfLayerOffset& rhs) const {
+        return !(*this > rhs);
+    }
 
     /// Composes this with the offset \e rhs, such that the resulting
     /// offset is equivalent to first applying \e rhs and then \e *this.
@@ -143,7 +155,7 @@ public:
 
     /// Applies the offset to the given value.
     SDF_API
-    SdfTimeCode operator*(const SdfTimeCode &rhs) const;
+    GfTimeCode operator*(const GfTimeCode &rhs) const;
 
     /// @}
 

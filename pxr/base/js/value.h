@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_BASE_JS_VALUE_H
 #define PXR_BASE_JS_VALUE_H
@@ -29,12 +12,14 @@
 #include "pxr/pxr.h"
 #include "pxr/base/js/api.h"
 #include "pxr/base/js/types.h"
+#include "pxr/base/tf/delegatedCountPtr.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <type_traits>
+#include <variant>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -230,6 +215,11 @@ public:
     /// values are not equal.
     JS_API bool operator!=(const JsValue& other) const;
 
+    /// Swap the value held by \p lhs with the value held by \p rhs.
+    friend void swap(JsValue& lhs, JsValue& rhs) {
+        lhs._value.swap(rhs._value);
+    }
+
 private:
     template <typename T> 
     struct _InvalidTypeHelper : public std::false_type { };
@@ -266,8 +256,67 @@ private:
     bool _Is(uint64_t*) const { return IsUInt64(); }
     bool _Is(double*) const { return IsReal(); }
 
-    struct _Holder;
-    std::shared_ptr<_Holder> _holder;
+    // Base class for types held indirectly.
+    //
+    // JsValue holds objects, arrays and strings indirectly.  This serves two
+    // purposes.  First, JsValue holds JsObject, which holds JsValues so
+    // indirection avoids needing JsValue to be complete while defining
+    // JsValue.  Second, along with std::string, values of these types can be
+    // expensive to copy so they are reference counted instead.
+    //
+    // The template argument E is used to distinguish the holders in the
+    // JsValue's variant.
+    template <enum Type EnumValue>
+    struct _HolderBase
+    {
+    protected:
+        _HolderBase() = default;
+        ~_HolderBase() = default;
+
+    private:
+        friend void TfDelegatedCountIncrement(const _HolderBase *h) noexcept {
+            h->_refCount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        friend void TfDelegatedCountDecrement(const _HolderBase *h) noexcept {
+            const int rc = h->_refCount.fetch_sub(1, std::memory_order_release);
+            if (rc == 1) {
+                std::atomic_thread_fence(std::memory_order_acquire);
+                _Delete(h);
+            }
+        }
+
+        static JS_API void _Delete(const _HolderBase *) noexcept;
+
+    private:
+        mutable std::atomic<int> _refCount = 1;
+    };
+
+    template <typename> struct _Holder;
+    struct _IsValueEqualVisitor;
+
+    // A sentinel type held by default constructed JsValue objects, which
+    // corresponds to JSON 'null'.
+    struct _JsNull
+    {
+        bool operator==(const _JsNull& v) const {
+            return true;
+        }
+        bool operator!=(const _JsNull& v) const {
+            return false;
+        }
+    };
+
+    // The order these types are defined in the variant must match the
+    // order in which Type enumerators are defined.  uint64_t is
+    // handled as a special case in the implementation.
+    using _Variant = std::variant<
+        TfDelegatedCountPtr<_HolderBase<ObjectType>>,
+        TfDelegatedCountPtr<_HolderBase<ArrayType>>,
+        TfDelegatedCountPtr<_HolderBase<StringType>>,
+        bool, int64_t, double, _JsNull, uint64_t>;
+
+    _Variant _value;
 };
 
 template <typename T>

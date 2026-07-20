@@ -2,25 +2,8 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 
 import unittest
@@ -80,6 +63,17 @@ class TestVtValue(unittest.TestCase):
         self.assertEqual(Vt._test_ValueTypeName(u'hello'), 'string')
         self.assertEqual(Vt._test_ValueTypeName(Vt.Token('hello')), 'TfToken')
 
+        # Test that VtArrayEdit instances box into VtValue from-python
+        # correctly.  If they did not the returned type name would be
+        # 'TfPyObjWrapper'.
+        self.assertEqual(Vt._test_ValueTypeName(Vt.IntArrayEdit()),
+                         'VtArrayEdit<int>')
+        self.assertEqual(Vt._test_ValueTypeName(Vt.StringArrayEdit()),
+                         'VtArrayEdit<string>')
+        self.assertEqual(Vt._test_ValueTypeName(Vt.FloatArrayEdit()),
+                         'VtArrayEdit<float>')
+                         
+
     def test_IntValueRoundTrip(self):
         '''Make sure we correctly convert ints of various sizes in the value
         python bindings
@@ -112,6 +106,43 @@ class TestVtValue(unittest.TestCase):
             Vt._ReturnDictionary(bad1)
         with self.assertRaises(TypeError):
             Vt._ReturnDictionary(bad2)
+
+        # Test passing and returning python lists of dicts <->
+        # std::vector<VtDictionary>
+        testDictList = [{'foo':'bar'}, {'baz':123}, {'good':good}]
+        self.assertEqual(testDictList, Vt._DictionaryArrayIdent(testDictList))
+        self.assertEqual([], Vt._DictionaryArrayIdent([]))
+
+        with self.assertRaises(TypeError):
+            Vt._DictionaryArrayIdent('notAList')
+        with self.assertRaises(TypeError):
+            Vt._DictionaryArrayIdent(['notADict'])
+        with self.assertRaises(TypeError):
+            Vt._DictionaryArrayIdent([{1234:'keyNotAString'}])
+
+    def test_WrappedTypesComparable(self):
+        """
+        Makes sure that values wrapped in a value wrapper are still
+        equality-comparable.
+        """
+        t1 = Vt.Token("hello")
+        t2 = Vt.Token("hello")
+        t3 = Vt.Token("world")
+        f1 = Vt.Float(1.0)
+        f2 = Vt.Float(1.0)
+        d1 = Vt.Double(1.0)
+
+        self.assertEqual(t1, t2)
+        self.assertNotEqual(t1, t3)
+        self.assertNotEqual(t1, f1)
+        self.assertEqual(f1, f2)
+        self.assertNotEqual(f1, d1)
+
+    def test_ValueRef(self):
+        '''Check that wrapped functions taking VtValueRef work'''
+        self.assertEqual(Vt._test_ValueRefFromPython(123), 123)
+        self.assertEqual(Vt._test_ValueRefFromPython('hello'), 'hello')
+        self.assertIs(Vt._test_ValueRefFromPython(Vt.Bool(True)), True)
 
 if __name__ == '__main__':
     unittest.main()

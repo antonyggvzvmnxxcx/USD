@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #ifndef PXR_IMAGING_HGIGL_SHADERSECTION_H
@@ -46,7 +29,9 @@ public:
         const std::string &identifier,
         const HgiShaderSectionAttributeVector &attributes = {},
         const std::string &storageQualifier = std::string(),
-        const std::string &defaultValue = std::string());
+        const std::string &defaultValue = std::string(),
+        const std::string &arraySize = std::string(),
+        const std::string &blockInstanceIdentifier = std::string());
 
     HGIGL_API
     ~HgiGLShaderSection() override;
@@ -73,7 +58,11 @@ private:
     HgiGLShaderSection(const HgiGLShaderSection&) = delete;
 
     const std::string _storageQualifier;
+    const std::string _arraySize;
 };
+
+using HgiGLShaderSectionPtrVector = 
+    std::vector<HgiGLShaderSection*>;
 
 /// \class HgiGLMacroShaderSection
 ///
@@ -115,9 +104,14 @@ public:
     explicit HgiGLMemberShaderSection(
         const std::string &identifier,
         const std::string &typeName,
+        const HgiInterpolationType interpolation,
+        const HgiSamplingType sampling,
+        const HgiStorageType storage,
         const HgiShaderSectionAttributeVector &attributes,
         const std::string &storageQualifier = std::string(),
-        const std::string &defaultValue = std::string());
+        const std::string &defaultValue = std::string(),
+        const std::string &arraySize = std::string(),
+        const std::string &blockInstanceIdentifier = std::string());
 
     HGIGL_API
     ~HgiGLMemberShaderSection() override;
@@ -128,6 +122,15 @@ public:
     HGIGL_API
     void WriteType(std::ostream& ss) const override;
 
+    HGIGL_API
+    void WriteInterpolation(std::ostream& ss) const;
+    
+    HGIGL_API
+    void WriteSampling(std::ostream& ss) const;
+    
+    HGIGL_API
+    void WriteStorage(std::ostream& ss) const;
+
 private:
     HgiGLMemberShaderSection() = delete;
     HgiGLMemberShaderSection & operator=(
@@ -135,7 +138,13 @@ private:
     HgiGLMemberShaderSection(const HgiGLMemberShaderSection&) = delete;
 
     std::string _typeName;
+    HgiInterpolationType _interpolation;
+    HgiSamplingType _sampling;
+    HgiStorageType _storage;
 };
+
+using HgiGLMemberShaderSectionPtrVector = 
+    std::vector<HgiGLMemberShaderSection*>;
 
 /// \class HgiGLBlockShaderSection
 ///
@@ -161,7 +170,7 @@ private:
     const uint32_t _bindingNo;
 };
 
-/// \class HgiGLMemberShaderSection
+/// \class HgiGLTextureShaderSection
 ///
 /// Declares OpenGL textures, and their cross language function
 ///
@@ -174,6 +183,9 @@ public:
         const uint32_t layoutIndex,
         const uint32_t dimensions,
         const HgiFormat format,
+        const HgiShaderTextureType textureType,
+        const uint32_t arraySize,
+        const bool writable,
         const HgiShaderSectionAttributeVector &attributes,
         const std::string &defaultValue = std::string());
 
@@ -199,7 +211,106 @@ private:
 
     const uint32_t _dimensions;
     const HgiFormat _format;
+    const HgiShaderTextureType _textureType;
+    const uint32_t _arraySize;
+    const bool _writable;
     static const std::string _storageQualifier;
+};
+
+/// \class HgiGLBufferShaderSection
+///
+/// Declares OpenGL buffers, and their cross language function
+///
+class HgiGLBufferShaderSection final: public HgiGLShaderSection
+{
+public:
+    HGIGL_API
+    explicit HgiGLBufferShaderSection(
+        const std::string &identifier,
+        const uint32_t layoutIndex,
+        const std::string &type,
+        const HgiBindingType binding,
+        const std::string arraySize,
+        const HgiShaderSectionAttributeVector &attributes);
+
+    HGIGL_API
+    ~HgiGLBufferShaderSection() override;
+
+    HGIGL_API
+    void WriteType(std::ostream &ss) const override;
+
+    HGIGL_API
+    bool VisitGlobalMemberDeclarations(std::ostream &ss) override;
+
+private:
+    HgiGLBufferShaderSection() = delete;
+    HgiGLBufferShaderSection & operator=(
+        const HgiGLBufferShaderSection&) = delete;
+    HgiGLBufferShaderSection(const HgiGLBufferShaderSection&) = delete;
+
+    const std::string _type;
+    const HgiBindingType _binding;
+    const std::string _arraySize;
+};
+
+/// \class HgiGLKeywordShaderSection
+///
+/// Declares reserved OpenGL shader inputs, and their cross language function
+///
+class HgiGLKeywordShaderSection final: public HgiGLShaderSection
+{
+public:
+    HGIGL_API
+    explicit HgiGLKeywordShaderSection(
+        const std::string &identifier,
+        const std::string &type,
+        const std::string &glKeyword);
+
+    HGIGL_API
+    ~HgiGLKeywordShaderSection() override;
+
+    HGIGL_API
+    void WriteType(std::ostream &ss) const override;
+
+    HGIGL_API
+    bool VisitGlobalMemberDeclarations(std::ostream &ss) override;
+
+private:
+    HgiGLKeywordShaderSection() = delete;
+    HgiGLKeywordShaderSection & operator=(
+        const HgiGLKeywordShaderSection&) = delete;
+    HgiGLKeywordShaderSection(const HgiGLKeywordShaderSection&) = delete;
+
+    const std::string _type;
+    const std::string _keyword;
+};
+
+/// \class HgiGLInterstageBlockShaderSection
+///
+/// Defines and writes out an interstage interface block
+///
+class HgiGLInterstageBlockShaderSection final: public HgiGLShaderSection
+{
+public:
+    HGIGL_API
+    explicit HgiGLInterstageBlockShaderSection(
+        const std::string &blockIdentifier,
+        const std::string &blockInstanceIdentifier,
+        const std::string &qualifier,
+        const std::string &arraySize,
+        const HgiGLMemberShaderSectionPtrVector &members);
+
+    HGIGL_API
+    bool VisitGlobalMemberDeclarations(std::ostream &ss) override;
+
+private:
+    HgiGLInterstageBlockShaderSection() = delete;
+    HgiGLInterstageBlockShaderSection & operator=(
+        const HgiGLInterstageBlockShaderSection&) = delete;
+    HgiGLInterstageBlockShaderSection(const HgiGLInterstageBlockShaderSection&) = delete;
+
+    const std::string _qualifier;
+    const HgiGLMemberShaderSectionPtrVector _members;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

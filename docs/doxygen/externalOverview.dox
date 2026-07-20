@@ -28,7 +28,7 @@ or jump directly into the core of the \ref usd_page_front "Usd API."
 
 <HR>
 
-USD is distributed under a <a href="https://github.com/PixarAnimationStudios/USD/blob/master/LICENSE.txt"> modified Apache 2.0 license</a>
+USD is distributed under the <a href="https://openusd.org/license"> TOST license</a>
 */
 
 /*!
@@ -105,7 +105,7 @@ Following is a deeper indexing of the four packages.
 
 - \ref tf_page_front module is a catch-all for low-level,
   commonly used services developed at Pixar, including facilities for memory
-  tracking, error reporting and debugging, string utilities, boost python
+  tracking, error reporting and debugging, string utilities, Python
   wrapping aids, threading/synchronization tools, registry and singleton
   management, smart pointers, and "observer pattern" support, which we call
   "notification".
@@ -128,9 +128,8 @@ Following is a deeper indexing of the four packages.
   is able to recognize and serialize.  It provides a copy-on-write
   array-type, VtArray, which is used for all array types in Usd, and an
   efficient type-erasure wrapper class, VtValue, that also provides datatype
-  conversion facilities and support for unboxing python objects from boost
-  python.  VtValue is supported in all Usd API for getting and setting
-  values.
+  conversion facilities and support for unboxing Python objects.
+  VtValue is supported in all Usd API for getting and setting values.
 
 - \ref work_page_front module provides a thin abstraction layer on top of
   Intel's TBB (Thread Building Blocks), and is leveraged extensively in Usd
@@ -193,6 +192,12 @@ modules that layer on top of the core.  In low-to-high order, the modules are:
   encode UV's and various user-defined fields over a primitive.  The majority
   of the schema classes are produced entirely via the \em usdGenSchema code
   generator included with the core.
+
+- \ref usdPhysics_page_front : The primary physics-supporting schema module, 
+  UsdPhysics provides physics description of the USD prims (rigid bodies, 
+  joints, scenes, collisions, etc.). Physics schema also defines physics 
+  related metrics like the mass units, kilogramsPerUnit (\ref 
+  UsdPhysicsTokensType::kilogramsPerUnit).
 
 - \ref usdShade_page_front Schema module that defines Looks, Shaders,
   connectible Parameters, with API for building shading networks and

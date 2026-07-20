@@ -2,25 +2,8 @@
 #
 # Copyright 2017 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 
 # NOTE: 
 # Because Usd does not guarantee a stable assignment of
@@ -32,6 +15,10 @@ from __future__ import print_function
 
 from pxr import Usd, Sdf, Tf
 import unittest
+
+def GetSourcePrimIndexPath(stage, prototypePath):
+    prototype = stage.GetPrimAtPath(prototypePath)
+    return prototype._GetSourcePrimIndex().rootNode.path
 
 def ValidateExpectedInstances(stage, expectedInstances):
     """
@@ -54,10 +41,10 @@ def ValidateExpectedInstances(stage, expectedInstances):
 
         # Validate that the prototype prim's source prim index is one of
         # the instance's prim indexes.
-        prototypePrimIndexPath = prototype._GetSourcePrimIndex().rootNode.path
+        prototypePrimIndexPath = GetSourcePrimIndexPath(stage, prototypePath)
         instancePrimIndexPaths = [
-            stage.GetPrimAtPath(p)._GetSourcePrimIndex().rootNode.path
-            for p in instancePaths]
+            GetSourcePrimIndexPath(stage, p) for p in instancePaths
+        ]
 
         assert prototypePrimIndexPath in instancePrimIndexPaths, \
             "Prototype <%s> using unexpected prim index <%s>, expected " \
@@ -138,6 +125,7 @@ def ValidateAndDumpUsdStage(stage):
         assert prototype.IsGroup()
         assert not prototype.IsAbstract()
         assert prototype.IsDefined()
+        assert prototype.HasDefiningSpecifier()
 
         assert prototype.IsPrototype()
         assert prototype.IsInPrototype()
@@ -489,7 +477,7 @@ class TestUsdInstancing(unittest.TestCase):
             { '/__Prototype_2': instances,
               '/__Prototype_3': ['/__Prototype_2/B'] })
         ValidateExpectedChanges(nl,
-            ['/A_1', '/A_2', '/A_3'])
+            ['/A_1', '/A_2', '/A_3', '/__Prototype_1', '/__Prototype_2', '/__Prototype_3'])
 
         print("-" * 60)
         print("Unloading instances")
@@ -498,7 +486,7 @@ class TestUsdInstancing(unittest.TestCase):
         ValidateExpectedInstances(s,
             { '/__Prototype_4': instances })
         ValidateExpectedChanges(nl,
-            ['/A_1', '/A_2', '/A_3'])
+            ['/A_1', '/A_2', '/A_3', '/__Prototype_2', '/__Prototype_3', '/__Prototype_4'])
 
         # Stress-test by repeatedly loading and unloading instances.
         # Don't want too much output, so we delete the notice listener.
@@ -535,7 +523,7 @@ class TestUsdInstancing(unittest.TestCase):
         model_1.Load()
 
         ValidateExpectedInstances(s, { '/__Prototype_1': ['/Model_1'] })
-        ValidateExpectedChanges(nl, ['/Model_1'])
+        ValidateExpectedChanges(nl, ['/Model_1', '/__Prototype_1'])
 
         print("-" * 60)
         print("Loading instance /Model_2")
@@ -551,7 +539,7 @@ class TestUsdInstancing(unittest.TestCase):
         model_1.Unload()
 
         ValidateExpectedInstances(s, { '/__Prototype_1': ['/Model_2'] })
-        ValidateExpectedChanges(nl, ['/Model_1'])
+        ValidateExpectedChanges(nl, ['/Model_1', '/__Prototype_1'])
 
         print("-" * 60)
         print("Loading instance /ModelGroup_1")
@@ -561,7 +549,7 @@ class TestUsdInstancing(unittest.TestCase):
         ValidateExpectedInstances(s, 
             { '/__Prototype_1': ['/Model_2', '/__Prototype_2/Model'],
               '/__Prototype_2': ['/ModelGroup_1'] })
-        ValidateExpectedChanges(nl, ['/ModelGroup_1'])
+        ValidateExpectedChanges(nl, ['/ModelGroup_1', '/__Prototype_2'])
 
         print("-" * 60)
         print("Loading instance /ModelGroup_2")
@@ -580,7 +568,7 @@ class TestUsdInstancing(unittest.TestCase):
         ValidateExpectedInstances(s, 
             { '/__Prototype_1': ['/Model_2', '/__Prototype_2/Model'],
               '/__Prototype_2': ['/ModelGroup_2'] })
-        ValidateExpectedChanges(nl, ['/ModelGroup_1'])
+        ValidateExpectedChanges(nl, ['/ModelGroup_1', '/__Prototype_2'])
 
     def test_Payloads2(self):
         """Test instancing and change processing when unloading the last
@@ -599,12 +587,21 @@ class TestUsdInstancing(unittest.TestCase):
         # Model_1 and one shared by all the unloaded instances.
         print("-" * 60)
         print("Loading instance /Model_1")
+
+        # We expect resync notices for the newly-loaded /Model_1 and the
+        # corresponding new prototype /__Prototype_2. If /Model_1's prim
+        # index is the source for /__Prototype_1, we also expect a resync
+        # notice for that prototype since its source prim index will change.
+        expectedResyncs = ['/Model_1', '/__Prototype_2']
+        if GetSourcePrimIndexPath(s, '/__Prototype_1') == '/Model_1':
+            expectedResyncs.append('/__Prototype_1')
+
         s.Load('/Model_1')
 
         ValidateExpectedInstances(s,
             { '/__Prototype_1': ['/Model_2', '/Model_3', '/Model_4' ],
               '/__Prototype_2': ['/Model_1'] })
-        ValidateExpectedChanges(nl, ['/Model_1'])
+        ValidateExpectedChanges(nl, expectedResyncs)
 
         # Now unload Model_1 and load Model_2 in the same call. Model_2
         # should now be attached to the prototype previously used by Model_1,
@@ -612,31 +609,52 @@ class TestUsdInstancing(unittest.TestCase):
         # unloaded instances.
         print("-" * 60)
         print("Unload instance /Model_1, load instance /Model_2")
+
+        # We expect resync notices for the newly-loaded /Model_2 and
+        # newly-unloaded /Model_1. We also expect a resync for /__Prototype_2
+        # since its source prim index will change from /Model_1 to /Model_2.
+        # If /Model_2's prim index is the source for /__Prototype_1, we also
+        # expect a resync notice for that prototype since its source prim
+        # index will change.
+        expectedResyncs = ['/Model_1', '/Model_2', '/__Prototype_2']
+        if GetSourcePrimIndexPath(s, '/__Prototype_1') == '/Model_2':
+            expectedResyncs.append('/__Prototype_1')
+
         s.LoadAndUnload(['/Model_2'], ['/Model_1'])
 
         ValidateExpectedInstances(s,
             { '/__Prototype_1': ['/Model_1', '/Model_3', '/Model_4' ],
               '/__Prototype_2': ['/Model_2'] })
-        ValidateExpectedChanges(nl, ['/Model_1', '/Model_2'])
+        ValidateExpectedChanges(nl, expectedResyncs)
 
         # Continue loading and unloading instances in the same way.
         print("-" * 60)
         print("Unload instance /Model_2, load instance /Model_3")
+
+        expectedResyncs = ['/Model_2', '/Model_3', '/__Prototype_2']
+        if GetSourcePrimIndexPath(s, '/__Prototype_1') == '/Model_3':
+            expectedResyncs.append('/__Prototype_1')
+
         s.LoadAndUnload(['/Model_3'], ['/Model_2'])
 
         ValidateExpectedInstances(s,
             { '/__Prototype_1': ['/Model_1', '/Model_2', '/Model_4' ],
               '/__Prototype_2': ['/Model_3'] })
-        ValidateExpectedChanges(nl, ['/Model_2', '/Model_3'])
+        ValidateExpectedChanges(nl, expectedResyncs)
 
         print("-" * 60)
         print("Unload instance /Model_3, load instance /Model_4")
+
+        expectedResyncs = ['/Model_3', '/Model_4', '/__Prototype_2']
+        if GetSourcePrimIndexPath(s, '/__Prototype_1') == '/Model_4':
+            expectedResyncs.append('/__Prototype_1')
+
         s.LoadAndUnload(['/Model_4'], ['/Model_3'])
 
         ValidateExpectedInstances(s,
             { '/__Prototype_1': ['/Model_1', '/Model_2', '/Model_3' ],
               '/__Prototype_2': ['/Model_4'] })
-        ValidateExpectedChanges(nl, ['/Model_3', '/Model_4'])
+        ValidateExpectedChanges(nl, expectedResyncs)
 
     def test_Deactivated(self):
         """Test instancing and change processing when activating and
@@ -724,12 +742,21 @@ class TestUsdInstancing(unittest.TestCase):
         ValidateExpectedInstances(s, { '/__Prototype_1' : [expectedInstance] })
         ValidateExpectedChanges(nl, [primPathToDeactivate, '/__Prototype_1'])
 
-        # Now author a significant change to the prim referenced by both
-        # instances. This should cause a new prototype to be created and the
-        # old prototype to be removed.
+        # Author a new composition arc on the prim referenced by both
+        # instances. Since the new composition arc is behind a reference
+        # arc, it is not considered part of the instancing key and does
+        # not cause a new prototype to be created.
         s.GetPrimAtPath('/Reference').GetInherits().AddInherit('/Class')
-        ValidateExpectedInstances(s, { '/__Prototype_2' : [expectedInstance] })
+        ValidateExpectedInstances(s, { '/__Prototype_1' : [expectedInstance] })
         ValidateExpectedChanges(nl, ['/Reference', expectedInstance, 
+                                     '/__Prototype_1'])
+
+        # Author a new composition arc on the remaining active instance.
+        # This should cause a new prototype to be created and the old
+        # prototype to be removed.
+        s.GetPrimAtPath(expectedInstance).GetInherits().AddInherit('/Class_2')
+        ValidateExpectedInstances(s, { '/__Prototype_2' : [expectedInstance] })
+        ValidateExpectedChanges(nl, [expectedInstance, 
                                      '/__Prototype_1', '/__Prototype_2'])
 
     def test_VariantSelections(self):
@@ -910,9 +937,9 @@ class TestUsdInstancing(unittest.TestCase):
                                  '/SubrootRef_2', 
                                  '/SubrootRef_3'] })
 
-        # Now add an over for /RootRef/Ref1_Child. This now gets included in 
-        # the instance key for SubrootRef_3 so it uses a different prototype
-        # SubrootRef 1 and 2.
+        # Add an over for /RootRef/Ref1_Child in the root layer. This has no
+        # effect on the prototype for /SubrootRef_3 because this is a prohibited
+        # override on an instance child that is ignored by the instancing key.
         rootLayer = s.GetRootLayer()
         Sdf.PrimSpec(rootLayer.GetPrimAtPath('/RootRef'), 'Ref1_Child', 
                      Sdf.SpecifierOver)
@@ -920,9 +947,110 @@ class TestUsdInstancing(unittest.TestCase):
             { '/__Prototype_1': ['/RootRef'],
               '/__Prototype_2': ['/__Prototype_1/Ref1_Child'],
               '/__Prototype_3': ['/SubrootRef_1', 
+                                 '/SubrootRef_2', 
+                                 '/SubrootRef_3'] })
+
+        # Remove the instanceable flag from /RootRef. /__Prototype_1 goes
+        # away since there are no more instances. Because the over on
+        # /RootRef/Ref1_Child in the root layer is no longer prohibited, 
+        # /SubrootRef_3's instance key now includes the internal reference
+        # to that prim, so it now uses a different prototype from
+        # /SubrootRef_1 and 2.
+        rootLayer.GetPrimAtPath('/RootRef').instanceable = False
+        ValidateExpectedInstances(s,
+            { '/__Prototype_2': ['/RootRef/Ref1_Child'],
+              '/__Prototype_3': ['/SubrootRef_1',
                                  '/SubrootRef_2'],
               '/__Prototype_4': ['/SubrootRef_3'] })
 
+    def test_InternalReferencesAndImpliedArcs(self):
+        """Test instancing behavior with internal references and implied
+        arcs."""
+
+        s = OpenStage('internal_refs/root.usda')
+
+        # Both /Parent/Child and /ParentRef/Child should share the same
+        # prototype even though /ParentRef/Child has an additional
+        # ancestral arc, since ancestral arcs are not considered in the
+        # instancing key.
+        ValidateExpectedInstances(s,
+            { '/__Prototype_1': ['/Parent/Child', '/ParentRef/Child'] })
+
+    def test_LocalOverridesAndImpliedArcs(self):
+        """Test that local overrides on prims beneath an instance that are
+        composed into another prim via an implied arc are ignored."""
+        s = OpenStage('implied_arcs/root.usda')
+        nl = NoticeListener()
+        
+        ValidateExpectedInstances(s,
+            { '/__Prototype_1': ['/Root/Inherits_1', '/Root/Inherits_2'] })
+
+        # The local overrides on the "class_widget" and "widget" prims beneath
+        # /Inherits_1 and /Inherits_2 should be ignored, so the opinions for
+        # the radius attribute come from across the shared reference.
+        self.assertEqual(
+            s.GetAttributeAtPath('/__Prototype_1/widget.radius').Get(), 5)
+        self.assertEqual(
+            s.GetAttributeAtPath('/__Prototype_1/class_widget.radius').Get(), 1)
+
+        # Force the ancestor "Root" prim of the instances to resync by adding
+        # a reference arc. Since this is a significant resync, "Inherits_1" and
+        # "Inherits_2" should also be resynced, but the local overrides should
+        # still be ignored and the attribute values in the prototype should be
+        # unchanged.
+        print("-" * 60)
+        print("Adding composition arc to ancestor of instances")
+        rootLayer = Sdf.Layer.Find('implied_arcs/root.usda')
+        rootLayer.GetPrimAtPath('/Root').referenceList.explicitItems.append(
+            Sdf.Reference(primPath='/LocalRef'))
+
+        ValidateExpectedChanges(nl, ['/Root', '/__Prototype_1'])
+
+        self.assertEqual(
+            s.GetAttributeAtPath('/__Prototype_1/widget.radius').Get(), 5)
+        self.assertEqual(
+            s.GetAttributeAtPath('/__Prototype_1/class_widget.radius').Get(), 1)
+
+        # Force the "Inherits_1" and "Inherits_2" instances to resync by adding 
+        # a reference arc. This will cause the instances to be assigned to a new
+        # prototype, but the local overrides should still be ignored and the
+        # attribute values in the new prototype should be unchanged.
+        print("-" * 60)
+        print("Adding composition arc to instances")
+        with Sdf.ChangeBlock():
+            for p in ['/Root/Inherits_1', '/Root/Inherits_2']:
+                rootLayer.GetPrimAtPath(p).referenceList.explicitItems.append(
+                    Sdf.Reference(primPath='/LocalRef'))
+
+        ValidateExpectedChanges(nl, 
+            ['/Root/Inherits_1', '/Root/Inherits_2',
+             '/__Prototype_1', '/__Prototype_2'])
+
+        ValidateExpectedInstances(s,
+            { '/__Prototype_2': ['/Root/Inherits_1', '/Root/Inherits_2'] })
+
+        self.assertEqual(
+            s.GetAttributeAtPath('/__Prototype_2/widget.radius').Get(), 5)
+        self.assertEqual(
+            s.GetAttributeAtPath('/__Prototype_2/class_widget.radius').Get(), 1)
+
+        # Force the child "widget" prim of the instances to resync by adding
+        # a reference arc. The local overrides on the "widget" prim should
+        # still be ignored and the attribute values in the prototype should be
+        # unchanged.
+        print("-" * 60)
+        print("Adding composition arc to child of instance")
+        refLayer = Sdf.Layer.Find('implied_arcs/ref.usda')
+        refChildPrim = refLayer.GetPrimAtPath('/Ref_Inherits/widget')
+        refChildPrim.referenceList.explicitItems.append(
+            Sdf.Reference(primPath='/LocalRef'))
+        
+        ValidateExpectedChanges(nl, ['/__Prototype_2/widget'])
+
+        self.assertEqual(
+            s.GetAttributeAtPath('/__Prototype_2/widget.radius').Get(), 5)
+        self.assertEqual(
+            s.GetAttributeAtPath('/__Prototype_2/class_widget.radius').Get(), 1)
 
     def test_PropertyChanges(self):
         """Test that changes to properties that affect prototypes cause the

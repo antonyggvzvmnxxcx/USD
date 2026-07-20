@@ -1,25 +1,8 @@
 //
 // Copyright 2018 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #ifndef PXR_BASE_TRACE_AGGREGATE_NODE_H
@@ -63,41 +46,28 @@ public:
 
     using TimeStamp = TraceEvent::TimeStamp;
 
-    // This class is only used for validity checks.
-    // FIXME: This class should be removed.
-    class Id
-    {
-    public:
-        Id() : _valid(false) {}
-        Id(const TraceThreadId&) : _valid(true) {}
-        bool IsValid() const { return _valid; }
-    private:
-        bool _valid;
-    };
-
     static ThisRefPtr New() {
-        return This::New(Id(), TfToken("root"), 0, 0);
+        return This::New(TfToken("root"), 0, 0);
     }
 
-    static ThisRefPtr New(const Id &id,
-                          const TfToken &key,
+    static ThisRefPtr New(const TfToken &key,
                           const TimeStamp ts,
                           const int count = 1,
                           const int exclusiveCount = 1) {
-        return TfCreateRefPtr(new This(id, key, ts, count, exclusiveCount));
+        return TfCreateRefPtr(new This(key, ts, count, exclusiveCount));
     }
 
     TRACE_API TraceAggregateNodeRefPtr 
-    Append(Id id, const TfToken &key, TimeStamp ts,
-           int c = 1, int xc = 1);
+    Append(const TfToken &key, TimeStamp ts,int c = 1, int xc = 1);
+
+    // Same as Append() but return nothing.
+    TRACE_API void
+    AppendBlind(const TfToken &key, TimeStamp ts, int c = 1, int xc = 1);
 
     TRACE_API void Append(TraceAggregateNodeRefPtr child);
 
     /// Returns the node's key.
-    TfToken GetKey() { return _key;}
-
-    /// Returns the node's id.
-    const Id &GetId() { return _id;}
+    const TfToken& GetKey() { return _key;}
 
     /// \name Profile Data Accessors
     /// @{
@@ -167,6 +137,18 @@ public:
         return _expanded;
     }
 
+    /// Subtract \p scopeOverhead cost times the number of descendant nodes from
+    /// the inclusive time of each node.  If \p numDescendantNodes is not null,
+    /// add the number of nodes descendant to this node (not including this
+    /// node) to *numDescendantNodes.  Also for any nodes with descendants that
+    /// are "noisy" wrt \p timerQuantum, do not subtract their times from the
+    /// parent's exclusive time, but instead set their times to zero.  This way
+    /// we retain the sample count, but do not pollute the parent node's
+    /// exclusive time with noise.
+    TRACE_API void AdjustForOverheadAndNoise(
+        TimeStamp scopeOverhead, TimeStamp timerQuantum,
+        uint64_t *numDescendantNodes = nullptr);
+
     /// \name Recursion
     /// @{
 
@@ -196,9 +178,9 @@ public:
 
 private:
 
-    TraceAggregateNode(const Id &id, const TfToken &key, TimeStamp ts,
+    TraceAggregateNode(const TfToken &key, TimeStamp ts,
               int count, int exclusiveCount) :
-        _id(id), _key(key), _ts(ts), _exclusiveTs(ts),
+        _key(key), _ts(ts), _exclusiveTs(ts),
         _count(count), _exclusiveCount(exclusiveCount),
         _recursiveCount(count), _recursiveExclusiveTs(ts), _expanded(false), 
         _isRecursionMarker(false), _isRecursionHead(false),
@@ -210,9 +192,9 @@ private:
 
     void _SetAsRecursionMarker(TraceAggregateNodePtr parent);
 
-    Id _id;
-    TfToken _key;
-
+    TraceAggregateNode *_GetChildRaw(const TfToken &key);
+    
+    const TfToken _key;
     TimeStamp _ts;  
     TimeStamp _exclusiveTs;
     int _count;

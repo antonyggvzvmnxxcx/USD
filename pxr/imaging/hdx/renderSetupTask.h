@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HDX_RENDER_SETUP_TASK_H
 #define PXR_IMAGING_HDX_RENDER_SETUP_TASK_H
@@ -39,6 +22,7 @@
 #include "pxr/base/gf/vec4d.h"
 
 #include <memory>
+#include <optional>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -68,6 +52,8 @@ class HdStRenderPassState;
 class HdxRenderSetupTask : public HdTask
 {
 public:
+    using TaskParams = HdxRenderTaskParams;
+
     HDX_API
     HdxRenderSetupTask(HdSceneDelegate* delegate, SdfPath const& id);
 
@@ -96,26 +82,32 @@ public:
     HDX_API
     void Prepare(HdTaskContext* ctx,
                  HdRenderIndex* renderIndex) override;
-    
+
     /// Execute render pass task
     HDX_API
     void Execute(HdTaskContext* ctx) override;
 
+    HDX_API
+    static void
+    SyncParamsHelper(
+        const HdRenderPassStateSharedPtr& renderPassState,
+        const HdxRenderTaskParams& params);
+
 private:
     HdRenderPassStateSharedPtr _renderPassState;
     HdStRenderPassShaderSharedPtr _colorRenderPassShader;
-    HdStRenderPassShaderSharedPtr _idRenderPassShader;
     SdfPath _cameraId;
     CameraUtilFraming _framing;
-    std::pair<bool, CameraUtilConformWindowPolicy> _overrideWindowPolicy;
+    std::optional<CameraUtilConformWindowPolicy> _overrideWindowPolicy;
     // Used when client did not specify the camera framing (more expressive
     // and preferred).
     GfVec4d _viewport;
     HdRenderPassAovBindingVector _aovBindings;
+    HdRenderPassAovBindingVector _aovInputBindings;
 
     void _SetRenderpassShadersForStorm(
-        HdxRenderTaskParams const& params,
-        HdStRenderPassState *renderPassState);
+        HdStRenderPassState *renderPassState,
+        HdResourceRegistrySharedPtr const &resourceRegistry);
 
     HdRenderPassStateSharedPtr &_GetRenderPassState(HdRenderIndex* renderIndex);
 
@@ -140,10 +132,9 @@ struct HdxRenderTaskParams
         , pointColor(GfVec4f(0,0,0,1))
         , pointSize(3.0)
         , enableLighting(false)
-        , enableIdRender(false)
         , alphaThreshold(0.0)
-        , enableSceneMaterials(true)
         , enableSceneLights(true)
+        , enableClipping(true)
         // Selection/Masking params
         , maskColor(1.0f, 0.0f, 0.0f, 1.0f)
         , indicatorColor(0.0f, 1.0f, 0.0f, 1.0f)
@@ -176,7 +167,6 @@ struct HdxRenderTaskParams
         // Camera framing and viewer state
         , viewport(0.0)
         , cullStyle(HdCullStyleBackUnlessDoubleSided)
-        , overrideWindowPolicy{false, CameraUtilFit}
         {}
 
     // ---------------------------------------------------------------------- //
@@ -190,10 +180,9 @@ struct HdxRenderTaskParams
     GfVec4f pointColor;
     float pointSize;
     bool enableLighting;
-    bool enableIdRender;
     float alphaThreshold;
-    bool enableSceneMaterials;
     bool enableSceneLights;
+    bool enableClipping;
 
     // Selection/Masking params
     GfVec4f maskColor;
@@ -204,6 +193,7 @@ struct HdxRenderTaskParams
     // XXX: As a transitional API, if this is empty it indicates the renderer
     // should write color and depth to the GL framebuffer.
     HdRenderPassAovBindingVector aovBindings;
+    HdRenderPassAovBindingVector aovInputBindings;
 
     // ---------------------------------------------------------------------- //
     // Render pipeline state for rasterizers.
@@ -255,7 +245,7 @@ struct HdxRenderTaskParams
     // Only used if framing is invalid.
     GfVec4d viewport;
     HdCullStyle cullStyle;
-    std::pair<bool, CameraUtilConformWindowPolicy> overrideWindowPolicy;
+    std::optional<CameraUtilConformWindowPolicy> overrideWindowPolicy;
 };
 
 // VtValue requirements

@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_ST_TEXTURE_OBJECT_H
 #define PXR_IMAGING_HD_ST_TEXTURE_OBJECT_H
@@ -28,7 +11,7 @@
 #include "pxr/imaging/hdSt/api.h"
 
 #include "pxr/imaging/hdSt/textureIdentifier.h"
-#include "pxr/imaging/hd/enums.h"
+#include "pxr/imaging/hdSt/enums.h"
 #include "pxr/imaging/hd/types.h"
 
 #include "pxr/imaging/hgi/handle.h"
@@ -76,6 +59,10 @@ public:
     HDST_API
     void SetTargetMemory(size_t);
 
+    /// Returns the actual amount of memory committed to the GPU.
+    HDST_API
+    virtual size_t GetCommittedSize() const = 0;
+
     /// Is texture valid? Only correct after commit phase.
     ///
     /// E.g., no file at given file path. Consulted by clients to
@@ -87,7 +74,7 @@ public:
     /// Get texture type
     ///
     HDST_API
-    virtual HdTextureType GetTextureType() const = 0;
+    virtual HdStTextureType GetTextureType() const = 0;
 
     HDST_API
     virtual ~HdStTextureObject();
@@ -150,11 +137,12 @@ private:
 
 /// \class HdStUvTextureObject
 ///
-/// A base class for uv textures.
+/// A base class for uv textures (including cubemaps).
 ///
 class HdStUvTextureObject : public HdStTextureObject
 {
 public:
+    HDST_API
     ~HdStUvTextureObject() override;
 
     /// Get the handle to the actual GPU resource.
@@ -173,27 +161,38 @@ public:
     }
 
     HDST_API
-    HdTextureType GetTextureType() const override final;
+    HdStTextureType GetTextureType() const override final;
+
+    HDST_API
+    size_t GetCommittedSize() const override;
 
 protected:
+    HDST_API
     HdStUvTextureObject(
         const HdStTextureIdentifier &textureId,
         HdSt_TextureObjectRegistry * textureObjectRegistry);
 
+    HDST_API
     void _SetWrapParameters(
         const std::pair<HdWrap, HdWrap> &wrapParameters);
 
+    HDST_API
     void _SetCpuData(std::unique_ptr<HdStTextureCpuData> &&);
+    HDST_API
     HdStTextureCpuData * _GetCpuData() const;
 
+    HDST_API
     void _CreateTexture(const HgiTextureDesc &desc);
+    HDST_API
     void _GenerateMipmaps();
+    HDST_API
     void _DestroyTexture();
 
 private:
     std::pair<HdWrap, HdWrap> _wrapParameters;
     std::unique_ptr<HdStTextureCpuData> _cpuData;
     HgiTextureHandle _gpuTexture;
+    HdStTextureType _textureType;
 };
 
 /// \class HdAssetStUvTextureObject
@@ -220,6 +219,9 @@ protected:
 
     HDST_API
     void _Commit() override;
+
+private:
+    bool _valid;
 };
 
 /// \class HdStFieldTextureObject
@@ -263,7 +265,10 @@ public:
     bool IsValid() const override;
 
     HDST_API
-    HdTextureType GetTextureType() const override;
+    HdStTextureType GetTextureType() const override;
+
+    HDST_API
+    size_t GetCommittedSize() const override;
 
 protected:
     HDST_API
@@ -277,28 +282,34 @@ private:
     GfBBox3d _bbox;
     GfMatrix4d _samplingTransform;
     HgiTextureHandle _gpuTexture;
+    bool _valid;
 };
 
-template<HdTextureType textureType>
+template<HdStTextureType textureType>
 struct HdSt_TypedTextureObjectHelper;
 
 /// \class HdStTypedTextureObject
 ///
 /// A template alias such that, e.g., HdStUvTextureObject can be
-/// accessed as HdStTypedTextureObject<HdTextureType::Uv>.
+/// accessed as HdStTypedTextureObject<HdStTextureType::Uv>.
 ///
-template<HdTextureType textureType>
+template<HdStTextureType textureType>
 using HdStTypedTextureObject =
     typename HdSt_TypedTextureObjectHelper<textureType>::type;
 
 template<>
-struct HdSt_TypedTextureObjectHelper<HdTextureType::Uv> {
+struct HdSt_TypedTextureObjectHelper<HdStTextureType::Uv> {
     using type = HdStUvTextureObject;
 };
 
 template<>
-struct HdSt_TypedTextureObjectHelper<HdTextureType::Field> {
+struct HdSt_TypedTextureObjectHelper<HdStTextureType::Field> {
     using type = HdStFieldTextureObject;
+};
+
+template<>
+struct HdSt_TypedTextureObjectHelper<HdStTextureType::Cubemap> {
+    using type = HdStUvTextureObject;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

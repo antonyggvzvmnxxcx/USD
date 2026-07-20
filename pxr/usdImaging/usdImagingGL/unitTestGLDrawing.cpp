@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 
@@ -30,6 +13,11 @@
 #include "pxr/imaging/glf/diagnostic.h"
 #include "pxr/imaging/glf/drawTarget.h"
 #include "pxr/imaging/garch/glDebugWindow.h"
+
+#include "pxr/imaging/hdSt/textureUtils.h"
+#include "pxr/imaging/hio/image.h"
+#include "pxr/imaging/hgi/hgi.h"
+#include "pxr/imaging/hgi/texture.h"
 
 #include "pxr/base/arch/attributes.h"
 #include "pxr/base/gf/vec2i.h"
@@ -61,43 +49,56 @@ static void UsdImagingGL_UnitTestHelper_InitPlugins()
 
 ////////////////////////////////////////////////////////////
 
-class UsdImagingGL_UnitTestWindow : public GarchGLDebugWindow {
-public:
-    typedef UsdImagingGL_UnitTestWindow This;
-
+class UsdImagingGL_UnitTestWindow : public GarchGLDebugWindow
+{
 public:
     UsdImagingGL_UnitTestWindow(UsdImagingGL_UnitTestGLDrawing * unitTest,
                                 int w, int h);
-    virtual ~UsdImagingGL_UnitTestWindow();
+    ~UsdImagingGL_UnitTestWindow() override;
 
     void DrawOffscreen();
 
     bool WriteToFile(std::string const & attachment, 
                      std::string const & filename);
 
-    // GarchGLDebugWIndow overrides;
-    virtual void OnInitializeGL();
-    virtual void OnUninitializeGL();
-    virtual void OnPaintGL();
-    virtual void OnKeyRelease(int key);
-    virtual void OnMousePress(int button, int x, int y, int modKeys);
-    virtual void OnMouseRelease(int button, int x, int y, int modKeys);
-    virtual void OnMouseMove(int x, int y, int modKeys);
+    void OnInitializeGL() override;
+    void OnUninitializeGL() override;
+    void OnPaintGL() override;
+    void OnKeyRelease(int key) override;
+    void OnMousePress(int button, int x, int y, int modKeys) override;
+    void OnMouseRelease(int button, int x, int y, int modKeys) override;
+    void OnMouseMove(int x, int y, int modKeys) override;
 
 private:
+    void _ClearPresentationOutput();
+
     UsdImagingGL_UnitTestGLDrawing *_unitTest;
     GlfDrawTargetRefPtr _drawTarget;
+    bool _clearedOnce;
 };
 
 UsdImagingGL_UnitTestWindow::UsdImagingGL_UnitTestWindow(
     UsdImagingGL_UnitTestGLDrawing * unitTest, int w, int h)
     : GarchGLDebugWindow("UsdImagingGL Test", w, h)
     , _unitTest(unitTest)
+    , _clearedOnce(false)
 {
 }
 
-UsdImagingGL_UnitTestWindow::~UsdImagingGL_UnitTestWindow()
+UsdImagingGL_UnitTestWindow::~UsdImagingGL_UnitTestWindow() = default;
+
+void
+UsdImagingGL_UnitTestWindow::_ClearPresentationOutput()
 {
+    if (!_unitTest->PresentComposite() || !_clearedOnce) {
+        GLfloat clearColor[4] = { 0, 0, 0, 0 };
+        GLfloat clearDepth[1] = { 1 };
+
+        glClearBufferfv(GL_COLOR, 0, clearColor);
+        glClearBufferfv(GL_DEPTH, 0, clearDepth);
+
+        _clearedOnce = true;
+    }
 }
 
 /* virtual */
@@ -108,27 +109,32 @@ UsdImagingGL_UnitTestWindow::OnInitializeGL()
     GlfRegisterDefaultDebugOutputMessageCallback();
     GlfContextCaps::InitInstance();
 
-
-    //
-    // Create an offscreen draw target which is the same size as this
-    // widget and initialize the unit test with the draw target bound.
-    //
-    _drawTarget = GlfDrawTarget::New(GfVec2i(GetWidth(), GetHeight()));
-    _drawTarget->Bind();
-    _drawTarget->AddAttachment("color", GL_RGBA, GL_FLOAT, GL_RGBA);
-    _drawTarget->AddAttachment("depth", GL_DEPTH_COMPONENT, GL_FLOAT,
-                                        GL_DEPTH_COMPONENT);
+    if (_unitTest->IsEnabledTestPresentOutput()) {
+        //
+        // Create an offscreen draw target which is the same size as this
+        // widget and initialize the unit test with the draw target bound.
+        //
+        _drawTarget = GlfDrawTarget::New(GfVec2i(GetWidth(), GetHeight()));
+        _drawTarget->Bind();
+        _drawTarget->AddAttachment("color", GL_RGBA, GL_FLOAT, GL_RGBA);
+        _drawTarget->AddAttachment("depth", GL_DEPTH_COMPONENT, GL_FLOAT,
+                                            GL_DEPTH_COMPONENT);
+    }
 
     _unitTest->InitTest();
 
-    _drawTarget->Unbind();
+    if (_unitTest->IsEnabledTestPresentOutput()) {
+        _drawTarget->Unbind();
+    }
 }
 
 /* virtual */
 void
 UsdImagingGL_UnitTestWindow::OnUninitializeGL()
 {
-    _drawTarget = GlfDrawTargetRefPtr();
+    if (_unitTest->IsEnabledTestPresentOutput()) {
+        _drawTarget = GlfDrawTargetRefPtr();
+    }
 
     _unitTest->ShutdownTest();
 }
@@ -143,38 +149,51 @@ UsdImagingGL_UnitTestWindow::OnPaintGL()
     //
     int width = GetWidth();
     int height = GetHeight();
-    _drawTarget->Bind();
-    _drawTarget->SetSize(GfVec2i(width, height));
+
+    if (_unitTest->IsEnabledTestPresentOutput()) {
+        _drawTarget->Bind();
+        _drawTarget->SetSize(GfVec2i(width, height));
+    }
+
+    _ClearPresentationOutput();
 
     _unitTest->DrawTest(false);
 
-    _drawTarget->Unbind();
+    if (_unitTest->IsEnabledTestPresentOutput()) {
+        _drawTarget->Unbind();
 
-    //
-    // Blit the resulting color buffer to the window (this is a noop
-    // if we're drawing offscreen).
-    //
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, _drawTarget->GetFramebufferId());
+        //
+        // Blit the resulting color buffer to the window (this is a noop
+        // if we're drawing offscreen).
+        //
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, _drawTarget->GetFramebufferId());
 
-    glBlitFramebuffer(0, 0, width, height,
-                      0, 0, width, height,
-                      GL_COLOR_BUFFER_BIT,
-                      GL_NEAREST);
+        glBlitFramebuffer(0, 0, width, height,
+                          0, 0, width, height,
+                          GL_COLOR_BUFFER_BIT,
+                          GL_NEAREST);
 
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    }
 }
 
 void
 UsdImagingGL_UnitTestWindow::DrawOffscreen()
 {
-    _drawTarget->Bind();
-    _drawTarget->SetSize(GfVec2i(GetWidth(), GetHeight()));
+    if (_unitTest->IsEnabledTestPresentOutput()) {
+        _drawTarget->Bind();
+        _drawTarget->SetSize(GfVec2i(GetWidth(), GetHeight()));
+    }
+
+    _ClearPresentationOutput();
 
     _unitTest->DrawTest(true);
 
-    _drawTarget->Unbind();
+    if (_unitTest->IsEnabledTestPresentOutput()) {
+        _drawTarget->Unbind();
+    }
 }
 
 bool
@@ -236,22 +255,24 @@ UsdImagingGL_UnitTestGLDrawing::UsdImagingGL_UnitTestGLDrawing()
     , _testLighting(false)
     , _sceneLights(false)
     , _cameraLight(false)
-    , _testIdRender(false)
+    , _enableSceneMaterials(true)
+    , _unloadedAsBounds(false)
+    , _skipTestPlugins(false)
     , _complexity(1.0f)
     , _drawMode(UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH)
     , _shouldFrameAll(false)
     , _cullStyle(UsdImagingGLCullStyle::CULL_STYLE_NOTHING)
+    , _rendererAov(HdAovTokens->color)
     , _showGuides(UsdImagingGLRenderParams().showGuides)
     , _showRender(UsdImagingGLRenderParams().showRender)
     , _showProxy(UsdImagingGLRenderParams().showProxy)
-    , _clearOnce(false)
+    , _presentComposite(false)
     , _presentDisabled(false)
+    , _numErrorsAllowed(0)
 {
 }
 
-UsdImagingGL_UnitTestGLDrawing::~UsdImagingGL_UnitTestGLDrawing()
-{
-}
+UsdImagingGL_UnitTestGLDrawing::~UsdImagingGL_UnitTestGLDrawing() = default;
 
 int
 UsdImagingGL_UnitTestGLDrawing::GetWidth() const
@@ -266,21 +287,85 @@ UsdImagingGL_UnitTestGLDrawing::GetHeight() const
 }
 
 bool
-UsdImagingGL_UnitTestGLDrawing::WriteToFile(std::string const & attachment,
-        std::string const & filename) const
+UsdImagingGL_UnitTestGLDrawing::WriteToFile(
+    UsdImagingGLEngine *engine,
+    TfToken const &aovName,
+    std::string const & filename)
 {
-    return _widget->WriteToFile(attachment, filename);
+    if (IsEnabledTestPresentOutput()) {
+        // Write an image from the specified client drawTarget attachment.
+        return _widget->WriteToFile(aovName, filename);
+    } else {
+        // Write an image from the specified engine AOV.
+        return UsdImagingGL_UnitTestGLDrawing::WriteAovToFile(
+                engine, aovName, filename);
+    }
+}
+
+bool
+UsdImagingGL_UnitTestGLDrawing::WriteAovToFile(
+    UsdImagingGLEngine *engine,
+    TfToken const &aovName,
+    std::string const & filename)
+{
+    Hgi *hgi = engine->GetHgi();
+    HgiTextureHandle const &texture = engine->GetAovTexture(aovName);
+
+    size_t bufferSize = 0;
+
+    using TextureBuffer = HdStTextureUtils::AlignedBuffer<uint16_t>;
+    TextureBuffer buffer =
+        HdStTextureUtils::HgiTextureReadback<uint16_t>(
+            hgi, texture, &bufferSize);
+
+    HgiTextureDesc const textureDesc = texture.Get()->GetDescriptor();
+
+    HioImage::StorageSpec storage;
+    storage.width = textureDesc.dimensions[0];
+    storage.height = textureDesc.dimensions[1];
+    storage.flipped = true;
+    storage.data = buffer.get();
+
+    if (textureDesc.format == HgiFormatUNorm8Vec4) {
+        storage.format = HioFormatUNorm8Vec4;
+    } else if (textureDesc.format == HgiFormatFloat16Vec3) {
+        storage.format = HioFormatFloat16Vec3;
+    } else if (textureDesc.format == HgiFormatFloat16Vec4) {
+        storage.format = HioFormatFloat16Vec4;
+    } else if (textureDesc.format == HgiFormatFloat32Vec3) {
+        storage.format = HioFormatFloat32Vec3;
+    } else if (textureDesc.format == HgiFormatFloat32Vec4) {
+        storage.format = HioFormatFloat32Vec4;
+    } else {
+        TF_CODING_ERROR("Unsupported texture format: %s", filename.c_str());
+        return false;
+    }
+
+    {
+        HioImageSharedPtr const image = HioImage::OpenForWriting(filename);
+        bool const writeSuccess = image && image->Write(storage);
+
+        if (!writeSuccess) {
+            TF_RUNTIME_ERROR("Failed to write image to %s", filename.c_str());
+            return false;
+        }
+    }
+
+    return true;
 }
 
 struct UsdImagingGL_UnitTestGLDrawing::_Args {
     _Args()
       : offscreen(false)
+      , shading("smooth")
+      , cullStyle("nothing")
       , clearColor{1.0f, 0.5f, 0.1f, 1.0f}
       , translate{0.0f, -1000.0f, -2500.0f}
       , widgetSize{640, 480}
       , pixelAspectRatio(1.0f)
       , dataWindow{0, 0, 0, 0}
       , displayWindow{0.0f, 0.0f, 0.0f, 0.0f}
+      , windowPolicy{CameraUtilMatchVertically}
     {
     }
 
@@ -296,6 +381,7 @@ struct UsdImagingGL_UnitTestGLDrawing::_Args {
     float pixelAspectRatio;
     int dataWindow[4];
     float displayWindow[4];
+    CameraUtilConformWindowPolicy windowPolicy;
 };
 
 static void Die(const char* fmt, ...) ARCH_PRINTF_FUNCTION(1, 2);
@@ -328,20 +414,24 @@ static void Usage(int argc, char *argv[])
 {
     static const char usage[] =
 "%s [-stage filePath] [-write filePath]\n"
-"                           [-offscreen] [-lighting] [-idRender]\n"
+"                           [-offscreen] [-lighting]\n"
+"                           [-disableSceneMaterials]\n"
 "                           [-camera pathToCamera]\n"
+"                           [-pickCamera pathToPickCamera]\n"
 "                           [-complexity complexity]\n"
 "                           [-renderer rendererName]\n"
-"                           [-shading [flat|smooth|wire|wireOnSurface]]\n"
+"                           [-shading [flat|smooth|wire|wireOnSurface|points]]\n"
 "                           [-frameAll]\n"
 "                           [-clipPlane clipPlane1 ... clipPlane4]\n"
 "                           [-complexities complexities1 complexities2 ...]\n"
 "                           [-times times1 times2 ...] [-cullStyle cullStyle]\n"
-"                           [-clear r g b a] [-clearOnce] [-translate x y z]\n"
+"                           [-clear r g b a] [-translate x y z]\n"
+"                           [-presentComposite] [-presentDisabled]\n"
 "                           [-renderSetting name type value]\n"
 "                           [-rendererAov name]\n"
 "                           [-perfStatsFile path]\n"
-"                           [-traceFile path] [...]\n"
+"                           [-traceFile path]\n"
+"                           [-skipTestPlugins] [...]\n"
 "\n"
 "  usdImaging basic drawing test\n"
 "\n"
@@ -353,14 +443,15 @@ static void Usage(int argc, char *argv[])
 "  -sceneLights        use in combination with -lighting to utilize the lights \n"
 "                      defined in the scene\n"
 "  -camLight           use a single camera light\n"
-"  -idRender           ID rendering\n"
+"  -disableSceneMaterials\n"
+"                      Disable scene materials\n"
 "  -complexity complexity\n"
 "                      Set the fallback complexity [1]\n"
 "  -renderer rendererName\n"
 "                      use the specified renderer plugin []\n"
-"  -shading [flat|smooth|wire|wireOnSurface]\n"
+"  -shading [flat|smooth|wire|wireOnSurface|points]\n"
 "                      force specific type of shading\n"
-"                      [flat|smooth|wire|wireOnSurface] []\n"
+"                      [flat|smooth|wire|wireOnSurface|points] []\n"
 "  -frameAll           set the view to frame all root prims on the stage\n"
 "  -clipPlane clipPlane1 ... clipPlane4\n"
 "                      set an additional camera clipping plane [()]\n"
@@ -372,9 +463,9 @@ static void Usage(int argc, char *argv[])
 "                      an image [()]\n"
 "  -cullStyle          Set face cull style\n"
 "  -clear r g b a      clear color\n"
-"  -clearOnce          Clear the framebuffer only once at the start \n"
-"                      instead of before each render.\n"
 "  -translate x y z    default camera translation\n"
+"  -presentComposite   Use a client framebuffer that is cleared once only\n"
+"  -presentDisabled    Use a client framebuffer with present disabled\n"
 "  -rendererAov name   Name of AOV to display or write out\n"
 "  -perfStatsFile path Path to file performance stats are written to\n"
 "  -traceFile path     Path to trace file to write\n"
@@ -396,6 +487,11 @@ static void Usage(int argc, char *argv[])
 "                      Specifies data window for rendering\n"
 "  -displayWindow x y width height\n"
 "                      Specifies display window for rendering\n"
+"  -windowPolicy [matchVertically|matchHorizontally|fit|crop|dontConform]\n"
+"                      Forces the window policy\n"
+"                      (defaults to matchVertically to match usdview)\n"
+"  -numErrorsAllowed n Number of errors allowed before test fails (default 0)\n"
+"  -skipTestPlugins    Skip loading the usdImaging test plugins."
 ;
 
     Die(usage, TfGetBaseName(argv[0]).c_str());
@@ -433,6 +529,24 @@ static double ParseDouble(int& i, int argc, char *argv[],
         ParseError(argv[0], "invalid parameter for '%s': %s",
                    argv[i], argv[i + 1]);
     }
+    ++i;
+    if (invalid) {
+        *invalid = false;
+    }
+    return result;
+}
+
+
+static int ParseInt(int& i, int argc, char *argv[], bool* invalid = nullptr)
+{
+    if (i + 1 == argc) {
+        if (invalid) {
+            *invalid = true;
+            return 0.0;
+        }
+        ParseError(argv[0], "missing parameter for '%s'", argv[i]);
+    }
+    int result = atoi(argv[i + 1]);
     ++i;
     if (invalid) {
         *invalid = false;
@@ -495,13 +609,37 @@ ParseDoubleVector(
     }
 }
 
+static bool ParseBool(int& i, int argc, char *argv[])
+{
+    if (i + 1 == argc) {
+        ParseError(argv[0], "missing parameter for '%s'", argv[i]);
+        return false;
+    }
+
+    bool result = false;
+    if (strcmp(argv[i + 1], "true") == 0) {
+        result = true;
+    } else if (strcmp(argv[i + 1], "false") == 0) {
+        result = false;
+    } else {
+        ParseError(argv[0], "invalid parameter for '%s': %s. Must be either "
+                            "'true' or 'false'",
+                   argv[i], argv[i + 1]);
+    }
+
+    ++i;
+    return result;
+}
+
 static VtValue ParseVtValue(int &i, int argc, char *argv[])
 {
     const char * const typeString = ParseString(i, argc, argv);
-
     if (strcmp(typeString, "float") == 0) {
         CheckForMissingArguments(i, 1, argc, argv);
         return VtValue(float(ParseDouble(i, argc, argv)));
+    } else if (strcmp(typeString, "bool") == 0) {
+        CheckForMissingArguments(i, 1, argc, argv);
+        return VtValue(ParseBool(i, argc, argv));
     } else {
         ParseError(argv[0], "unknown type '%s'", typeString);
         return VtValue();
@@ -514,6 +652,9 @@ UsdImagingGL_UnitTestGLDrawing::_Parse(int argc, char *argv[], _Args* args)
     for (int i = 1; i != argc; ++i) {
         if (strcmp(argv[i], "-") == 0) {
             Usage(argc, argv);
+        }
+        else if (strcmp(argv[i], "-skipTestPlugins") == 0) {
+            _skipTestPlugins = true;
         }
         else if (strcmp(argv[i], "-frameAll") == 0) {
             _shouldFrameAll = true;
@@ -538,8 +679,15 @@ UsdImagingGL_UnitTestGLDrawing::_Parse(int argc, char *argv[], _Args* args)
             CheckForMissingArguments(i, 1, argc, argv);
             _cameraPath = argv[++i];
         }
-        else if (strcmp(argv[i], "-idRender") == 0) {
-            _testIdRender = true;
+        else if (strcmp(argv[i], "-pickCamera") == 0) {
+            CheckForMissingArguments(i, 1, argc, argv);
+            _pickCameraPath = argv[++i];
+        }
+        else if (strcmp(argv[i], "-disableSceneMaterials") == 0) {
+            _enableSceneMaterials = false;
+        }
+        else if (strcmp(argv[i], "-unloadedAsBounds") == 0) {
+            _unloadedAsBounds = true;
         }
         else if (strcmp(argv[i], "-stage") == 0) {
             CheckForMissingArguments(i, 1, argc, argv);
@@ -622,6 +770,28 @@ UsdImagingGL_UnitTestGLDrawing::_Parse(int argc, char *argv[], _Args* args)
             args->displayWindow[2] = (float)ParseDouble(i, argc, argv);
             args->displayWindow[3] = (float)ParseDouble(i, argc, argv);
         }
+        else if (strcmp(argv[i], "-windowPolicy") == 0) {
+            CheckForMissingArguments(i, 1, argc, argv);
+            const char * const policy = ParseString(i, argc, argv);
+            if (strcmp(policy, "matchVertically") == 0) {
+                args->windowPolicy = CameraUtilMatchVertically;
+            }
+            else if (strcmp(policy, "matchHorizontally") == 0) {
+                args->windowPolicy = CameraUtilMatchHorizontally;
+            }
+            else if (strcmp(policy, "fit") == 0) {
+                args->windowPolicy = CameraUtilFit;
+            }
+            else if (strcmp(policy, "crop") == 0) {
+                args->windowPolicy = CameraUtilCrop;
+            }
+            else if (strcmp(policy, "dontConform") == 0) {
+                args->windowPolicy = CameraUtilDontConform;
+            }
+            else {
+                ParseError(argv[0], "Unknown window policy '%s'", policy);
+            }
+        }
         else if (strcmp(argv[i], "-renderSetting") == 0) {
             CheckForMissingArguments(i, 2, argc, argv);
             const char * const key = ParseString(i, argc, argv);
@@ -636,11 +806,15 @@ UsdImagingGL_UnitTestGLDrawing::_Parse(int argc, char *argv[], _Args* args)
         else if (strcmp(argv[i], "-proxyPurpose") == 0) {
             ParseShowHide(i, argc, argv, &_showProxy);
         }
-        else if (strcmp(argv[i], "-clearOnce") == 0) {
-            _clearOnce = true;
+        else if (strcmp(argv[i], "-presentComposite") == 0) {
+            _presentComposite = true;
         }
         else if (strcmp(argv[i], "-presentDisabled") == 0) {
             _presentDisabled = true;
+        }
+        else if (strcmp(argv[i], "-numErrorsAllowed") == 0) {
+            // CheckForMissingArguments(i, 1, argc, argv);
+            _numErrorsAllowed = ParseInt(i, argc, argv);
         }
         else {
             ParseError(argv[0], "unknown argument %s", argv[i]);
@@ -681,7 +855,9 @@ UsdImagingGL_UnitTestGLDrawing::RunTest(int argc, char *argv[])
         TraceCollector::GetInstance().SetEnabled(true);
     }
 
-    UsdImagingGL_UnitTestHelper_InitPlugins();
+    if (!_skipTestPlugins) {
+        UsdImagingGL_UnitTestHelper_InitPlugins();
+    }
 
     for (size_t i=0; i<args.clipPlaneCoords.size()/4; ++i) {
         _clipPlanes.push_back(GfVec4d(&args.clipPlaneCoords[i*4]));
@@ -697,27 +873,34 @@ UsdImagingGL_UnitTestGLDrawing::RunTest(int argc, char *argv[])
     _dataWindow = GfRect2i(
         GfVec2i(args.dataWindow[0], args.dataWindow[1]),
         args.dataWindow[2], args.dataWindow[3]);
+    _windowPolicy = args.windowPolicy;
 
     _drawMode = UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;
 
-    if (args.shading.compare("wireOnSurface") == 0) {
+    if (args.shading.compare("points") == 0 ) {
+        _drawMode = UsdImagingGLDrawMode::DRAW_POINTS;
+    } else if (args.shading.compare("wire") == 0 ) {
+        _drawMode = UsdImagingGLDrawMode::DRAW_WIREFRAME;
+    } else if (args.shading.compare("wireOnSurface") == 0) {
         _drawMode = UsdImagingGLDrawMode::DRAW_WIREFRAME_ON_SURFACE;
     } else if (args.shading.compare("flat") == 0 ) {
         _drawMode = UsdImagingGLDrawMode::DRAW_SHADED_FLAT;
-    } else if (args.shading.compare("wire") == 0 ) {
-        _drawMode = UsdImagingGLDrawMode::DRAW_WIREFRAME;
+    } else if (args.shading.compare("smooth") == 0 ) {
+        _drawMode = UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;
     } else {
-        TF_WARN("Draw mode %s not supported!", args.shading.c_str());
+        TF_WARN("Shading mode %s not supported!", args.shading.c_str());
     }
 
     _cullStyle = UsdImagingGLCullStyle::CULL_STYLE_NOTHING;
 
-    if (args.cullStyle.compare("back") == 0) {
+    if (args.cullStyle.compare("nothing") == 0) {
+        _cullStyle = UsdImagingGLCullStyle::CULL_STYLE_NOTHING;
+    } else if (args.cullStyle.compare("back") == 0) {
         _cullStyle = UsdImagingGLCullStyle::CULL_STYLE_BACK;
-    } else if (args.cullStyle.compare("backUnlessDoubleSided") == 0 ) {
-        _cullStyle = UsdImagingGLCullStyle::CULL_STYLE_BACK_UNLESS_DOUBLE_SIDED;
     } else if (args.cullStyle.compare("front") == 0 ) {
         _cullStyle = UsdImagingGLCullStyle::CULL_STYLE_FRONT;
+    } else if (args.cullStyle.compare("backUnlessDoubleSided") == 0 ) {
+        _cullStyle = UsdImagingGLCullStyle::CULL_STYLE_BACK_UNLESS_DOUBLE_SIDED;
     } else {
         TF_WARN("Cull style %s not supported!", args.cullStyle.c_str());
     }

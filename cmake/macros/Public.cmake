@@ -1,31 +1,22 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 include(Private)
 
 function(pxr_build_documentation)
-    configure_file(${CMAKE_SOURCE_DIR}/docs/doxygen/Doxyfile.in
-                   ${CMAKE_BINARY_DIR}/Doxyfile)
+    # Cmake booleans are often, ie, "OFF", while Doxyfile requires booleans
+    # to be "YES" or "NO"
+    if(PXR_BUILD_HTML_DOCUMENTATION)
+        set(DOXYGEN_GENERATE_HTML "YES")
+    else()
+        set(DOXYGEN_GENERATE_HTML "NO")
+    endif()
+
+    configure_file(${PROJECT_SOURCE_DIR}/docs/doxygen/Doxyfile.in
+                   ${PROJECT_BINARY_DIR}/Doxyfile)
 
     add_custom_target(
         documentation
@@ -34,28 +25,36 @@ function(pxr_build_documentation)
         # since it's generated outside of the libraries.
         COMMAND
             ${CMAKE_COMMAND} -E copy
-            "${CMAKE_BINARY_DIR}/include/pxr/pxr.h"
-            "${CMAKE_BINARY_DIR}/docs/include/pxr/pxr.h"
+            "${PROJECT_BINARY_DIR}/include/pxr/pxr.h"
+            "${PROJECT_BINARY_DIR}/docs/include/pxr/pxr.h"
         COMMAND 
             ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_SOURCE_DIR}/docs"
-            "${CMAKE_BINARY_DIR}/docs"
+            "${PROJECT_SOURCE_DIR}/docs"
+            "${PROJECT_BINARY_DIR}/docs"
     )
 
     # Execute doxygen during the install step. All of the files we want
     # doxygen to process should already have been copied to the docs
     # directory during the build step
-    install(CODE "execute_process(COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_BINARY_DIR}/Doxyfile)")
+    install(CODE "execute_process(COMMAND ${DOXYGEN_EXECUTABLE} \"${PROJECT_BINARY_DIR}/Doxyfile\")")
 
     set(INST_DOCS_ROOT  "${CMAKE_INSTALL_PREFIX}/docs")
 
-    set(BUILT_HTML_DOCS "${CMAKE_BINARY_DIR}/docs/doxy_html")
+    set(BUILT_DOCS_TAG_FILE "${PROJECT_BINARY_DIR}/docs/USD.tag")
     install(
-        DIRECTORY ${BUILT_HTML_DOCS}
+        FILES ${BUILT_DOCS_TAG_FILE}
         DESTINATION ${INST_DOCS_ROOT}
     )
 
-    set(BUILT_XML_DOCS "${CMAKE_BINARY_DIR}/docs/doxy_xml")
+    if(PXR_BUILD_HTML_DOCUMENTATION)
+        set(BUILT_HTML_DOCS "${PROJECT_BINARY_DIR}/docs/doxy_html")
+        install(
+            DIRECTORY ${BUILT_HTML_DOCS}
+            DESTINATION ${INST_DOCS_ROOT}
+        )
+    endif()
+
+    set(BUILT_XML_DOCS "${PROJECT_BINARY_DIR}/docs/doxy_xml")
     install(
         DIRECTORY ${BUILT_XML_DOCS}
         DESTINATION ${INST_DOCS_ROOT}
@@ -77,7 +76,7 @@ function(pxr_python_bin BIN_NAME)
     )
 
     # If we can't build Python modules then do nothing.
-    if(NOT TARGET python)
+    if(NOT TARGET python_modules)
         message(STATUS "Skipping Python program ${BIN_NAME}, Python modules required")
         return()
     endif()
@@ -142,7 +141,7 @@ function(pxr_python_bin BIN_NAME)
     add_custom_target(${BIN_NAME}_script
         DEPENDS ${outputs} ${pb_DEPENDENCIES}
     )
-    add_dependencies(python ${BIN_NAME}_script)
+    add_dependencies(python_modules ${BIN_NAME}_script)
 
     _get_folder("" folder)
     set_target_properties(${BIN_NAME}_script
@@ -180,7 +179,7 @@ function(pxr_cpp_bin BIN_NAME)
     # Install and include headers from the build directory.
     get_filename_component(
         PRIVATE_INC_DIR
-        "${CMAKE_BINARY_DIR}/include"
+        "${PROJECT_BINARY_DIR}/include"
         ABSOLUTE
     )
 
@@ -191,6 +190,7 @@ function(pxr_cpp_bin BIN_NAME)
     )
 
     _pxr_init_rpath(rpath "${installDir}")
+    _pxr_add_rpath(rpath "${CMAKE_INSTALL_PREFIX}/lib")
     _pxr_install_rpath(rpath ${BIN_NAME})
 
     _pxr_target_link_libraries(${BIN_NAME}
@@ -207,6 +207,7 @@ endfunction()
 function(pxr_library NAME)
     set(options
         DISABLE_PRECOMPILED_HEADERS
+        INCLUDE_SCHEMA_FILES
     )
     set(oneValueArgs
         TYPE
@@ -228,6 +229,7 @@ function(pxr_library NAME)
         PYTHON_PRIVATE_HEADERS
         PYTHON_CPPFILES
         PYMODULE_CPPFILES
+        PYMODULE_DIRS
         PYMODULE_FILES
         PYSIDE_UI_FILES
     )
@@ -242,21 +244,88 @@ function(pxr_library NAME)
     # If python support is enabled, merge the python specific categories
     # with the more general before setting up compilation.
     if(PXR_ENABLE_PYTHON_SUPPORT)
+        set(libraryRequiresPython 0)
         if(args_PYTHON_PUBLIC_CLASSES)
             list(APPEND args_PUBLIC_CLASSES ${args_PYTHON_PUBLIC_CLASSES})
+            set(libraryRequiresPython 1)
         endif()
         if(args_PYTHON_PUBLIC_HEADERS)
             list(APPEND args_PUBLIC_HEADERS ${args_PYTHON_PUBLIC_HEADERS})
+            set(libraryRequiresPython 1)
         endif()
         if(args_PYTHON_PRIVATE_CLASSES)
             list(APPEND args_PRIVATE_CLASSES ${args_PYTHON_PRIVATE_CLASSES})
+            set(libraryRequiresPython 1)
         endif()
         if(args_PYTHON_PRIVATE_HEADERS)
             list(APPEND args_PRIVATE_HEADERS ${args_PYTHON_PRIVATE_HEADERS})
+            set(libraryRequiresPython 1)
         endif()
         if(args_PYTHON_CPPFILES)
             list(APPEND args_CPPFILES ${args_PYTHON_CPPFILES})
+            set(libraryRequiresPython 1)
         endif()
+
+        if(libraryRequiresPython)
+            list(APPEND args_LIBRARIES ${PYTHON_LIBRARIES} python)
+            list(APPEND args_INCLUDE_DIRS ${PYTHON_INCLUDE_DIRS})
+        endif()
+    endif()
+
+    # If this is a schema library, add schema classes
+    if (args_INCLUDE_SCHEMA_FILES)
+        set(filePath "generatedSchema.classes.txt")
+
+        # Register a dependency so that cmake will regenerate the build
+        # system if generatedSchema.classes.txt changes
+        set_property(
+            DIRECTORY 
+            APPEND 
+            PROPERTY CMAKE_CONFIGURE_DEPENDS 
+            ${filePath}
+        )
+
+        # Read the generated classes
+        file(STRINGS ${filePath} fileContents)
+
+        # fileType potential values:
+        # -1: Skip line
+        # 0: Public Classes
+        # 1: Python Module Files
+        # 2: Resource Files
+        set(fileType -1)
+
+        foreach(line ${fileContents})
+            # Determine which section of the generated file we are in.
+            if (${fileType} EQUAL -1)
+                string(FIND ${line} "# Public Classes" found)
+                if (NOT ${found} EQUAL -1)
+                    set(fileType 0)
+                    continue()
+                endif()
+            elseif(${fileType} EQUAL 0)
+                string(FIND ${line} "# Python Module Files" found)
+                if (NOT ${found} EQUAL -1)
+                    set(fileType 1)
+                    continue()
+                endif()
+            elseif(${fileType} EQUAL 1)
+                string(FIND ${line} "# Resource Files" found)
+                if (NOT ${found} EQUAL -1)
+                    set(fileType 2)
+                    continue()
+                endif()
+            endif()
+
+            # Depending on the file type, append to the appropriate list.
+            if (${fileType} EQUAL 0)
+                list(APPEND args_PUBLIC_CLASSES ${line})
+            elseif(${fileType} EQUAL 1)
+                list(APPEND args_PYMODULE_CPPFILES ${line})
+            elseif(${fileType} EQUAL 2)
+                list(APPEND args_RESOURCE_FILES ${line})
+            endif()
+        endforeach()
     endif()
 
     # Collect libraries.
@@ -305,7 +374,7 @@ function(pxr_library NAME)
             endif()
         endif()
 
-        set(prefix "${PXR_LIB_PREFIX}")
+        _get_library_prefix(prefix)
         if(args_TYPE STREQUAL "STATIC")
             set(suffix ${CMAKE_STATIC_LIBRARY_SUFFIX})
         else()
@@ -316,6 +385,30 @@ function(pxr_library NAME)
     set(pch "ON")
     if(args_DISABLE_PRECOMPILED_HEADERS)
         set(pch "OFF")
+    endif()
+
+    if (PXR_ENABLE_PYTHON_SUPPORT AND args_PYMODULE_CPPFILES)
+        # If moduleDeps.cpp does not exist, create one
+        set(moduleDepsFileName "moduleDeps.cpp")
+        list(FIND args_PYTHON_CPPFILES ${moduleDepsFileName} foundModuleDeps)
+        if (${foundModuleDeps} EQUAL -1)
+            # Add moduleDeps.cpp as a built file
+            list(APPEND args_CPPFILES ${moduleDepsFileName})
+
+            # Keep only our libraries in the module dependencies
+            foreach(library ${args_LIBRARIES})
+                if (TARGET ${library}) 
+                    list(APPEND localLibs ${library})
+                endif()
+            endforeach()
+
+            # Generate moduleDeps.cpp
+            _get_python_module_name(${NAME} pyModuleName)
+            add_custom_command(
+                OUTPUT ${moduleDepsFileName}
+                COMMAND ${CMAKE_COMMAND} -DlibraryName=${NAME} -DmoduleName=${pyModuleName} -DsourceDir=${PROJECT_SOURCE_DIR} -Dlibraries="${localLibs}" -Doutfile=${moduleDepsFileName} -P "${PROJECT_SOURCE_DIR}/cmake/macros/genModuleDepsCpp.cmake"
+                DEPENDS "CMakeLists.txt")
+        endif()
     endif()
 
     _pxr_library(${NAME}
@@ -335,14 +428,19 @@ function(pxr_library NAME)
         LIB_INSTALL_PREFIX_RESULT libInstallPrefix
     )
 
-    if(PXR_ENABLE_PYTHON_SUPPORT AND (args_PYMODULE_CPPFILES OR args_PYMODULE_FILES OR args_PYSIDE_UI_FILES))
+    if(PXR_ENABLE_PYTHON_SUPPORT AND
+       (args_PYMODULE_CPPFILES OR args_PYMODULE_DIRS OR
+        args_PYMODULE_FILES OR args_PYSIDE_UI_FILES))
+        list(APPEND pythonModuleIncludeDirs ${PYTHON_INCLUDE_DIRS})
+
         _pxr_python_module(
             ${NAME}
             WRAPPED_LIB_INSTALL_PREFIX "${libInstallPrefix}"
+            PYTHON_DIRS ${args_PYMODULE_DIRS}
             PYTHON_FILES ${args_PYMODULE_FILES}
             PYSIDE_UI_FILES ${args_PYSIDE_UI_FILES}
             CPPFILES ${args_PYMODULE_CPPFILES}
-            INCLUDE_DIRS ${args_INCLUDE_DIRS}
+            INCLUDE_DIRS "${args_INCLUDE_DIRS};${pythonModuleIncludeDirs}"
             PRECOMPILED_HEADERS ${pch}
             PRECOMPILED_HEADER_NAME ${args_PRECOMPILED_HEADER_NAME}
         )
@@ -358,7 +456,13 @@ macro(pxr_static_library NAME)
 endmacro(pxr_static_library)
 
 macro(pxr_plugin NAME)
-    pxr_library(${NAME} TYPE "PLUGIN" ${ARGN})
+    if(EMSCRIPTEN)
+        # Dynamic linking is not supported yet in the usd build toolchain
+        message(STATUS "Building ${NAME} plugin as static library for emscripten support")
+        pxr_library(${NAME} TYPE "STATIC" ${ARGN})
+    else()
+        pxr_library(${NAME} TYPE "PLUGIN" ${ARGN})
+    endif()
 endmacro(pxr_plugin)
 
 function(pxr_setup_python)
@@ -374,7 +478,7 @@ function(pxr_setup_python)
     string(REPLACE ";" ", " pyModulesStr "${converted}")
 
     # Install a pxr __init__.py with an appropriate __all__
-    _get_install_dir(lib/python/pxr installPrefix)
+    _get_install_dir(${PXR_PYTHON_INSTALL_DIR}/pxr installPrefix)
 
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated_modules_init.py"
          "__all__ = [${pyModulesStr}]\n")
@@ -388,7 +492,7 @@ endfunction() # pxr_setup_python
 
 function (pxr_create_test_module MODULE_NAME)
     # If we can't build Python modules then do nothing.
-    if(NOT TARGET python)
+    if(NOT TARGET python_modules)
         return()
     endif()
 
@@ -402,10 +506,14 @@ function (pxr_create_test_module MODULE_NAME)
         return()
     endif()
 
-    cmake_parse_arguments(tm "" "INSTALL_PREFIX;SOURCE_DIR" "" ${ARGN})
+    cmake_parse_arguments(tm "" "INSTALL_PREFIX;SOURCE_DIR;DEST_DIR" "" ${ARGN})
 
     if (NOT tm_SOURCE_DIR)
         set(tm_SOURCE_DIR testenv)
+    endif()
+
+    if (NOT tm_DEST_DIR)
+        set(tm_DEST_DIR ${MODULE_NAME})
     endif()
 
     # Look specifically for an __init__.py and a plugInfo.json prefixed by the
@@ -421,7 +529,7 @@ function (pxr_create_test_module MODULE_NAME)
             RENAME 
                 __init__.py
             DESTINATION 
-                tests/${tm_INSTALL_PREFIX}/lib/python/${MODULE_NAME}
+                tests/${tm_INSTALL_PREFIX}/lib/python/${tm_DEST_DIR}
         )
     endif()
     if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${plugInfoFile}")
@@ -431,7 +539,7 @@ function (pxr_create_test_module MODULE_NAME)
             RENAME 
                 plugInfo.json
             DESTINATION 
-                tests/${tm_INSTALL_PREFIX}/lib/python/${MODULE_NAME}
+                tests/${tm_INSTALL_PREFIX}/lib/python/${tm_DEST_DIR}
         )
     endif()
 endfunction() # pxr_create_test_module
@@ -485,7 +593,7 @@ function(pxr_build_test_shared_lib LIBRARY_NAME)
 
         set(testPlugInfoLibDir "tests/${bt_INSTALL_PREFIX}/lib/${LIBRARY_NAME}")
         set(testPlugInfoResourceDir "${testPlugInfoLibDir}/${TEST_PLUG_INFO_RESOURCE_PATH}")
-        set(testPlugInfoPath "${CMAKE_BINARY_DIR}/${testPlugInfoResourceDir}/plugInfo.json")
+        set(testPlugInfoPath "${PROJECT_BINARY_DIR}/${testPlugInfoResourceDir}/plugInfo.json")
 
         file(RELATIVE_PATH 
             TEST_PLUG_INFO_LIBRARY_PATH
@@ -562,14 +670,36 @@ function(pxr_build_test TEST_NAME)
     _pxr_install_rpath(rpath ${TEST_NAME})
 
     # XXX -- We shouldn't have to install to run tests.
-    install(TARGETS ${TEST_NAME}
-        RUNTIME DESTINATION "tests"
-    )
+    if(EMSCRIPTEN)
+        target_compile_options(${TEST_NAME} PRIVATE "SHELL:-s MAIN_MODULE=1")
+
+        # Note: Using NODEFS allows us to mount the temp test directory set 
+        # up by the test runner into the virtual filesystem.  This allows us
+        # to access test assets as well as persist any files created during
+        # test execution.  This is setup as a pre-run step by test.pre.js.
+        target_link_options(${TEST_NAME} PRIVATE 
+            "SHELL:-lnodefs.js"
+            "SHELL:-sFORCE_FILESYSTEM=1"
+            "SHELL:--pre-js '${PROJECT_SOURCE_DIR}/cmake/macros/test.pre.js'"
+        )
+        install(
+            FILES
+            ${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME}.wasm
+            DESTINATION "tests"
+        )
+        install(CODE " \n
+            file(REMOVE ${CMAKE_INSTALL_PREFIX}/tests/${TEST_NAME}) \n\
+            file(COPY_FILE ${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME}.js ${CMAKE_INSTALL_PREFIX}/tests/${TEST_NAME})")
+    else()
+        install(TARGETS ${TEST_NAME}
+                RUNTIME DESTINATION "tests"
+        )
+    endif()
 endfunction() # pxr_build_test
 
 function(pxr_test_scripts)
     # If we can't build Python modules then do nothing.
-    if(NOT TARGET python)
+    if(NOT TARGET python_modules)
         return()
     endif()
 
@@ -584,7 +714,24 @@ function(pxr_test_scripts)
     endif()
 
     foreach(file ${ARGN})
-        get_filename_component(destFile ${file} NAME_WE)
+        # Perform regex match to extract both source resource path and
+        # destination resource path.
+        # Regex match appropriately takes care of windows drive letter followed
+        # by a ":", which is also the token we use to separate the source and
+        # destination resource paths.
+        string(REGEX MATCHALL "([A-Za-z]:)?([^:]+)" file "${file}")
+
+        list(LENGTH file n)
+        if (n EQUAL 1)
+            get_filename_component(destFile ${file} NAME_WE)
+        elseif (n EQUAL 2)
+           list(GET file 1 destFile)
+           list(GET file 0 file)
+        else()
+           message(FATAL_ERROR
+               "Failed to parse test file path ${file}")
+        endif()        
+
         # XXX -- We shouldn't have to install to run tests.
         install(
             PROGRAMS ${file}
@@ -595,15 +742,8 @@ function(pxr_test_scripts)
 endfunction() # pxr_test_scripts
 
 function(pxr_install_test_dir)
-    if (NOT PXR_BUILD_TESTS)
-        return()
-    endif()
-
-    # If the package for this test does not have a target it must not be
-    # getting built, in which case we can skip building associated tests.
-    if (NOT TARGET ${PXR_PACKAGE})
-        return()
-    endif()
+    message(DEPRECATION "Please use the TESTENV parameter of pxr_register_test "
+                        "to specify test asset directories.")
 
     cmake_parse_arguments(bt
         "" 
@@ -612,10 +752,9 @@ function(pxr_install_test_dir)
         ${ARGN}
     )
 
-    # XXX -- We shouldn't have to install to run tests.
-    install(
-        DIRECTORY ${bt_SRC}/
-        DESTINATION tests/ctest/${bt_DEST}
+    _pxr_install_test_dir(
+        SRC ${bt_SRC}
+        DEST ${bt_DEST}
     )
 endfunction() # pxr_install_test_dir
 
@@ -630,10 +769,22 @@ function(pxr_register_test TEST_NAME)
         return()
     endif()
 
+    set(OPTIONS RUN_SERIAL PYTHON REQUIRES_SHARED_LIBS REQUIRES_PYTHON_MODULES PERCEPTUAL)
+    set(ONE_VALUE_ARGS
+            CUSTOM_PYTHON
+            COMMAND
+            STDOUT_REDIRECT STDERR_REDIRECT
+            POST_COMMAND POST_COMMAND_STDOUT_REDIRECT POST_COMMAND_STDERR_REDIRECT
+            PRE_COMMAND PRE_COMMAND_STDOUT_REDIRECT PRE_COMMAND_STDERR_REDIRECT
+            FILES_EXIST FILES_DONT_EXIST
+            CLEAN_OUTPUT
+            EXPECTED_RETURN_CODE
+            TESTENV TESTENV_DEST
+            WARN WARN_PERCENT HARD_WARN FAIL FAIL_PERCENT HARD_FAIL LABELS)
+    set(MULTI_VALUE_ARGS DIFF_COMPARE IMAGE_DIFF_COMPARE ENV PRE_PATH POST_PATH)
+
     cmake_parse_arguments(bt
-        "RUN_SERIAL;PYTHON;REQUIRES_SHARED_LIBS;REQUIRES_PYTHON_MODULES" 
-        "CUSTOM_PYTHON;COMMAND;STDOUT_REDIRECT;STDERR_REDIRECT;POST_COMMAND;POST_COMMAND_STDOUT_REDIRECT;POST_COMMAND_STDERR_REDIRECT;PRE_COMMAND;PRE_COMMAND_STDOUT_REDIRECT;PRE_COMMAND_STDERR_REDIRECT;FILES_EXIST;FILES_DONT_EXIST;CLEAN_OUTPUT;EXPECTED_RETURN_CODE;TESTENV"
-        "DIFF_COMPARE;ENV;PRE_PATH;POST_PATH"
+        "${OPTIONS}" "${ONE_VALUE_ARGS}" "${MULTI_VALUE_ARGS}"
         ${ARGN}
     )
 
@@ -650,7 +801,7 @@ function(pxr_register_test TEST_NAME)
         endif()
     endif()
 
-    if(NOT TARGET python)
+    if(NOT TARGET python_modules)
         # Implicit requirement.  Python modules require shared USD
         # libraries.  If the test runs python it's certainly going
         # to load USD modules.  If the test uses C++ to load USD
@@ -664,6 +815,22 @@ function(pxr_register_test TEST_NAME)
     # This harness is a filter which allows us to manipulate the test run, 
     # e.g. by changing the environment, changing the expected return code, etc.
     set(testWrapperCmd ${PROJECT_SOURCE_DIR}/cmake/macros/testWrapper.py --verbose)
+
+    # For Emscripten we want to explicitly run the test with the emsdk provided
+    # node (this make sure we are using emscripten with compatible node and not
+    # use an outdated node available on the system). The test themselves are
+    # javascript files which contain a shebang, however if we are trying to run
+    # them on windows this will result in errors when trying to spawn the test
+    # process.
+    if (EMSCRIPTEN)
+        if (DEFINED ENV{EMSDK_NODE})
+            message(STATUS "Using EMSDK_NODE node for tests: $ENV{EMSDK_NODE}")
+            set(testWrapperCmd ${testWrapperCmd} --test-runner $ENV{EMSDK_NODE})
+        else()
+            message(STATUS "EMSDK_NODE not set, falling back to system provided node")
+            set(testWrapperCmd ${testWrapperCmd} --test-runner node)
+        endif()
+    endif()
 
     if (bt_STDOUT_REDIRECT)
         set(testWrapperCmd ${testWrapperCmd} --stdout-redirect=${bt_STDOUT_REDIRECT})
@@ -689,13 +856,34 @@ function(pxr_register_test TEST_NAME)
         set(testWrapperCmd ${testWrapperCmd} --post-command-stderr-redirect=${bt_POST_COMMAND_STDERR_REDIRECT})
     endif()
 
-    # Not all tests will have testenvs, but if they do let the wrapper know so
-    # it can copy the testenv contents into the run directory. By default,
-    # assume the testenv has the same name as the test but allow it to be
-    # overridden by specifying TESTENV.
+    # Determine test environment directory and set up any necessary
+    # directory copying during the install step. testenvDir is passed to the
+    # test wrapper so it can copy the testenv contents into the run directory.
     if (bt_TESTENV)
-        set(testenvDir ${CMAKE_INSTALL_PREFIX}/tests/ctest/${bt_TESTENV})
-    else()
+        if (bt_TESTENV_DEST)
+            # if a dest directory is specified, then we will assume that it
+            # will contain a folder with ${TEST_NAME} in its path which will
+            # be set as the testenvDir below. This is currently only used
+            # for a few specific tests and in general we prefer to use the
+            # automatic method below.
+            _pxr_install_test_dir(SRC ${bt_TESTENV} DEST ${bt_TESTENV_DEST})
+        else()
+            # when using the testenv without a specific destination set, we
+            # want to set the testenvDir to the folder name of the testenv dir
+            # we copied. This allows multiple tests to reference the same set
+            # of test files even though their test name will be different.
+            cmake_path(GET bt_TESTENV FILENAME testNameDir)
+            _pxr_install_test_dir(SRC ${bt_TESTENV} DEST ${testNameDir})
+            set(testenvDir ${CMAKE_INSTALL_PREFIX}/tests/ctest/${testNameDir})
+        endif()
+    endif()
+
+    # By default we will simply use the test name for the testenvDir. In
+    # the case that  no testenv is specified, this will point to a non
+    # existant folder and no copy will be executed. In the case where a
+    # destination was explicitly specified, the directory which matches
+    # the test name and its contents will be recursively copied.
+    if (NOT DEFINED testenvDir)
         set(testenvDir ${CMAKE_INSTALL_PREFIX}/tests/ctest/${TEST_NAME})
     endif()
 
@@ -705,12 +893,62 @@ function(pxr_register_test TEST_NAME)
         foreach(compareFile ${bt_DIFF_COMPARE})
             set(testWrapperCmd ${testWrapperCmd} --diff-compare=${compareFile})
         endforeach()
+    endif()
+
+    if (bt_IMAGE_DIFF_COMPARE)
+        if (IMAGE_DIFF_TOOL)
+            foreach (compareFile ${bt_IMAGE_DIFF_COMPARE})
+                set(testWrapperCmd ${testWrapperCmd} --image-diff-compare=${compareFile})
+            endforeach ()
+
+            if (bt_WARN)
+                set(testWrapperCmd ${testWrapperCmd} --warn=${bt_WARN})
+            endif()
+
+            if (bt_WARN_PERCENT)
+                set(testWrapperCmd ${testWrapperCmd} --warnpercent=${bt_WARN_PERCENT})
+            endif()
+
+            if (bt_HARD_WARN)
+                set(testWrapperCmd ${testWrapperCmd} --hardwarn=${bt_HARD_WARN})
+            endif()
+
+            if (bt_FAIL)
+                set(testWrapperCmd ${testWrapperCmd} --fail=${bt_FAIL})
+            endif()
+
+            if (bt_FAIL_PERCENT)
+                set(testWrapperCmd ${testWrapperCmd} --failpercent=${bt_FAIL_PERCENT})
+            endif()
+
+            if (bt_HARD_FAIL)
+                set(testWrapperCmd ${testWrapperCmd} --hardfail=${bt_HARD_FAIL})
+            endif()
+
+            if(bt_PERCEPTUAL)
+                set(testWrapperCmd ${testWrapperCmd} --perceptual)
+            endif()
+
+            # Make sure to add the image diff tool to the PATH so
+            # it can be easily found within the testWrapper
+            get_filename_component(IMAGE_DIFF_TOOL_PATH ${IMAGE_DIFF_TOOL} DIRECTORY)
+            set(testWrapperCmd ${testWrapperCmd} --post-path=${IMAGE_DIFF_TOOL_PATH})
+        endif()
+    endif()
+
+    if (bt_DIFF_COMPARE OR bt_IMAGE_DIFF_COMPARE)
+        # Common settings we only want to set once if either is used
 
         # For now the baseline directory is assumed by convention from the test
         # name. There may eventually be cases where we'd want to specify it by
         # an argument though.
         set(baselineDir ${testenvDir}/baseline)
         set(testWrapperCmd ${testWrapperCmd} --baseline-dir=${baselineDir})
+
+        # <PXR_CTEST_RUN_ID> will be set by CTestCustom.cmake, and then
+        # expanded by testWrapper.py
+        set(failuresDir ${PROJECT_BINARY_DIR}/Testing/Failed-Diffs/<PXR_CTEST_RUN_ID>/${TEST_NAME})
+        set(testWrapperCmd ${testWrapperCmd} --failures-dir=${failuresDir})
     endif()
 
     if (bt_CLEAN_OUTPUT)
@@ -735,6 +973,21 @@ function(pxr_register_test TEST_NAME)
 
     if (bt_EXPECTED_RETURN_CODE)
         set(testWrapperCmd ${testWrapperCmd} --expected-return-code=${bt_EXPECTED_RETURN_CODE})
+    endif()
+
+    # Ensure that TF_FATAL_VERIFY is enabled for tests, so that failed verifies
+    # turn into test failures.
+    # Set this first, so that env vars passed to pxr_register_test can turn off
+    # TF_FATAL_VERIFY where desired.
+    set(testWrapperCmd ${testWrapperCmd} --env-var=TF_FATAL_VERIFY=1)
+
+    # Allow env vars to be set via a global variable to make it easier
+    # to affect a set of tests (e.g., all tests in a library). Set
+    # this first to allow tests to override these env vars.
+    if (PXR_TEST_ENV_VARS)
+        foreach(env ${PXR_TEST_ENV_VARS})
+            set(testWrapperCmd ${testWrapperCmd} --env-var=${env})
+        endforeach()
     endif()
 
     if (bt_ENV)
@@ -767,10 +1020,18 @@ function(pxr_register_test TEST_NAME)
         set(testWrapperCmd ${testWrapperCmd} --env-var=${PXR_PLUGINPATH_NAME}=${CMAKE_INSTALL_PREFIX}/lib/usd)
     endif()
 
+    if (PXR_TEST_RUN_TEMP_DIR_PREFIX)
+          set(testWrapperCmd ${testWrapperCmd} --tempdirprefix=${PXR_TEST_RUN_TEMP_DIR_PREFIX})
+    endif()
+
     # Ensure that Python imports the Python files built by this build.
     # On Windows convert backslash to slash and don't change semicolons
     # to colons.
-    set(_testPythonPath "${CMAKE_INSTALL_PREFIX}/lib/python;$ENV{PYTHONPATH}")
+    if(IS_ABSOLUTE "${PXR_PYTHON_INSTALL_DIR}")
+        set(_testPythonPath "${PXR_PYTHON_INSTALL_DIR};$ENV{PYTHONPATH}")
+    else()
+        set(_testPythonPath "${CMAKE_INSTALL_PREFIX}/${PXR_PYTHON_INSTALL_DIR};$ENV{PYTHONPATH}")
+    endif()
     if(WIN32)
         string(REGEX REPLACE "\\\\" "/" _testPythonPath "${_testPythonPath}")
     else()
@@ -797,7 +1058,9 @@ function(pxr_register_test TEST_NAME)
     if (bt_RUN_SERIAL)
         set_tests_properties(${TEST_NAME} PROPERTIES RUN_SERIAL TRUE)
     endif()
-
+    if (bt_LABELS)
+        set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${bt_LABELS}")
+    endif()
 endfunction() # pxr_register_test
 
 function(pxr_setup_plugins)
@@ -835,6 +1098,17 @@ function(pxr_setup_plugins)
         DESTINATION plugin/usd
         RENAME "plugInfo.json"
     )
+
+    # For emscripten builds, we need to ensure that the top level plugInfo.json
+    # file is included in the resulting application bundle.  When installing,
+    # we are sure to reference the installed location of this file.
+    if (EMSCRIPTEN)
+        foreach(lib ${PXR_CORE_LIBS})
+          target_link_options(${lib} PUBLIC
+              "$<BUILD_INTERFACE:SHELL:--embed-file ${CMAKE_CURRENT_BINARY_DIR}/plugins_plugInfo.json@/usd/plugInfo.json>"
+              "$<INSTALL_INTERFACE:SHELL:--embed-file $<INSTALL_PREFIX>/lib/usd/plugInfo.json@/usd/plugInfo.json>")
+        endforeach()
+    endif()
 endfunction() # pxr_setup_plugins
 
 function(pxr_add_extra_plugins PLUGIN_AREAS)
@@ -861,11 +1135,11 @@ endfunction() # pxr_setup_third_plugins
 function(pxr_toplevel_prologue)
     # Generate a namespace declaration header, pxr.h, at the top level of
     # pxr at configuration time.
-    configure_file(${CMAKE_SOURCE_DIR}/pxr/pxr.h.in
-        ${CMAKE_BINARY_DIR}/include/pxr/pxr.h     
+    configure_file(${PROJECT_SOURCE_DIR}/pxr/pxr.h.in
+        ${PROJECT_BINARY_DIR}/include/pxr/pxr.h     
     )  
     install(
-        FILES ${CMAKE_BINARY_DIR}/include/pxr/pxr.h
+        FILES ${PROJECT_BINARY_DIR}/include/pxr/pxr.h
         DESTINATION include/pxr
     )
 
@@ -873,7 +1147,7 @@ function(pxr_toplevel_prologue)
     # or create one.
     if(PXR_BUILD_MONOLITHIC)
         if(PXR_MONOLITHIC_IMPORT)
-            # Gather the export information for usd_ms.
+            # Gather the export information for usd_m.
             include("${PXR_MONOLITHIC_IMPORT}" OPTIONAL RESULT_VARIABLE found)
 
             # If the import wasn't found then create it and import it.
@@ -897,8 +1171,8 @@ function(pxr_toplevel_prologue)
             # case we assume the files will be found there regardless
             # of IMPORTED_LOCATION.  Note, however, that the install
             # cannot be relocated in this case.
-            if(NOT PXR_INSTALL_LOCATION AND TARGET usd_ms)
-                get_property(location TARGET usd_ms PROPERTY IMPORTED_LOCATION)
+            if(NOT PXR_INSTALL_LOCATION AND TARGET usd_m)
+                get_property(location TARGET usd_m PROPERTY IMPORTED_LOCATION)
                 if(location)
                     # Remove filename and directory.
                     get_filename_component(parent "${location}" PATH)
@@ -906,44 +1180,51 @@ function(pxr_toplevel_prologue)
                     get_filename_component(parent "${parent}" ABSOLUTE)
                     get_filename_component(prefix "${CMAKE_INSTALL_PREFIX}" ABSOLUTE)
                     if(NOT "${parent}" STREQUAL "${prefix}")
-                        message("IMPORTED_LOCATION for usd_ms ${location} inconsistent with install directory ${CMAKE_INSTALL_PREFIX}.")
+                        message("IMPORTED_LOCATION for usd_m ${location} inconsistent with install directory ${CMAKE_INSTALL_PREFIX}.")
                         message(WARNING "May not find plugins at runtime.")
                     endif()
                 endif()
             endif()
         else()
-            # Note that we ignore BUILD_SHARED_LIBS when building monolithic
-            # when PXR_MONOLITHIC_IMPORT isn't set:  we always build an
-            # archive library from the core libraries and then build a
-            # shared library from that.  BUILD_SHARED_LIBS is still used
-            # for libraries outside of the core.
-
-            # We need at least one source file for the library so we
-            # create an empty one.
+            # When building the monolithic library we build all core libraries
+            # as OBJECT libs and link to those. We need at least one source file for the
+            # library so we create an empty one.
             add_custom_command(
-                OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/usd_ms.cpp"
-                COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_CURRENT_BINARY_DIR}/usd_ms.cpp"
+                OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/usd_m.cpp"
+                COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_CURRENT_BINARY_DIR}/usd_m.cpp"
             )
 
-            # Our shared library.
-            add_library(usd_ms SHARED "${CMAKE_CURRENT_BINARY_DIR}/usd_ms.cpp")
+            # Our monolithic library.
+            if(BUILD_SHARED_LIBS)
+                set(libType SHARED)
+                set(libName "usd_ms")
+            else()
+                set(libType STATIC)
+                set(libName "usd_m")
+            endif()
+
+            add_library(usd_m ${libType} "${CMAKE_CURRENT_BINARY_DIR}/usd_m.cpp")
+
             _get_folder("" folder)
-            set_target_properties(usd_ms
+            _get_library_prefix(libPrefix)
+            set_target_properties(usd_m
                 PROPERTIES
                     FOLDER "${folder}"
-                    PREFIX "${PXR_LIB_PREFIX}"
-                    IMPORT_PREFIX "${PXR_LIB_PREFIX}"
+                    PREFIX "${libPrefix}"
+                    IMPORT_PREFIX "${libPrefix}"
+                    OUTPUT_NAME ${libName}
             )
             _get_install_dir("lib" libInstallPrefix)
             install(
-                TARGETS usd_ms
+                TARGETS usd_m
+                EXPORT pxrTargets
                 LIBRARY DESTINATION ${libInstallPrefix}
                 ARCHIVE DESTINATION ${libInstallPrefix}
                 RUNTIME DESTINATION ${libInstallPrefix}
             )
-            if(WIN32)
+            if(WIN32 AND BUILD_SHARED_LIBS)
                 install(
-                    FILES $<TARGET_PDB_FILE:usd_ms>
+                    FILES $<TARGET_PDB_FILE:usd_m>
                     DESTINATION ${libInstallPrefix}
                     OPTIONAL
                 )
@@ -953,201 +1234,97 @@ function(pxr_toplevel_prologue)
 
     # Create a target for shared libraries.  We currently use this only
     # to test its existence.
-    if(BUILD_SHARED_LIBS OR TARGET usd_ms)
+    if(BUILD_SHARED_LIBS)
         add_custom_target(shared_libs)
     endif()
 
     # Create a target for targets that require Python.  Each should add
-    # itself as a dependency to the "python" target.
+    # itself as a dependency to the "python_modules" target.
     if(TARGET shared_libs AND PXR_ENABLE_PYTHON_SUPPORT)
-        add_custom_target(python ALL)
+        add_custom_target(python_modules ALL)
     endif()
 endfunction() # pxr_toplevel_prologue
 
 function(pxr_toplevel_epilogue)
     # If we're building a shared monolithic library then link it against
-    # usd_m.
-    if(TARGET usd_ms AND NOT PXR_MONOLITHIC_IMPORT)
-        # We need to use whole-archive to get all the symbols.  Also note
-        # that we carefully avoid adding the usd_m target itself by using
-        # TARGET_FILE.  Linking the usd_m target would link usd_m and
-        # everything it links to.
-        if(MSVC)
-            target_link_libraries(usd_ms
-                PRIVATE
-                    -WHOLEARCHIVE:$<TARGET_FILE:usd_m>
-            )
-        elseif(CMAKE_COMPILER_IS_GNUCXX)
-            target_link_libraries(usd_ms
-                PRIVATE
-                    -Wl,--whole-archive $<TARGET_FILE:usd_m> -Wl,--no-whole-archive
-            )
-        elseif("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
-            target_link_libraries(usd_ms
-                PRIVATE
-                    -Wl,-force_load $<TARGET_FILE:usd_m>
+    # each internal object library.
+    if(TARGET usd_m AND NOT PXR_MONOLITHIC_IMPORT)
+        if(APPLE AND PXR_PY_UNDEFINED_DYNAMIC_LOOKUP)
+            # When not explicitly linking to the python lib we need to allow
+            # the linker to complete without resolving all symbols. This lets
+            # python resolve at runtime, and use this to support python
+            # versions built with different compilers and point versions.
+            # This only needed on macOS; this is not an issue on Windows,
+            # and on Linux the equivalent --allow-shlib-undefined option for ld
+            # is enabled by default when creating shared libraries.
+            target_link_options(usd_m
+                PUBLIC
+                "LINKER:SHELL:-undefined dynamic_lookup"
             )
         endif()
 
-        # Since we didn't add a dependency to usd_ms on usd_m above, we
-        # manually add it here along with compile definitions, include
-        # directories, etc
-        add_dependencies(usd_ms usd_m)
-
-        # Add the stuff we didn't get because we didn't link against the
-        # usd_m target.
-        target_compile_definitions(usd_ms
-            PUBLIC
-                $<TARGET_PROPERTY:usd_m,INTERFACE_COMPILE_DEFINITIONS>
-        )
-        target_include_directories(usd_ms
-            PUBLIC
-                $<TARGET_PROPERTY:usd_m,INTERFACE_INCLUDE_DIRECTORIES>
-        )
-        target_include_directories(usd_ms
-            SYSTEM
-            PUBLIC
-                $<TARGET_PROPERTY:usd_m,INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>
-        )
+        # When building a monolithic library (static or shared) we want all
+        # API functions to be exported. So add FOO_EXPORTS=1 for every
+        # library in PXR_OBJECT_LIBS, where FOO is the uppercase version
+        # of the library name, to every library in PXR_OBJECT_LIBS.
+        set(exports "")
         foreach(lib ${PXR_OBJECT_LIBS})
-            get_property(libs TARGET ${lib} PROPERTY INTERFACE_LINK_LIBRARIES)
-            target_link_libraries(usd_ms
-                PUBLIC
-                    ${libs}
-            )
+            string(TOUPPER ${lib} uppercaseName)
+            list(APPEND exports "${uppercaseName}_EXPORTS=1")
         endforeach()
-        target_link_libraries(usd_ms
-            PUBLIC
-                ${PXR_MALLOC_LIBRARY}
-                ${PXR_THREAD_LIBS}
-        )
 
-        _pxr_init_rpath(rpath "${libInstallPrefix}")
-        _pxr_add_rpath(rpath "${CMAKE_INSTALL_PREFIX}/${PXR_INSTALL_SUBDIR}/lib")
-        _pxr_add_rpath(rpath "${CMAKE_INSTALL_PREFIX}/lib")
-        _pxr_install_rpath(rpath usd_ms)
+        if (TARGET python)
+            # The boost python target uses a different export macro so
+            # add that as well.
+            list(APPEND exports "PXR_BOOST_PYTHON_SOURCE=1")
+        endif()
+
+        foreach(lib ${PXR_OBJECT_LIBS})
+            target_compile_definitions(${lib} PRIVATE ${exports})
+        endforeach()
+
+        if(BUILD_SHARED_LIBS)
+            target_link_libraries(usd_m
+                PUBLIC
+                    ${PXR_OBJECT_LIBS}
+                    ${PXR_MALLOC_LIBRARY}
+                    ${PXR_THREAD_LIBS}
+            )
+
+            _pxr_init_rpath(rpath "${libInstallPrefix}")
+            _pxr_add_rpath(rpath "${CMAKE_INSTALL_PREFIX}/${PXR_INSTALL_SUBDIR}/lib")
+            _pxr_add_rpath(rpath "${CMAKE_INSTALL_PREFIX}/lib")
+            _pxr_install_rpath(rpath usd_m)
+        else()
+            foreach(lib ${PXR_OBJECT_LIBS})
+                target_link_libraries(usd_m
+                    PUBLIC
+                        ${lib}
+                )
+                target_sources(usd_m PRIVATE "$<TARGET_OBJECTS:${lib}>")
+                get_property(libs TARGET ${lib} PROPERTY INTERFACE_LINK_LIBRARIES)
+                target_link_libraries(usd_m
+                    PRIVATE
+                        ${libs}
+                )
+            endforeach()
+
+            set_target_properties(usd_m
+                PROPERTIES
+                    POSITION_INDEPENDENT_CODE ON
+            )
+        endif()
     endif()
 
     # Setup the plugins in the top epilogue to ensure that everybody has had a
     # chance to update PXR_EXTRA_PLUGINS with their plugin paths.
     pxr_setup_plugins()
+
+    if (PXR_BUILD_APPLE_FRAMEWORK)
+        pxr_create_apple_framework()
+    endif ()
+
 endfunction() # pxr_toplevel_epilogue
-
-function(pxr_monolithic_epilogue)
-    # When building a monolithic library we want all API functions to be
-    # exported.  So add FOO_EXPORTS=1 for every library in PXR_OBJECT_LIBS,
-    # where FOO is the uppercase version of the library name, to every
-    # library in PXR_OBJECT_LIBS.
-    set(exports "")
-    foreach(lib ${PXR_OBJECT_LIBS})
-        string(TOUPPER ${lib} uppercaseName)
-        list(APPEND exports "${uppercaseName}_EXPORTS=1")
-    endforeach()
-    foreach(lib ${PXR_OBJECT_LIBS})
-        set(objects "${objects};\$<TARGET_OBJECTS:${lib}>")
-        target_compile_definitions(${lib} PRIVATE ${exports})
-    endforeach()
-
-    # Collect all of the objects for all of the core libraries to add to
-    # the monolithic library.
-    set(objects "")
-    foreach(lib ${PXR_OBJECT_LIBS})
-        set(objects "${objects};\$<TARGET_OBJECTS:${lib}>")
-    endforeach()
-
-    # Add the monolithic library.  This has to be delayed until now
-    # because $<TARGET_OBJECTS> isn't a real generator expression
-    # in that it can only appear in the sources of add_library() or
-    # add_executable();  it can't appear in target_sources().  We
-    # need at least one source file so we create an empty one
-    add_custom_command(
-        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/usd_m.cpp"
-        COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_CURRENT_BINARY_DIR}/usd_m.cpp"
-    )
-    add_library(usd_m STATIC "${CMAKE_CURRENT_BINARY_DIR}/usd_m.cpp" ${objects})
-
-    _get_folder("" folder)
-    set_target_properties(usd_m
-        PROPERTIES
-            FOLDER "${folder}"
-            POSITION_INDEPENDENT_CODE ON
-            PREFIX "${PXR_LIB_PREFIX}"
-            IMPORT_PREFIX "${PXR_LIB_PREFIX}"
-    )
-
-    # Adding $<TARGET_OBJECTS:foo> will not bring along compile
-    # definitions, include directories, etc.  Since we'll want those
-    # attached to usd_m we explicitly add them.
-    foreach(lib ${PXR_OBJECT_LIBS})
-        target_compile_definitions(usd_m
-            PUBLIC
-                $<TARGET_PROPERTY:${lib},INTERFACE_COMPILE_DEFINITIONS>
-        )
-        target_include_directories(usd_m
-            PUBLIC
-                $<TARGET_PROPERTY:${lib},INTERFACE_INCLUDE_DIRECTORIES>
-        )
-        target_include_directories(usd_m
-            SYSTEM
-            PUBLIC
-                $<TARGET_PROPERTY:${lib},INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>
-        )
-
-        get_property(libs TARGET ${lib} PROPERTY INTERFACE_LINK_LIBRARIES)
-        target_link_libraries(usd_m
-            PUBLIC
-                ${libs}
-        )
-    endforeach()
-
-    # Manual export targets.  We can't use install(EXPORT) because usd_m
-    # depends on OBJECT libraries which cannot be exported yet must be
-    # in order to export usd_m.  We also have boilerplate for usd_ms, the
-    # externally built monolithic shared library containing usd_m.  The
-    # client should replace the FIXMEs with the appropriate paths or
-    # use the usd_m export to build against and generate a usd_ms export.
-    set(export "")
-    set(export "${export}add_library(usd_m STATIC IMPORTED)\n")
-    set(export "${export}set_property(TARGET usd_m PROPERTY IMPORTED_LOCATION $<TARGET_FILE:usd_m>)\n")
-    set(export "${export}set_property(TARGET usd_m PROPERTY INTERFACE_COMPILE_DEFINITIONS $<TARGET_PROPERTY:usd_m,INTERFACE_COMPILE_DEFINITIONS>)\n")
-    set(export "${export}set_property(TARGET usd_m PROPERTY INTERFACE_INCLUDE_DIRECTORIES $<TARGET_PROPERTY:usd_m,INTERFACE_INCLUDE_DIRECTORIES>)\n")
-    set(export "${export}set_property(TARGET usd_m PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES $<TARGET_PROPERTY:usd_m,INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>)\n")
-    set(export "${export}set_property(TARGET usd_m PROPERTY INTERFACE_LINK_LIBRARIES $<TARGET_PROPERTY:usd_m,INTERFACE_LINK_LIBRARIES>)\n")
-    file(GENERATE
-        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/usd-targets-$<CONFIG>.cmake"
-        CONTENT "${export}"
-    )
-    set(export "")
-    set(export "${export}# Boilerplate for export of usd_ms.  Replace FIXMEs with appropriate paths\n")
-    set(export "${export}# or include usd-targets-$<CONFIG>.cmake in your own build and generate your\n")
-    set(export "${export}# own export file.  Configure with PXR_MONOLITHIC_IMPORT set to the path of\n")
-    set(export "${export}# the export file.\n")
-    set(export "${export}add_library(usd_ms SHARED IMPORTED)\n")
-    set(export "${export}set_property(TARGET usd_ms PROPERTY IMPORTED_LOCATION FIXME)\n")
-    set(export "${export}#set_property(TARGET usd_ms PROPERTY IMPORTED_IMPLIB FIXME)\n")
-    set(export "${export}set_property(TARGET usd_ms PROPERTY INTERFACE_COMPILE_DEFINITIONS $<TARGET_PROPERTY:usd_m,INTERFACE_COMPILE_DEFINITIONS>)\n")
-    set(export "${export}set_property(TARGET usd_ms PROPERTY INTERFACE_INCLUDE_DIRECTORIES $<TARGET_PROPERTY:usd_m,INTERFACE_INCLUDE_DIRECTORIES>)\n")
-    set(export "${export}set_property(TARGET usd_ms PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES $<TARGET_PROPERTY:usd_m,INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>)\n")
-    set(export "${export}set_property(TARGET usd_ms PROPERTY INTERFACE_LINK_LIBRARIES $<TARGET_PROPERTY:usd_m,INTERFACE_LINK_LIBRARIES>)\n")
-    file(GENERATE
-        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/usd-imports-$<CONFIG>.cmake"
-        CONTENT "${export}"
-    )
-
-    # Convenient name for building the monolithic library.
-    add_custom_target(monolithic
-        DEPENDS
-            usd_m
-        COMMAND ${CMAKE_COMMAND} -E copy
-            "${CMAKE_CURRENT_BINARY_DIR}/usd-targets-$<CONFIG>.cmake"
-            "${CMAKE_BINARY_DIR}/usd-targets-$<CONFIG>.cmake"
-        COMMAND ${CMAKE_COMMAND} -E copy
-            "${CMAKE_CURRENT_BINARY_DIR}/usd-imports-$<CONFIG>.cmake"
-            "${CMAKE_BINARY_DIR}/usd-imports-$<CONFIG>.cmake"
-        COMMAND ${CMAKE_COMMAND} -E echo Export file: ${CMAKE_BINARY_DIR}/usd-targets-$<CONFIG>.cmake
-        COMMAND ${CMAKE_COMMAND} -E echo Import file: ${CMAKE_BINARY_DIR}/usd-imports-$<CONFIG>.cmake
-    )
-endfunction() # pxr_monolithic_epilogue
 
 function(pxr_core_prologue)
     set(_building_core TRUE PARENT_SCOPE)
@@ -1159,7 +1336,6 @@ endfunction() # pxr_core_prologue
 function(pxr_core_epilogue)
     if(_building_core)
         if(_building_monolithic)
-            pxr_monolithic_epilogue()
             set(_building_monolithic FALSE PARENT_SCOPE)
         endif()
         if(PXR_ENABLE_PYTHON_SUPPORT)
@@ -1168,3 +1344,104 @@ function(pxr_core_epilogue)
         set(_building_core FALSE PARENT_SCOPE)
     endif()
 endfunction() # pxr_core_epilogue
+
+function(pxr_tests_prologue)
+    add_custom_target(
+        test_setup
+        ALL
+        DEPENDS "${PROJECT_BINARY_DIR}/CTestCustom.cmake"
+    )
+    add_custom_command(
+        OUTPUT "${PROJECT_BINARY_DIR}/CTestCustom.cmake"
+        COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/defaults/CTestCustom.cmake"
+            "${PROJECT_BINARY_DIR}/CTestCustom.cmake"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/defaults/CTestCustom.cmake"
+        COMMENT "Copying CTestCustom.cmake"
+    )
+endfunction() # pxr_tests_prologue
+
+function(pxr_build_python_documentation)
+    set(BUILT_XML_DOCS "${PROJECT_BINARY_DIR}/docs/doxy_xml")
+    set(CONVERT_DOXYGEN_TO_PYTHON_DOCS_SCRIPT
+       "${PROJECT_SOURCE_DIR}/docs/python/convertDoxygen.py")
+
+    # Compute the absolute path to the Python bindings install directory.
+    if(IS_ABSOLUTE "${PXR_PYTHON_INSTALL_DIR}")
+        set(_pythonInstallDirAbs "${PXR_PYTHON_INSTALL_DIR}")
+    else()
+        set(_pythonInstallDirAbs "${CMAKE_INSTALL_PREFIX}/${PXR_PYTHON_INSTALL_DIR}")
+    endif()
+    set(INSTALL_PYTHON_PXR_ROOT "${_pythonInstallDirAbs}/pxr")
+
+    # Get the list of pxr python modules and run a install command for each
+    get_property(pxrPythonModules GLOBAL PROPERTY PXR_PYTHON_MODULES)
+    # Create string of module names, joined with ","
+    string(REPLACE ";" "," pxrPythonModulesStr "${pxrPythonModules}")
+    # Run convertDoxygen on the module list, setting PYTHONPATH
+    # to the install path for the USD Python modules
+    if (WIN32)
+        set(DLL_PATH_FLAG "--dllPath \"${CMAKE_INSTALL_PREFIX}/lib;${CMAKE_INSTALL_PREFIX}/bin;${CMAKE_INSTALL_PREFIX}/plugin/usd;${CMAKE_INSTALL_PREFIX}/share/usd/examples/plugin\"")
+    else()
+        set(DLL_PATH_FLAG "")
+    endif()
+    install(CODE "\
+        execute_process(\
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/cmake \
+            RESULT_VARIABLE convert_doxygen_return_code
+            COMMAND ${PYTHON_EXECUTABLE} ${CONVERT_DOXYGEN_TO_PYTHON_DOCS_SCRIPT} \
+                --package pxr --module ${pxrPythonModulesStr} \
+                --inputIndex ${BUILT_XML_DOCS}/index.xml \
+                --pythonPath ${_pythonInstallDirAbs} \
+                ${DLL_PATH_FLAG} \
+                --output ${INSTALL_PYTHON_PXR_ROOT})
+        if (NOT \${convert_doxygen_return_code} EQUAL \"0\")
+            message( FATAL_ERROR \"Error generating python docstrings - ${CONVERT_DOXYGEN_TO_PYTHON_DOCS_SCRIPT} return code: \${convert_doxygen_return_code} \")
+        endif()
+    ")
+
+endfunction() # pxr_build_python_documentation
+
+# Adding support for a "docs-only" directory, needed when adding doxygen docs
+# not associated with a specific library/etc. 
+function(pxr_docs_only_dir NAME)
+    # Get list of doxygen files, which could include image files and/or 
+    # snippets example cpp files 
+    set(multiValueArgs
+        DOXYGEN_FILES
+    )
+    cmake_parse_arguments(args
+        ""
+        ""
+        "${multiValueArgs}"
+        ${ARGN}
+    )
+    if(PXR_BUILD_DOCUMENTATION)
+        _copy_doxygen_files(${NAME}
+            IS_LIB
+                FALSE
+            HEADER_INSTALL_PREFIX
+                "include/${PXR_PREFIX}"
+            DOXYGEN_FILES
+                ${args_DOXYGEN_FILES}
+        )
+    endif()
+endfunction() # pxr_docs_only_dir
+
+# Sets rpaths for the specified TARGET to the given RPATHS. The target's
+# runtime destination directory is given by ORIGIN. If ORIGIN is not
+# absolute it is assumed to be relative to CMAKE_INSTALL_PREFIX.
+function(pxr_set_rpaths_for_target TARGET)
+    set(oneValueArgs ORIGIN)
+    set(multiValueArgs RPATHS)
+    cmake_parse_arguments(args "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+    _pxr_init_rpath(rpath ${args_ORIGIN})
+
+    foreach(path IN LISTS args_RPATHS)
+        _pxr_add_rpath(rpath ${path})
+    endforeach()
+
+    _pxr_install_rpath(rpath ${TARGET})
+
+endfunction() # pxr_set_rpaths_for_target

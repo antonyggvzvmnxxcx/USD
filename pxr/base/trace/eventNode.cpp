@@ -1,25 +1,8 @@
 //
 // Copyright 2018 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 #include "pxr/base/trace/eventNode.h"
@@ -29,24 +12,21 @@
 PXR_NAMESPACE_OPEN_SCOPE
 
 TraceEventNodeRefPtr
-TraceEventNode::Append(
-    const TfToken &key, 
-    TraceCategoryId category, 
-    TimeStamp beginTime, 
-    TimeStamp endTime,
-    bool separateEvents)
+TraceEventNode::New() {
+    return TraceEventNode::New(
+        TfToken("root"), TraceCategory::Default,
+        /*beginTime=*/0, /*endTime=*/0, /*separateEvents=*/false);
+}
+
+TraceEventNode::~TraceEventNode()
 {
-    TraceEventNodeRefPtr n = 
-        TraceEventNode::New(
-            key, category, beginTime, endTime, {}, separateEvents);
-    _children.push_back(n);
-    return n;
+    delete _attributesAndSeparateEvents.Get();
 }
 
 void
-TraceEventNode::Append(TraceEventNodeRefPtr node)
+TraceEventNode::Append(TraceEventNodeRefPtr &&node)
 {
-    _children.push_back(node);
+    _children.emplace_back(std::move(node));
 }
 
 void 
@@ -65,14 +45,30 @@ TraceEventNode::SetBeginAndEndTimesFromChildren()
         _beginTime = std::min(_beginTime, c->GetBeginTime());
         _endTime   = std::max(_endTime, c->GetEndTime());
     }
+}
 
+const TraceEventNode::AttributeMap&
+TraceEventNode::GetAttributes() const
+{
+    static const AttributeMap empty;
+    if (AttributeMap const *attrMap = _attributesAndSeparateEvents.Get()) {
+        return *attrMap;
+    }
+    return empty;
 }
 
 void
 TraceEventNode::AddAttribute(
-    const TfToken& key, const AttributeData& attr)
+    const TfToken& key, AttributeData&& attr)
 {
-    _attributes.emplace(key, attr);
+    if (!_attributesAndSeparateEvents.Get()) {
+        _attributesAndSeparateEvents.Set(new AttributeMap);
+    }
+    // Place `attr` at the head of the list to facilitate event tree building --
+    // that process iterates events in reverse order, so this ends up placing
+    // events in forward order.
+    _attributesAndSeparateEvents->emplace_hint(
+        _attributesAndSeparateEvents->find(key), key, std::move(attr));
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

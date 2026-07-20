@@ -1,29 +1,16 @@
 //
 // Copyright 2017 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/plugin/hdEmbree/rendererPlugin.h"
 
+#include "pxr/imaging/hd/renderDelegateInfo.h"
 #include "pxr/imaging/hd/rendererPluginRegistry.h"
+#include "pxr/imaging/hd/retainedDataSource.h"
+#include "pxr/imaging/hd/sceneIndexCreateArgsSchema.h"
+
 #include "pxr/imaging/plugin/hdEmbree/renderDelegate.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -32,6 +19,39 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_REGISTRY_FUNCTION(TfType)
 {
     HdRendererPluginRegistry::Define<HdEmbreeRendererPlugin>();
+}
+
+static
+HdRenderDelegateInfo
+_RenderDelegateInfo()
+{
+    HdRenderDelegateInfo result;
+
+    // Re-implemented from HdEmbreeRenderDelegate::GetMaterialBindingPurpose()
+    result.materialBindingPurpose = HdTokens->full;
+    // Default from HdRenderDelegate::IsPrimvarFilteringNeeded().
+    result.isPrimvarFilteringNeeded = false;
+    // No coordSys among HdEmbreeRenderDelegate::GetSupportedSprimTypes().
+    result.isCoordSysSupported = false;
+
+    return result;
+}
+
+HdContainerDataSourceHandle
+HdEmbreeRendererPlugin::GetSceneIndexCreateArgs() const
+{
+    static HdContainerDataSourceHandle const result =
+        HdSceneIndexCreateArgsSchema::Builder()
+            .SetMotionBlurSupport(
+                HdRetainedTypedSampledDataSource<bool>::New(false))
+            .SetCameraMotionBlurSupport(
+                HdRetainedTypedSampledDataSource<bool>::New(false))
+            .SetLegacyRenderDelegateInfo(
+                HdRetainedTypedSampledDataSource<HdRenderDelegateInfo>::New(
+                    _RenderDelegateInfo()))
+            .Build();
+
+    return result;
 }
 
 HdRenderDelegate*
@@ -54,7 +74,9 @@ HdEmbreeRendererPlugin::DeleteRenderDelegate(HdRenderDelegate *renderDelegate)
 }
 
 bool 
-HdEmbreeRendererPlugin::IsSupported() const
+HdEmbreeRendererPlugin::IsSupported(
+    const HdRendererCreateArgsSchema & /* rendererCreateArgs */,
+    std::string * /* reasonWhyNot */) const
 {
     // Nothing more to check for now, we assume if the plugin loads correctly
     // it is supported.

@@ -1,25 +1,8 @@
 //
 // Copyright 2020 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdx/hgiConversions.h"
 #include "pxr/base/tf/iterator.h"
@@ -53,6 +36,11 @@ static const _FormatDesc FORMAT_DESC[] =
     {HdFormatFloat32Vec3, HgiFormatFloat32Vec3}, 
     {HdFormatFloat32Vec4, HgiFormatFloat32Vec4}, 
 
+    {HdFormatInt16,      HgiFormatInt16},
+    {HdFormatInt16Vec2,  HgiFormatInt16Vec2},
+    {HdFormatInt16Vec3,  HgiFormatInt16Vec3},
+    {HdFormatInt16Vec4,  HgiFormatInt16Vec4},
+
     {HdFormatUInt16,     HgiFormatUInt16},
     {HdFormatUInt16Vec2, HgiFormatUInt16Vec2},
     {HdFormatUInt16Vec3, HgiFormatUInt16Vec3},
@@ -69,12 +57,12 @@ static const _FormatDesc FORMAT_DESC[] =
 // A few random format validations to make sure that the format conversion
 // table stays up-to-date with changes to HdFormat and HgiFormat.
 constexpr bool _CompileTimeValidateFormatTable() {
-    return (HdFormatCount == 25 &&
+    return (HdFormatCount == 29 &&
             HdFormatUNorm8 == 0 && HgiFormatUNorm8 == 0 &&
             HdFormatFloat16Vec4 == 11 && HgiFormatFloat16Vec4 == 9 &&
             HdFormatFloat32Vec4 == 15 && HgiFormatFloat32Vec4 == 13 &&
-            HdFormatUInt16Vec4 == 19 && HgiFormatUInt16Vec4 == 17 &&
-            HdFormatInt32Vec4 == 23 && HgiFormatInt32Vec4 == 21) ? true : false;
+            HdFormatUInt16Vec4 == 23 && HgiFormatUInt16Vec4 == 21 &&
+            HdFormatInt32Vec4 == 27 && HgiFormatInt32Vec4 == 25) ? true : false;
 }
 
 static_assert(_CompileTimeValidateFormatTable(), 

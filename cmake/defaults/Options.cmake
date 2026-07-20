@@ -1,25 +1,8 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 option(PXR_STRICT_BUILD_MODE "Turn on additional warnings. Enforce all warnings as errors." OFF)
 option(PXR_VALIDATE_GENERATED_CODE "Validate script generated code" OFF)
@@ -31,25 +14,66 @@ option(PXR_BUILD_USD_TOOLS "Build commandline tools" ON)
 option(PXR_BUILD_IMAGING "Build imaging components" ON)
 option(PXR_BUILD_EMBREE_PLUGIN "Build embree imaging plugin" OFF)
 option(PXR_BUILD_OPENIMAGEIO_PLUGIN "Build OpenImageIO plugin" OFF)
+if(APPLE)
+    option(PXR_BUILD_IMAGEIO_PLUGIN "Build the ImageIO.framework plugin for Apple platforms" ON)
+endif()
 option(PXR_BUILD_OPENCOLORIO_PLUGIN "Build OpenColorIO plugin" OFF)
 option(PXR_BUILD_USD_IMAGING "Build USD imaging components" ON)
+option(PXR_BUILD_USD_VALIDATION "Build USD validation library and core USD validators" ON)
+option(PXR_BUILD_EXEC "Build the Exec libraries" ON)
 option(PXR_BUILD_USDVIEW "Build usdview" ON)
 option(PXR_BUILD_ALEMBIC_PLUGIN "Build the Alembic plugin for USD" OFF)
 option(PXR_BUILD_DRACO_PLUGIN "Build the Draco plugin for USD" OFF)
 option(PXR_BUILD_PRMAN_PLUGIN "Build the PRMan imaging plugin" OFF)
 option(PXR_ENABLE_MATERIALX_SUPPORT "Enable MaterialX support" OFF)
 option(PXR_BUILD_DOCUMENTATION "Generate doxygen documentation" OFF)
+option(PXR_BUILD_PYTHON_DOCUMENTATION "Generate Python documentation" OFF)
+option(PXR_BUILD_HTML_DOCUMENTATION "Generate HTML documentation if PXR_BUILD_DOCUMENTATION is ON" ON)
 option(PXR_ENABLE_PYTHON_SUPPORT "Enable Python based components for USD" ON)
-option(PXR_USE_PYTHON_3 "Build Python bindings for Python 3" OFF)
-option(PXR_ENABLE_HDF5_SUPPORT "Enable HDF5 backend in the Alembic plugin for USD" ON)
+option(PXR_USE_DEBUG_PYTHON "Build with debug python" OFF)
+option(PXR_ENABLE_HDF5_SUPPORT "Enable HDF5 backend in the Alembic plugin for USD" OFF)
 option(PXR_ENABLE_OSL_SUPPORT "Enable OSL (OpenShadingLanguage) based components" OFF)
-option(PXR_ENABLE_PTEX_SUPPORT "Enable Ptex support" ON)
+option(PXR_ENABLE_PTEX_SUPPORT "Enable Ptex support" OFF)
 option(PXR_ENABLE_OPENVDB_SUPPORT "Enable OpenVDB support" OFF)
 option(PXR_ENABLE_NAMESPACES "Enable C++ namespaces." ON)
 option(PXR_PREFER_SAFETY_OVER_SPEED
        "Enable certain checks designed to avoid crashes or out-of-bounds memory reads with malformed input files.  These checks may negatively impact performance."
         ON)
-option(PXR_USE_AR_2 "Use Asset Resolver (Ar) 2.0" OFF)
+
+if(APPLE)
+    # Cross Compilation detection as defined in CMake docs
+    # Required to be handled here so it can configure options later on
+    # https://cmake.org/cmake/help/latest/manual/cmake-toolchains.7.html#cross-compiling-for-ios-tvos-visionos-or-watchos
+    # Note: All these SDKs may not be supported by OpenUSD, but are all listed here for future proofing
+    set(PXR_APPLE_EMBEDDED OFF)
+    if (CMAKE_SYSTEM_NAME MATCHES "iOS"
+            OR CMAKE_SYSTEM_NAME MATCHES "tvOS"
+            OR CMAKE_SYSTEM_NAME MATCHES "visionOS"
+            OR CMAKE_SYSTEM_NAME MATCHES "watchOS")
+        set(PXR_APPLE_EMBEDDED ON)
+        if(${PXR_BUILD_USD_TOOLS})
+            MESSAGE(STATUS "Setting PXR_BUILD_USD_TOOLS=OFF because they are not supported on Apple embedded platforms")
+            set(PXR_BUILD_USD_TOOLS OFF)
+        endif()
+        if(${PXR_BUILD_OPENCOLORIO_PLUGIN})
+            MESSAGE(STATUS "Setting PXR_BUILD_OPENCOLORIO_PLUGIN=OFF because it is not supported on Apple embedded platforms")
+            set(PXR_BUILD_OPENCOLORIO_PLUGIN OFF)
+        endif()
+        if(${PXR_BUILD_OPENIMAGEIO_PLUGIN})
+            MESSAGE(STATUS "Setting PXR_BUILD_OPENIMAGEIO_PLUGIN=OFF because it is not supported on Apple embedded platforms")
+            set(PXR_BUILD_OPENIMAGEIO_PLUGIN OFF)
+        endif()
+        if(${PXR_ENABLE_OPENVDB_SUPPORT})
+            MESSAGE(STATUS "Setting PXR_ENABLE_OPENVDB_SUPPORT=OFF because it is not supported on Apple embedded platforms")
+            set(PXR_ENABLE_OPENVDB_SUPPORT OFF)
+        endif()
+    endif ()
+
+    option(PXR_BUILD_APPLE_FRAMEWORK "Builds an Apple Framework." ${PXR_APPLE_EMBEDDED})
+    set(PXR_APPLE_FRAMEWORK_NAME "OpenUSD" CACHE STRING "Name to provide Apple Framework build")
+    set(PXR_APPLE_IDENTIFIER_DOMAIN "org.openusd" CACHE STRING "Name to provide Apple Framework build")
+endif()
+
 
 # Determine GFX api
 # Metal only valid on Apple platforms
@@ -73,16 +97,39 @@ set(PXR_PRECOMPILED_HEADER_NAME "pch.h"
     "Default name of precompiled header files"
 )
 
+set(PXR_WORK_IMPL ""
+    CACHE
+    STRING
+    "Name of CMake package containing custom implementation for libWork."
+)
+
 set(PXR_INSTALL_LOCATION ""
     CACHE
     STRING
     "Intended final location for plugin resource files."
 )
 
+set(PXR_PYTHON_INSTALL_DIR ""
+    CACHE
+    STRING
+    "Directory for installing Python bindings (relative to \
+    CMAKE_INSTALL_PREFIX or absolute). If unspecified, defaults to \
+    'lib/pythonX.Y/site-packages' on Linux and MacOS and 'Lib\\site-packages' \
+    on Windows."
+)
+
 set(PXR_OVERRIDE_PLUGINPATH_NAME ""
     CACHE
     STRING
     "Name of the environment variable that will be used to get plugin paths."
+)
+
+set(PXR_TEST_RUN_TEMP_DIR_PREFIX ""
+    CACHE
+    STRING
+    "Prefix for test run temporary directory names. \
+    Setting this option to \"foo-\" will create directories like \
+    \"<temp dir>/foo-<test dir>\"."
 )
 
 set(PXR_ALL_LIBS ""
@@ -106,10 +153,15 @@ set(PXR_OBJECT_LIBS ""
     "Aggregation of all core libraries built as OBJECT libraries."
 )
 
-set(PXR_LIB_PREFIX ${CMAKE_SHARED_LIBRARY_PREFIX}
+string(CONCAT helpstr
+    "Prefix for built library filenames. If unspecified, defaults "
+    "to 'libusd_' on Linux/macOS and 'usd_' on Windows, or '' for "
+    "monolithic builds."
+)
+set(PXR_LIB_PREFIX ""
     CACHE
     STRING
-    "Prefix for build library name"
+    "${helpstr}"
 )
 
 option(BUILD_SHARED_LIBS "Build shared libraries." ON)
@@ -117,7 +169,7 @@ option(PXR_BUILD_MONOLITHIC "Build a monolithic library." OFF)
 set(PXR_MONOLITHIC_IMPORT ""
     CACHE
     STRING
-    "Path to cmake file that imports a usd_ms target"
+    "Path to cmake file that imports a usd_m target"
 )
 
 set(PXR_EXTRA_PLUGINS ""
@@ -125,12 +177,37 @@ set(PXR_EXTRA_PLUGINS ""
     INTERNAL
     "Aggregation of extra plugin directories containing a plugInfo.json.")
 
+if (PXR_BUILD_APPLE_FRAMEWORK)
+    MESSAGE(STATUS "Framework build requires monolithic builds.")
+    set(PXR_BUILD_MONOLITHIC ON)
+    set(BUILD_SHARED_LIBS ON)
+
+    set(PXR_APPLE_FRAMEWORK_RELATIVE_RESOURCES ""
+        CACHE
+        STRING
+        "Relative path to search for resources within an Apple framework.")
+    mark_as_advanced(PXR_APPLE_FRAMEWORK_RELATIVE_RESOURCES)
+
+    if(PXR_APPLE_EMBEDDED)
+        set(PXR_APPLE_FRAMEWORK_RELATIVE_RESOURCES "Assets")
+    else()
+        set(PXR_APPLE_FRAMEWORK_RELATIVE_RESOURCES "Resources")
+    endif()
+endif ()
 # Resolve options that depend on one another so that subsequent .cmake scripts
 # all have the final value for these options.
 if (${PXR_BUILD_USD_IMAGING} AND NOT ${PXR_BUILD_IMAGING})
     message(STATUS
         "Setting PXR_BUILD_USD_IMAGING=OFF because PXR_BUILD_IMAGING=OFF")
     set(PXR_BUILD_USD_IMAGING "OFF" CACHE BOOL "" FORCE)
+endif()
+
+if (${PXR_ENABLE_METAL_SUPPORT})
+    if (NOT APPLE)
+        message(STATUS
+            "Setting PXR_ENABLE_METAL_SUPPORT=OFF because Metal is only supported on macOS")
+        set(PXR_ENABLE_METAL_SUPPORT "OFF" CACHE BOOL "" FORCE)
+    endif()
 endif()
 
 if (${PXR_ENABLE_GL_SUPPORT} OR ${PXR_ENABLE_METAL_SUPPORT} OR ${PXR_ENABLE_VULKAN_SUPPORT})
@@ -185,3 +262,53 @@ if (${PXR_BUILD_DRACO_PLUGIN} AND ${PXR_BUILD_MONOLITHIC} AND WIN32)
     message(FATAL_ERROR 
         "Draco plugin can not be enabled for monolithic builds on Windows")
 endif()
+
+# Make sure PXR_BUILD_DOCUMENTATION and PXR_ENABLE_PYTHON_SUPPORT are enabled 
+# if PXR_BUILD_PYTHON_DOCUMENTATION is enabled
+if (${PXR_BUILD_PYTHON_DOCUMENTATION})
+    if (NOT ${PXR_BUILD_DOCUMENTATION})
+        message(STATUS
+            "Setting PXR_BUILD_PYTHON_DOCUMENTATION=OFF because "
+            "PXR_BUILD_DOCUMENTATION=OFF")
+        set(PXR_BUILD_PYTHON_DOCUMENTATION "OFF" CACHE BOOL "" FORCE)
+    elseif (NOT ${PXR_ENABLE_PYTHON_SUPPORT})
+        message(STATUS
+            "Setting PXR_BUILD_PYTHON_DOCUMENTATION=OFF because "
+            "PXR_ENABLE_PYTHON_SUPPORT=OFF")
+        set(PXR_BUILD_PYTHON_DOCUMENTATION "OFF" CACHE BOOL "" FORCE)
+    endif()
+endif()
+
+if (EMSCRIPTEN)
+    if (${PXR_BUILD_EXEC})
+        MESSAGE(STATUS "Setting PXR_BUILD_EXEC=OFF because it is not supported "
+                        "when targeting Wasm")
+        set(PXR_BUILD_EXEC "OFF")
+    endif()
+
+    if (${BUILD_SHARED_LIBS})
+        MESSAGE(STATUS 
+            "Setting BUILD_SHARED_LIBS=OFF because shared libs are not "
+            "supported when targeting wasm")
+        set(BUILD_SHARED_LIBS "OFF")
+    endif()
+endif()
+
+if (PXR_BUILD_APPLE_FRAMEWORK)
+    if(PXR_BUILD_USD_TOOLS)
+        MESSAGE(STATUS "Setting PXR_BUILD_USD_TOOLS=OFF because PXR_BUILD_APPLE_FRAMEWORK is enabled.")
+    endif()
+    set(PXR_BUILD_USD_TOOLS OFF)
+    if(PXR_ENABLE_PYTHON_SUPPORT)
+        MESSAGE(STATUS "Setting PXR_ENABLE_PYTHON_SUPPORT=OFF because PXR_BUILD_APPLE_FRAMEWORK is enabled.")
+    endif ()
+    set(PXR_ENABLE_PYTHON_SUPPORT OFF)
+endif()
+
+# Configure the use of compiler caches for faster compilation
+option(PXR_ENABLE_COMPILER_CACHE "Enable the use of a compiler cache" OFF)
+set(PXR_COMPILER_CACHE_NAME "ccache"
+        CACHE
+        STRING
+        "The name of the compiler cache program to use"
+)

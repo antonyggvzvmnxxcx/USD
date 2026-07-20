@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_PCP_MAP_FUNCTION_H
 #define PXR_USD_PCP_MAP_FUNCTION_H
@@ -28,6 +11,7 @@
 #include "pxr/usd/pcp/api.h"
 #include "pxr/usd/sdf/path.h"
 #include "pxr/usd/sdf/layerOffset.h"
+#include "pxr/usd/sdf/pathExpression.h"
 
 #include <atomic>
 #include <memory>
@@ -82,11 +66,10 @@ class PcpMapFunction
 public:
     /// A mapping from path to path.
     typedef std::map<SdfPath, SdfPath, SdfPath::FastLessThan> PathMap;
-    typedef std::pair<SdfPath, SdfPath> PathPair;
-    typedef std::vector<PathPair> PathPairVector;
 
     /// Construct a null function.
-    PcpMapFunction() = default;
+    PCP_API
+    PcpMapFunction();
 
     /// Constructs a map function with the given arguments.
     /// Returns a null map function on error (see IsNull()).
@@ -98,6 +81,28 @@ public:
     static PcpMapFunction 
     Create(const PathMap &sourceToTargetMap,
            const SdfLayerOffset &offset);
+
+    /// Constructs a "deferred-composition" map function from the given source
+    /// \p mapFn.
+    /// 
+    /// A deferred-composition map function represents the same mappings as
+    /// its source function, but is not immediately combined with other
+    /// map functions when they are composed together. This is primarily
+    /// used for targeted performance optimizations. See more details
+    /// in the docs for Compose.
+    PCP_API
+    static PcpMapFunction
+    DeferredComposition(const PcpMapFunction& mapFn);
+
+    /// Constructs a map function that is equivalent to
+    /// \code
+    /// transferFunc.Compose(classArc.Compose(transferFunc.Inverse))
+    /// \endcode
+    /// with an additional root identity mapping.
+    PCP_API
+    static PcpMapFunction
+    ImpliedClass(const PcpMapFunction& transferFunc,
+                 const PcpMapFunction& classArc);
 
     /// Construct an identity map function.
     PCP_API
@@ -125,14 +130,26 @@ public:
     PCP_API
     bool IsNull() const;
 
+    /// Return true if the map function is a defered-composition function.
+    /// See DeferredComposition and Compose.
+    PCP_API
+    bool IsDeferredComposition() const;
+
     /// Return true if the map function is the identity function.
-    /// For identity, MapSourceToTarget() always returns the path unchanged.
+    /// The identity function has an identity path mapping and time offset.
     PCP_API
     bool IsIdentity() const;
+    
+    /// Return true if the map function uses the identity path mapping.
+    /// If true, MapSourceToTarget() always returns the path unchanged.
+    /// However, this map function may have a non-identity time offset.
+    PCP_API
+    bool IsIdentityPathMapping() const;
 
     /// Return true if the map function maps the absolute root path to the
     /// absolute root path, false otherwise.
-    bool HasRootIdentity() const { return _data.hasRootIdentity; }
+    PCP_API
+    bool HasRootIdentity() const;
 
     /// Map a path in the source namespace to the target.
     /// If the path is not in the domain, returns an empty path.
@@ -144,9 +161,68 @@ public:
     PCP_API
     SdfPath MapTargetToSource(const SdfPath &path) const;
 
+    /// Map all path pattern prefix paths and expression reference paths in the
+    /// source namespace to the target.  For any references or patterns with
+    /// prefix paths that are not in the domain, replace with an
+    /// SdfPathPattern::Nothing() subexpression, to be simplified.
+    ///
+    /// For example, if the mapping specifies /Foo -> /World/Foo_1, and the
+    /// expression is '/Foo/Bar//Baz + /Something/Else//Entirely', the resulting
+    /// expression will be '/World/Foo_1/Bar//Baz', since the
+    /// /Something/Else prefix is outside the domain.
+    ///
+    /// If \p excludedPatterns and/or \p excludedReferences are supplied, they
+    /// are populated with those patterns & references that could not be
+    /// translated and were replaced with SdfPathPattern::Nothing().
+    PCP_API
+    SdfPathExpression
+    MapSourceToTarget(
+        const SdfPathExpression &pathExpr,
+        std::vector<SdfPathExpression::PathPattern>
+            *unmappedPatterns = nullptr,
+        std::vector<SdfPathExpression::ExpressionReference>
+            *unmappedRefs = nullptr
+        ) const;
+
+    /// Map all path pattern prefix paths and expression reference paths in the
+    /// target namespace to the source.  For any references or patterns with
+    /// prefix paths that are not in the co-domain, replace with an
+    /// SdfPathPattern::Nothing() subexpression, to be simplified.
+    ///
+    /// For example, if the mapping specifies /World/Foo_1 -> /Foo, and the
+    /// expression is '/World/Foo_1/Bar//Baz + /World/Bar//', the resulting
+    /// expression will be '/Foo/Bar//Baz', since the /World/Bar prefix is
+    /// outside the co-domain.
+    ///
+    /// If \p excludedPatterns and/or \p excludedReferences are supplied, they
+    /// are populated with those patterns & references that could not be
+    /// translated and were replaced with SdfPathPattern::Nothing().
+    PCP_API
+    SdfPathExpression
+    MapTargetToSource(
+        const SdfPathExpression &pathExpr,
+        std::vector<SdfPathExpression::PathPattern>
+            *unmappedPatterns = nullptr,
+        std::vector<SdfPathExpression::ExpressionReference>
+            *unmappedRefs = nullptr
+        ) const;
+    
     /// Compose this map over the given map function.
     /// The result will represent the application of f followed by
     /// the application of this function.
+    ///
+    /// By default, the returned PcpMapFunction is created by combining
+    /// the mappings in this function and \p f into a single set of mappings.
+    /// Subsequent operations only need to examine this set of mappings;
+    /// however, the time to combine the mappings may be relatively high
+    /// if either (or both) of the functions is large.
+    ///
+    /// If either function is a deferred-composition map function, the returned
+    /// PcpMapFunction stores both functions separately. Subsequent operations
+    /// then examine the stored mappings in sequence. This avoids the upfront
+    /// time of combining the mappings and reduces memory usage since existing
+    /// mappings are just reused. However, this makes subsequent path mapping
+    /// operations more expensive.
     PCP_API
     PcpMapFunction Compose(const PcpMapFunction &f) const;
 
@@ -179,121 +255,53 @@ public:
     size_t Hash() const;
 
 private:
+    struct _Mappings;
 
-    PCP_API
-    PcpMapFunction(PathPair const *sourceToTargetBegin,
-                   PathPair const *sourceToTargetEnd,
-                   SdfLayerOffset offset,
-                   bool hasRootIdentity);
+    PcpMapFunction(
+        std::shared_ptr<_Mappings>&& mappings,
+        SdfLayerOffset offset);
+
+    SdfPath
+    _MapPathImpl(
+        bool invert,
+        const SdfPath& path) const;
+
+    SdfPathExpression
+    _MapPathExpressionImpl(
+        bool invert,
+        const SdfPathExpression &pathExpr,
+        std::vector<SdfPathExpression::PathPattern> *unmappedPatterns,
+        std::vector<SdfPathExpression::ExpressionReference> *unmappedRefs
+        ) const;
+
+    // Return a "normalized" map function created from the mappings in
+    // this map function. This may return *this if this map function is
+    // already in normalized form.
+    //
+    // A normalized map function always contains a single set of
+    // source-to-target path mappings; all deferred-composition mappings
+    // are composed together. The resulting map function can be used
+    // for comparisons with other normalized map functions, or in
+    // cases where the fully-composed set of mappings is needed.
+    PcpMapFunction _GetNormalized() const;
+
+    // Return number of mapping sets in this map function. A map function
+    // may have more than 1 mapping set if it was composed from a
+    // deferred-composition map function.
+    PCP_API size_t _GetNumMappingSets() const;
 
 private:
     friend PcpMapFunction *Pcp_MakeIdentity();
-    
-    static const int _MaxLocalPairs = 2;
-    struct _Data final {
-        _Data() {};
+    friend class Pcp_MapFunctionPyAccess;
 
-        _Data(PathPair const *begin, PathPair const *end, bool hasRootIdentity)
-            : numPairs(end-begin)
-            , hasRootIdentity(hasRootIdentity) {
-            if (numPairs == 0)
-                return;
-            if (numPairs <= _MaxLocalPairs) {
-                std::uninitialized_copy(begin, end, localPairs);
-            }
-            else {
-                new (&remotePairs) std::shared_ptr<PathPair>(
-                    new PathPair[numPairs], std::default_delete<PathPair[]>());
-                std::copy(begin, end, remotePairs.get());
-            }
-        }
-        
-        _Data(_Data const &other)
-            : numPairs(other.numPairs)
-            , hasRootIdentity(other.hasRootIdentity) {
-            if (numPairs <= _MaxLocalPairs) {
-                std::uninitialized_copy(
-                    other.localPairs,
-                    other.localPairs + other.numPairs, localPairs);
-            }
-            else {
-                new (&remotePairs) std::shared_ptr<PathPair>(other.remotePairs);
-            }
-        }
-        _Data(_Data &&other)
-            : numPairs(other.numPairs)
-            , hasRootIdentity(other.hasRootIdentity) {
-            if (numPairs <= _MaxLocalPairs) {
-                PathPair *dst = localPairs;
-                PathPair *src = other.localPairs;
-                PathPair *srcEnd = other.localPairs + other.numPairs;
-                for (; src != srcEnd; ++src, ++dst) {
-                    ::new (static_cast<void*>(std::addressof(*dst)))
-                        PathPair(std::move(*src));
-                }
-            }
-            else {
-                new (&remotePairs)
-                    std::shared_ptr<PathPair>(std::move(other.remotePairs));
-            }
-        }
-        _Data &operator=(_Data const &other) {
-            if (this != &other) {
-                this->~_Data();
-                new (this) _Data(other);
-            }
-            return *this;
-        }
-        _Data &operator=(_Data &&other) {
-            if (this != &other) {
-                this->~_Data();
-                new (this) _Data(std::move(other));
-            }
-            return *this;
-        }
-        ~_Data() {
-            if (numPairs <= _MaxLocalPairs) {
-                for (PathPair *p = localPairs; numPairs--; ++p) {
-                    p->~PathPair();
-                }
-            }
-            else {
-                remotePairs.~shared_ptr<PathPair>();
-            }
-        }
+    // Specialize TfHashAppend for PcpMapFunction.
+    template <typename HashState>
+    friend inline
+    void TfHashAppend(HashState& h, const PcpMapFunction& x){
+        h.Append(x.Hash());
+    }
 
-        bool IsNull() const {
-            return numPairs == 0 && !hasRootIdentity;
-        }
-
-        PathPair const *begin() const {
-            return numPairs <= _MaxLocalPairs ? localPairs : remotePairs.get();
-        }
-
-        PathPair const *end() const {
-            return begin() + numPairs;
-        }
-
-        bool operator==(_Data const &other) const {
-            return numPairs == other.numPairs &&
-                hasRootIdentity == other.hasRootIdentity &&
-                std::equal(begin(), end(), other.begin());
-        }
-
-        bool operator!=(_Data const &other) const {
-            return !(*this == other);
-        }
-
-        union {
-            PathPair localPairs[_MaxLocalPairs > 0 ? _MaxLocalPairs : 1];
-            std::shared_ptr<PathPair> remotePairs;
-        };
-        typedef int PairCount;
-        PairCount numPairs = 0;
-        bool hasRootIdentity = false;
-    };
-
-    _Data _data;
+    std::shared_ptr<_Mappings> _mappings;
     SdfLayerOffset _offset;
 };
 
@@ -301,7 +309,7 @@ private:
 inline
 size_t hash_value(const PcpMapFunction& x)
 {
-    return x.Hash();
+    return TfHash{}(x);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

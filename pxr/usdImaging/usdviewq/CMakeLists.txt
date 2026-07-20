@@ -10,22 +10,19 @@ pxr_library(usdviewq
         tf
         usd
         usdGeom
-        ${Boost_PYTHON_LIBRARY}
-
-    INCLUDE_DIRS
-        ${Boost_INCLUDE_DIRS}
+        hd
 
     PUBLIC_CLASSES
+        debugCodes
+        hydraObserver
         utils
-
-    PYTHON_CPPFILES
-        moduleDeps.cpp
         
     PUBLIC_HEADERS
         api.h
 
     PYMODULE_CPPFILES
         module.cpp
+        wrapHydraObserver.cpp
         wrapUtils.cpp
 
     PYMODULE_FILES
@@ -48,12 +45,12 @@ pxr_library(usdviewq
         prettyPrint.py
         pythonInterpreter.py
         settings.py
-        settings2.py
-        adjustClipping.py
         adjustDefaultMaterial.py
+        adjustFreeCamera.py
         preferences.py
         primViewItem.py
         common.py
+        hydraSceneDebugger.py
         legendUtil.py
         primLegend.py
         primTreeWidget.py
@@ -64,15 +61,22 @@ pxr_library(usdviewq
         qt.py
         rootDataModel.py
         selectionDataModel.py
+        splineViewer.py
         viewSettingsDataModel.py
         freeCamera.py
         debugFlagsWidget.py
+        configController.py
         usdviewstyle.qss
+        validationWidget.py
+
+    PYMODULE_DIRS
+        icons
+        fonts
 
     PYSIDE_UI_FILES
         mainWindowUI.ui
-        adjustClippingUI.ui
         adjustDefaultMaterialUI.ui
+        adjustFreeCameraUI.ui
         attributeValueEditorUI.ui
         preferencesUI.ui
         primLegendUI.ui
@@ -83,38 +87,24 @@ pxr_library(usdviewq
         blackBoxTesting.md
 )
 
-install(DIRECTORY
-    icons
-    DESTINATION lib/python/pxr/Usdviewq
-)
-
-install(DIRECTORY
-    fonts
-    DESTINATION lib/python/pxr/Usdviewq
-)
-
 pxr_test_scripts(
-    testenv/testUsdviewqSettings2.py
+    testenv/testUsdviewqSettings.py
     testenv/testUsdviewqRootDataModel.py
     testenv/testUsdviewqSelectionDataModel.py
     testenv/testUsdviewqLauncher.py
     testenv/testUsdviewqViewSettingsDataModel.py
 )
 
-pxr_install_test_dir(
-    SRC testenv/testUsdviewqRootDataModel
-    DEST testUsdviewqRootDataModel
-)
-
-pxr_register_test(testUsdviewqSettings2
+pxr_register_test(testUsdviewqSettings
     PYTHON
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdviewqSettings2"
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdviewqSettings"
     EXPECTED_RETURN_CODE 0
 )
 
 pxr_register_test(testUsdviewqRootDataModel
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdviewqRootDataModel"
+    TESTENV testenv/testUsdviewqRootDataModel
     EXPECTED_RETURN_CODE 0
 )
 

@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_IMAGING_HD_ST_GLSL_PROGRAM_H
 #define PXR_IMAGING_HD_ST_GLSL_PROGRAM_H
@@ -30,6 +13,8 @@
 #include "pxr/imaging/hgi/buffer.h"
 #include "pxr/imaging/hgi/shaderProgram.h"
 #include "pxr/imaging/hgi/enums.h"
+
+#include <functional>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -52,13 +37,13 @@ public:
     HDST_API
     ~HdStGLSLProgram();
 
-    /// Returns the hash value of the program for \a sourceFile
-    HDST_API
-    static ID ComputeHash(TfToken const & sourceFile);
-
     /// Compile shader source for a shader stage.
     HDST_API
     bool CompileShader(HgiShaderStage stage, std::string const & source);
+
+    /// Compile shader source for a shader stage from an HgiShaderFunctionDesc.
+    HDST_API
+    bool CompileShader(HgiShaderFunctionDesc const &desc);
 
     /// Link the compiled shaders together.
     HDST_API
@@ -68,7 +53,7 @@ public:
     HDST_API
     bool Validate() const;
 
-    /// Returns HdResource of the program object.
+    /// Returns HgiShaderProgramHandle for the shader program.
     HgiShaderProgramHandle const &GetProgram() const { return _program; }
 
     /// Convenience method to get a shared compute shader program
@@ -76,12 +61,36 @@ public:
     static HdStGLSLProgramSharedPtr GetComputeProgram(
         TfToken const &shaderToken,
         HdStResourceRegistry *resourceRegistry);
-    
+
     HDST_API
     static HdStGLSLProgramSharedPtr GetComputeProgram(
         TfToken const &shaderFileName,
         TfToken const &shaderToken,
         HdStResourceRegistry *resourceRegistry);
+
+    using PopulateDescriptorCallback =
+        std::function<void(HgiShaderFunctionDesc &computeDesc)>;
+
+    HDST_API
+    static HdStGLSLProgramSharedPtr GetComputeProgram(
+        TfToken const &shaderToken,
+        HdStResourceRegistry *resourceRegistry,
+        PopulateDescriptorCallback populateDescriptor);
+
+    HDST_API
+    static HdStGLSLProgramSharedPtr GetComputeProgram(
+        TfToken const &shaderToken,
+        std::string const &defines,
+        HdStResourceRegistry *resourceRegistry,
+        PopulateDescriptorCallback populateDescriptor);
+
+    HDST_API
+    static HdStGLSLProgramSharedPtr GetComputeProgram(
+        TfToken const &shaderFileName,
+        TfToken const &shaderToken,
+        std::string const &defines,
+        HdStResourceRegistry *resourceRegistry,
+        PopulateDescriptorCallback populateDescriptor);
 
     /// Returns the role of the GPU data in this resource.
     TfToken const & GetRole() const {return _role;}

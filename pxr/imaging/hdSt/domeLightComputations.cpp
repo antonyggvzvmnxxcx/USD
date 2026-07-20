@@ -1,25 +1,8 @@
 //
 // Copyright 2019 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hdSt/domeLightComputations.h"
 #include "pxr/imaging/hdSt/hgiConversions.h"
@@ -35,6 +18,7 @@
 
 #include "pxr/imaging/hgi/computeCmds.h"
 #include "pxr/imaging/hgi/computePipeline.h"
+#include "pxr/imaging/hgi/enums.h"
 #include "pxr/imaging/hgi/shaderProgram.h"
 #include "pxr/imaging/hgi/tokens.h"
 
@@ -45,22 +29,15 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-
-HdSt_DomeLightComputationGPU::HdSt_DomeLightComputationGPU(
-    const TfToken &shaderToken,
-    HdStSimpleLightingShaderPtr const &lightingShader,
-    const unsigned int numLevels,
-    const unsigned int level, 
-    const float roughness) 
-  : _shaderToken(shaderToken), 
-    _lightingShader(lightingShader),
-    _numLevels(numLevels), 
-    _level(level), 
-    _roughness(roughness)
+namespace
 {
+
+int
+_MakeMultipleOf(int dim, int localSize)
+{
+    return ((dim + localSize - 1) / localSize) * localSize;
 }
 
-static
 void
 _FillPixelsByteSize(HgiTextureDesc * const desc)
 {
@@ -69,29 +46,25 @@ _FillPixelsByteSize(HgiTextureDesc * const desc)
         s * desc->dimensions[0] * desc->dimensions[1] * desc->dimensions[2];
 }
 
-static
 bool
-_GetSrcTextureDimensionsAndName(
-    HdStSimpleLightingShaderSharedPtr const &shader,
+_GetSrcDimensionsTextureAndSampler(
+    HdStTextureHandleSharedPtr const &srcTextureHandle,
     GfVec3i * srcDim,
-    HgiTextureHandle * srcTextureName,
-    HgiSamplerHandle * srcSamplerName)
+    HgiTextureHandle * srcTexture,
+    HgiSamplerHandle * srcSampler)
 {
-    // Get source texture, the dome light environment map
-    HdStTextureHandleSharedPtr const &srcTextureHandle =
-        shader->GetDomeLightEnvironmentTextureHandle();
     if (!TF_VERIFY(srcTextureHandle)) {
         return false;
     }
 
-    const HdStUvTextureObject * const srcTextureObject =
+    const auto * const srcTextureObject =
         dynamic_cast<HdStUvTextureObject*>(
             srcTextureHandle->GetTextureObject().get());
     if (!TF_VERIFY(srcTextureObject)) {
         return false;
     }
 
-    const HdStUvSamplerObject * const srcSamplerObject =
+    const auto * const srcSamplerObject =
         dynamic_cast<HdStUvSamplerObject*>(
             srcTextureHandle->GetSamplerObject().get());
     if (!TF_VERIFY(srcSamplerObject)) {
@@ -101,135 +74,286 @@ _GetSrcTextureDimensionsAndName(
     if (!srcTextureObject->IsValid()) {
         const std::string &filePath =
             srcTextureObject->GetTextureIdentifier().GetFilePath();
-        TF_WARN("Could not open dome light texture file at %s.",
-                filePath.c_str());
+        TF_WARN("Invalid texture %s.", filePath.c_str());
         return false;
     }
 
-    const HgiTexture * const srcTexture = srcTextureObject->GetTexture().Get();
-    if (!TF_VERIFY(srcTexture)) {
+    const HgiTexture * const hgiTexture = srcTextureObject->GetTexture().Get();
+    if (!TF_VERIFY(hgiTexture)) {
         return false;
     }
 
-    *srcDim = srcTexture->GetDescriptor().dimensions;
-    *srcTextureName = srcTextureObject->GetTexture();
-    *srcSamplerName = srcSamplerObject->GetSampler();
+    *srcDim = hgiTexture->GetDescriptor().dimensions;
+    *srcTexture = srcTextureObject->GetTexture();
+    *srcSampler = srcSamplerObject->GetSampler();
 
     return true;
 }
 
+HgiShaderTextureType
+_GetHgiShaderTextureType(
+    const HdStDynamicUvTextureObject* const textureObject)
+{
+    const HdStTextureType textureType = textureObject->GetTextureType();
+    switch (textureType) {
+        case HdStTextureType::Cubemap: {
+            return HgiShaderTextureTypeCubemapTexture;
+        }
+        case HdStTextureType::Uv: {
+            return HgiShaderTextureTypeTexture;
+        }
+        default: {
+            TF_CODING_ERROR(
+                "Unhandled HdStTextureType value %d",
+                int(textureType));
+            return HgiShaderTextureTypeTexture;
+        }
+    }
+}
+
+int
+_GetLayerCount(
+    const HdStDynamicUvTextureObject* const textureObject)
+{
+    if (textureObject->GetTextureType() == HdStTextureType::Cubemap) {
+        return 6;
+    }
+
+    return 1;
+}
+
+HgiTextureType
+_GetHgiTextureType(
+    const HdStDynamicUvTextureObject* const textureObject)
+{
+    const HdStTextureType textureType = textureObject->GetTextureType();
+    switch (textureType) {
+        case HdStTextureType::Cubemap: {
+            return HgiTextureTypeCubemap;
+        }
+        case HdStTextureType::Uv: {
+            return HgiTextureType2D;
+        }
+        default: {
+            TF_CODING_ERROR(
+                "Unhandled HdStTextureType value %d",
+                int(textureType));
+            return HgiTextureType2D;
+        }
+    }
+}
+
+}
+
+// ----------------------------------------------------------------------------
+
+HdSt_DomeLightComputationGPU::HdSt_DomeLightComputationGPU(
+    const TfToken & shaderToken,
+    const bool useCubemapAsSourceTexture,
+    HdStSimpleLightingShaderPtr const &lightingShader,
+    const unsigned int computedCubeMapDim,
+    const unsigned int numLevels,
+    const unsigned int level,
+    const float roughness)
+  : _shaderToken(shaderToken),
+    _useCubemapAsSourceTexture(useCubemapAsSourceTexture),
+    _lightingShader(lightingShader),
+    _computedCubeMapDim(computedCubeMapDim),
+    _numLevels(numLevels),
+    _level(level),
+    _roughness(roughness)
+{
+}
+
 void
 HdSt_DomeLightComputationGPU::Execute(
-    HdBufferArrayRangeSharedPtr const &range,
+    HdBufferArrayRangeSharedPtr const & /*range*/,
     HdResourceRegistry * const resourceRegistry)
 {
     HD_TRACE_FUNCTION();
     HF_MALLOC_TAG_FUNCTION();
-
-    HdStResourceRegistry* hdStResourceRegistry =
-        static_cast<HdStResourceRegistry*>(resourceRegistry);
-    HdStGLSLProgramSharedPtr const computeProgram =
-        HdStGLSLProgram::GetComputeProgram(
-            HdStPackageDomeLightShader(), 
-            _shaderToken,
-            static_cast<HdStResourceRegistry*>(resourceRegistry));
-    if (!TF_VERIFY(computeProgram)) {
-        return;
-    }
 
     HdStSimpleLightingShaderSharedPtr const shader = _lightingShader.lock();
     if (!TF_VERIFY(shader)) {
         return;
     }
 
-    // Size of source texture (the dome light environment map)
-    GfVec3i srcDim;
-    HgiTextureHandle srcTextureName;
-    HgiSamplerHandle srcSamplerName;
-    if (!_GetSrcTextureDimensionsAndName(
-            shader, &srcDim, &srcTextureName, &srcSamplerName)) {
-        return;
-    }
-
-    // Size of texture to be created.
-    const int width  = srcDim[0] / 2;
-    const int height = srcDim[1] / 2;
-
-    // Get texture object from lighting shader that this
-    // computation is supposed to populate
+    // Get texture object from lighting shader that this computation is supposed
+    // to populate.
     HdStTextureHandleSharedPtr const &dstTextureHandle =
         shader->GetTextureHandle(_shaderToken);
     if (!TF_VERIFY(dstTextureHandle)) {
         return;
     }
 
-    HdStDynamicUvTextureObject * const dstUvTextureObject =
-        dynamic_cast<HdStDynamicUvTextureObject*>(
+    // Depending on the shader, we are either creating a cubemap texture or
+    // a 2D UV texture.
+    auto * dstTextureObject =
+        dynamic_cast<HdStDynamicUvTextureObject *>(
             dstTextureHandle->GetTextureObject().get());
-    if (!TF_VERIFY(dstUvTextureObject)) {
+    if (!TF_VERIFY(dstTextureObject)) {
         return;
     }
 
+    constexpr int localSize = 8;
+    const bool hasUniforms = _roughness >= 0.0f;
+
+    HdStGLSLProgramSharedPtr const computeProgram =
+        HdStGLSLProgram::GetComputeProgram(
+            HdStPackageDomeLightShader(), 
+            _shaderToken,
+            "",
+            static_cast<HdStResourceRegistry*>(resourceRegistry), 
+            [&] (HgiShaderFunctionDesc &computeDesc) {
+                computeDesc.debugName = _shaderToken.GetString();
+                computeDesc.shaderStage = HgiShaderStageCompute;
+                computeDesc.computeDescriptor.localSize = 
+                    GfVec3i(localSize, localSize, 1);
+
+                const HgiShaderTextureType inTextureType =
+                    _useCubemapAsSourceTexture
+                        ? HgiShaderTextureTypeCubemapTexture
+                        : HgiShaderTextureTypeTexture;
+                HgiShaderFunctionAddTexture(&computeDesc, "inTexture",
+                    /*bindIndex = */0, /*dimensions = */2,
+                    /*format = */HgiFormatFloat16Vec4,
+                    /*textureType = */inTextureType);
+
+                const HgiShaderTextureType outTextureType =
+                    _GetHgiShaderTextureType(dstTextureObject);
+                HgiShaderFunctionAddWritableTexture(&computeDesc, "outTexture",
+                    /*bindIndex = */1, /*dimensions = */2,
+                    /*format = */HgiFormatFloat16Vec4,
+                    /*textureType = */outTextureType);
+                if (hasUniforms) {
+                    HgiShaderFunctionAddConstantParam(
+                        &computeDesc, "inRoughness", HdStTokens->_float);
+                }
+                HgiShaderFunctionAddStageInput(
+                    &computeDesc, "hd_GlobalInvocationID", "uvec3",
+                    HgiShaderKeywordTokens->hdGlobalInvocationID);
+            }
+        );
+    if (!TF_VERIFY(computeProgram)) {
+        return;
+    }
+
+    // Data from source 2D or cubemap texture.
+    GfVec3i srcDim;
+    HgiTextureHandle srcTexture;
+    HgiSamplerHandle srcSampler;
+
+    // Size of texture to be created.
+    int width = 0;
+    int height = 0;
+    if (_useCubemapAsSourceTexture) {
+        // Source texture is the cubemap texture generated from the
+        // latlong dome light texture.
+
+        if (!_GetSrcDimensionsTextureAndSampler(
+                    shader->GetDomeLightEnvironmentCubemapTextureHandle(),
+                    &srcDim,
+                    &srcTexture,
+                    &srcSampler)) {
+            return;
+        }
+
+        // Width and height are half that of the source cubemap.
+        width = std::max(srcDim[0] / 2, 1);
+        height = width;
+    } else {
+        // Source texture is the latlong dome light texture.
+
+        if (!_GetSrcDimensionsTextureAndSampler(
+                    shader->GetDomeLightEnvironmentTextureHandle(),
+                    &srcDim,
+                    &srcTexture,
+                    &srcSampler)) {
+            return;
+        }
+
+        // We are either generating a cubemap with 6 equal-sized faces from the
+        // latlong texture, or a single 2D lookup texture that will
+        // be the size of one face of the cubemap.
+        width = _computedCubeMapDim;
+        height = width;
+    }
+
+    // Make sure dimensions align with the local size used in the compute shader
+    width = _MakeMultipleOf(width, localSize);
+    height = _MakeMultipleOf(height, localSize);
+
+    const int layerCount = _GetLayerCount(dstTextureObject);
+
     if (_level == 0) {
-        // Level zero is in charge of actually creating the
-        // GPU resource.
+        // Level zero is in charge of actually creating the GPU resource.
         HgiTextureDesc desc;
         desc.debugName = _shaderToken.GetText();
+        desc.type = _GetHgiTextureType(dstTextureObject);
         desc.format = HgiFormatFloat16Vec4;
         desc.dimensions = GfVec3i(width, height, 1);
-        desc.layerCount = 1;
+        desc.layerCount = layerCount;
         desc.mipLevels = _numLevels;
         desc.usage =
             HgiTextureUsageBitsShaderRead | HgiTextureUsageBitsShaderWrite;
         _FillPixelsByteSize(&desc);
-        dstUvTextureObject->CreateTexture(desc);
+        dstTextureObject->CreateTexture(desc);
     }
 
     // Create a texture view for the layer we want to write to
     HgiTextureViewDesc texViewDesc;
-    texViewDesc.layerCount = 1;
+    texViewDesc.layerCount = layerCount;
     texViewDesc.mipLevels = 1;
     texViewDesc.format = HgiFormatFloat16Vec4;
     texViewDesc.sourceFirstLayer = 0;
     texViewDesc.sourceFirstMip = _level;
-    texViewDesc.sourceTexture = dstUvTextureObject->GetTexture();
+    texViewDesc.sourceTexture = dstTextureObject->GetTexture();
 
+    auto* hdStResourceRegistry =
+        static_cast<HdStResourceRegistry*>(resourceRegistry);
     Hgi* hgi = hdStResourceRegistry->GetHgi();
     HgiTextureViewHandle dstTextureView = hgi->CreateTextureView(texViewDesc);
 
     HgiResourceBindingsDesc resourceDesc;
-    resourceDesc.debugName = "DomeLightComputation";
+    resourceDesc.debugName = _shaderToken.GetString();
 
     HgiTextureBindDesc texBind0;
     texBind0.bindingIndex = 0;
     texBind0.stageUsage = HgiShaderStageCompute;
-    texBind0.textures.push_back(srcTextureName);
-    texBind0.samplers.push_back(srcSamplerName);
+    texBind0.writable = false;
+    texBind0.textures.push_back(srcTexture);
+    texBind0.samplers.push_back(srcSampler);
     texBind0.resourceType = HgiBindResourceTypeCombinedSamplerImage;
     resourceDesc.textures.push_back(std::move(texBind0));
+
+    HgiSamplerHandle dstSampler;
+    if (const auto * const dstSamplerObject =
+            dynamic_cast<HdStUvSamplerObject*>(
+                dstTextureHandle->GetSamplerObject().get())) {
+        dstSampler = dstSamplerObject->GetSampler();
+    }
 
     HgiTextureBindDesc texBind1;
     texBind1.bindingIndex = 1;
     texBind1.stageUsage = HgiShaderStageCompute;
+    texBind1.writable = true;
     texBind1.textures.push_back(dstTextureView->GetViewTexture());
-    texBind1.samplers.push_back(srcSamplerName);
+    texBind1.samplers.push_back(dstSampler);
     texBind1.resourceType = HgiBindResourceTypeStorageImage;
     resourceDesc.textures.push_back(std::move(texBind1));
 
     HgiResourceBindingsHandle resourceBindings =
         hgi->CreateResourceBindings(resourceDesc);
     
-    // prepare uniform buffer for GPU computation
+    // Prepare uniform buffer for GPU computation if needed.
     struct Uniforms {
         float roughness;
     } uniform;
 
     uniform.roughness = _roughness;
 
-    bool hasUniforms = uniform.roughness >= 0.0f;
-
     HgiComputePipelineDesc desc;
-    desc.debugName = "DomeLightComputation";
+    desc.debugName = _shaderToken.GetString();
     desc.shaderProgram = computeProgram->GetProgram();
     if (hasUniforms) {
         desc.shaderConstantsDesc.byteSize = sizeof(uniform);
@@ -237,7 +361,8 @@ HdSt_DomeLightComputationGPU::Execute(
     HgiComputePipelineHandle pipeline = hgi->CreateComputePipeline(desc);
 
     HgiComputeCmds* computeCmds = hdStResourceRegistry->GetGlobalComputeCmds();
-    computeCmds->PushDebugGroup("DomeLightComputationCmds");
+
+    computeCmds->PushDebugGroup(_shaderToken.GetText());
     computeCmds->BindResources(resourceBindings);
     computeCmds->BindPipeline(pipeline);
 
@@ -250,7 +375,7 @@ HdSt_DomeLightComputationGPU::Execute(
     }
 
     // Queue compute work
-    computeCmds->Dispatch(width / 32, height / 32);
+    computeCmds->Dispatch(width * layerCount, height);
 
     computeCmds->PopDebugGroup();
 
@@ -258,6 +383,72 @@ HdSt_DomeLightComputationGPU::Execute(
     hgi->DestroyTextureView(&dstTextureView);
     hgi->DestroyComputePipeline(&pipeline);
     hgi->DestroyResourceBindings(&resourceBindings);
+}
+
+// ----------------------------------------------------------------------------
+
+HdSt_DomeLightMipmapComputationGPU::HdSt_DomeLightMipmapComputationGPU(
+    HdStSimpleLightingShaderPtr const &lightingShader)
+  : _lightingShader(lightingShader)
+{
+}
+
+void HdSt_DomeLightMipmapComputationGPU::Execute(
+    HdBufferArrayRangeSharedPtr const & /*range*/,
+    HdResourceRegistry * /*resourceRegistry*/)
+{
+    HD_TRACE_FUNCTION();
+    HF_MALLOC_TAG_FUNCTION();
+
+    HdStSimpleLightingShaderSharedPtr const shader = _lightingShader.lock();
+    if (!TF_VERIFY(shader)) {
+        return;
+    }
+
+    HdStTextureHandleSharedPtr const &srcTextureHandle =
+        shader->GetDomeLightEnvironmentCubemapTextureHandle();
+    if (!TF_VERIFY(srcTextureHandle)) {
+        return;
+    }
+
+    auto * const srcTextureObject =
+        dynamic_cast<HdStDynamicUvTextureObject*>(
+            srcTextureHandle->GetTextureObject().get());
+    if (!TF_VERIFY(srcTextureObject)) {
+        return;
+    }
+
+    // We encapsulate this mipmap generation invocation into this computation
+    // object so we can order it after the cubemap mip level 0 has been
+    // populated, and prior to subsequent filtering commands that expect the
+    // cubemap to have mipmaps.
+
+    srcTextureObject->GenerateMipmaps();
+}
+
+int HdSt_ComputeDomeLightCubemapWidth(
+    const std::string& domeLightFilePath,
+    const HgiTextureDesc& domelightTextureDesc,
+    const unsigned int cubemapTargetMemoryMB)
+{
+    // Standard cubemap width calculation
+    const int cubemapWidth = std::max(domelightTextureDesc.dimensions[0] / 4, 1);
+ 
+    if (cubemapTargetMemoryMB == 0) {
+        return cubemapWidth;
+    }
+    
+    // Cubemap width calculation based on the target memory
+    const size_t MB = 1048576;
+    size_t blockWidth, blockHeight;
+    const size_t bytesPerTexel = HgiGetDataSizeOfFormat(
+        domelightTextureDesc.format, &blockWidth, &blockHeight);
+    const size_t bytesPerPixel = bytesPerTexel / (blockHeight * blockWidth);
+    // The 0.75 factor is to account for all lower mipmaps
+    const int targetMemoryWidth =
+        sqrt((0.75 * cubemapTargetMemoryMB * MB) / (6 * bytesPerPixel));
+
+    return std::min(targetMemoryWidth, cubemapWidth);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

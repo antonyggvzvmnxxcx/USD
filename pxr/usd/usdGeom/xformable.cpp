@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/usd/usdGeom/xformable.h"
 #include "pxr/usd/usd/schemaRegistry.h"
@@ -56,13 +39,9 @@ UsdGeomXformable::Get(const UsdStagePtr &stage, const SdfPath &path)
 
 
 /* virtual */
-UsdSchemaKind UsdGeomXformable::_GetSchemaKind() const {
+UsdSchemaKind UsdGeomXformable::_GetSchemaKind() const
+{
     return UsdGeomXformable::schemaKind;
-}
-
-/* virtual */
-UsdSchemaKind UsdGeomXformable::_GetSchemaType() const {
-    return UsdGeomXformable::schemaType;
 }
 
 /* static */
@@ -232,11 +211,107 @@ UsdGeomXformable::AddXformOp(
     return result;
 }
 
+UsdGeomXformOp
+UsdGeomXformable::GetXformOp(UsdGeomXformOp::Type const opType, 
+    TfToken const &opSuffix, bool isInverseOp) const
+{
+    VtTokenArray xformOpOrder;
+    _GetXformOpOrderValue(&xformOpOrder);
+
+    // Check if the xformOp exists in xformOpOrder
+    TfToken opName = UsdGeomXformOp::GetOpName(opType, opSuffix, isInverseOp);
+    VtTokenArray::iterator it = std::find(xformOpOrder.begin(), 
+        xformOpOrder.end(), opName);
+    if (it == xformOpOrder.end()) {
+        return UsdGeomXformOp();
+    }
+    
+    TfToken const &xformOpAttrName = UsdGeomXformOp::GetOpName(opType, opSuffix);
+    UsdAttribute xformOpAttr = GetPrim().GetAttribute(xformOpAttrName);
+
+    return UsdGeomXformOp(xformOpAttr, isInverseOp);
+}
+
+UsdGeomXformOp
+UsdGeomXformable::AddTranslateXOp(UsdGeomXformOp::Precision const precision,
+    TfToken const &opSuffix, bool isInverseOp) const
+{
+    return AddXformOp(UsdGeomXformOp::TypeTranslateX, precision, opSuffix,
+                      isInverseOp);
+}
+
+UsdGeomXformOp
+UsdGeomXformable::AddTranslateYOp(UsdGeomXformOp::Precision const precision,
+    TfToken const &opSuffix, bool isInverseOp) const
+{
+    return AddXformOp(UsdGeomXformOp::TypeTranslateY, precision, opSuffix,
+                      isInverseOp);
+}
+
+UsdGeomXformOp
+UsdGeomXformable::AddTranslateZOp(UsdGeomXformOp::Precision const precision,
+    TfToken const &opSuffix, bool isInverseOp) const
+{
+    return AddXformOp(UsdGeomXformOp::TypeTranslateZ, precision, opSuffix,
+                      isInverseOp);
+}
+
 UsdGeomXformOp 
 UsdGeomXformable::AddTranslateOp(UsdGeomXformOp::Precision const precision,
     TfToken const &opSuffix, bool isInverseOp) const
 {
     return AddXformOp(UsdGeomXformOp::TypeTranslate, precision, opSuffix,
+                      isInverseOp);
+}
+
+UsdGeomXformOp
+UsdGeomXformable::GetTranslateXOp(
+    TfToken const &opSuffix, bool isInverseOp) const 
+{
+    return GetXformOp(UsdGeomXformOp::TypeTranslateX, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp
+UsdGeomXformable::GetTranslateYOp(
+    TfToken const &opSuffix, bool isInverseOp) const 
+{
+    return GetXformOp(UsdGeomXformOp::TypeTranslateY, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp
+UsdGeomXformable::GetTranslateZOp(
+    TfToken const &opSuffix, bool isInverseOp) const 
+{
+    return GetXformOp(UsdGeomXformOp::TypeTranslateZ, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
+UsdGeomXformable::GetTranslateOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeTranslate, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
+UsdGeomXformable::AddScaleXOp(UsdGeomXformOp::Precision const precision,
+    TfToken const &opSuffix, bool isInverseOp) const
+{
+    return AddXformOp(UsdGeomXformOp::TypeScaleX, precision, opSuffix, 
+                      isInverseOp);
+}
+
+UsdGeomXformOp 
+UsdGeomXformable::AddScaleYOp(UsdGeomXformOp::Precision const precision,
+    TfToken const &opSuffix, bool isInverseOp) const
+{
+    return AddXformOp(UsdGeomXformOp::TypeScaleY, precision, opSuffix, 
+                      isInverseOp);
+}
+
+UsdGeomXformOp 
+UsdGeomXformable::AddScaleZOp(UsdGeomXformOp::Precision const precision,
+    TfToken const &opSuffix, bool isInverseOp) const
+{
+    return AddXformOp(UsdGeomXformOp::TypeScaleZ, precision, opSuffix, 
                       isInverseOp);
 }
 
@@ -249,11 +324,41 @@ UsdGeomXformable::AddScaleOp(UsdGeomXformOp::Precision const precision,
 }
 
 UsdGeomXformOp 
+UsdGeomXformable::GetScaleXOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeScaleX, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
+UsdGeomXformable::GetScaleYOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeScaleY, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
+UsdGeomXformable::GetScaleZOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeScaleZ, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
+UsdGeomXformable::GetScaleOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeScale, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
 UsdGeomXformable::AddRotateXOp(UsdGeomXformOp::Precision const precision,
     TfToken const &opSuffix, bool isInverseOp) const
 {
     return AddXformOp(UsdGeomXformOp::TypeRotateX, precision, opSuffix, 
                       isInverseOp);
+}
+
+UsdGeomXformOp 
+UsdGeomXformable::GetRotateXOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeRotateX, opSuffix, isInverseOp);
 }
 
 UsdGeomXformOp 
@@ -265,10 +370,22 @@ UsdGeomXformable::AddRotateYOp(UsdGeomXformOp::Precision const precision,
 }
 
 UsdGeomXformOp 
+UsdGeomXformable::GetRotateYOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeRotateY, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
 UsdGeomXformable::AddRotateZOp(UsdGeomXformOp::Precision const precision,
     TfToken const &opSuffix, bool isInverseOp) const
 {
     return AddXformOp(UsdGeomXformOp::TypeRotateZ, precision, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
+UsdGeomXformable::GetRotateZOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeRotateZ, opSuffix, isInverseOp);
 }
 
 UsdGeomXformOp 
@@ -280,11 +397,23 @@ UsdGeomXformable::AddRotateXYZOp(UsdGeomXformOp::Precision const precision,
 }
 
 UsdGeomXformOp 
+UsdGeomXformable::GetRotateXYZOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeRotateXYZ, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
 UsdGeomXformable::AddRotateXZYOp(UsdGeomXformOp::Precision const precision,
     TfToken const &opSuffix, bool isInverseOp) const
 {
     return AddXformOp(UsdGeomXformOp::TypeRotateXZY, precision, opSuffix,
                       isInverseOp);
+}
+
+UsdGeomXformOp 
+UsdGeomXformable::GetRotateXZYOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeRotateXZY, opSuffix, isInverseOp);
 }
 
 UsdGeomXformOp 
@@ -296,11 +425,23 @@ UsdGeomXformable::AddRotateYXZOp(UsdGeomXformOp::Precision const precision,
 }
 
 UsdGeomXformOp 
+UsdGeomXformable::GetRotateYXZOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeRotateYXZ, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
 UsdGeomXformable::AddRotateYZXOp(UsdGeomXformOp::Precision const precision,
     TfToken const &opSuffix, bool isInverseOp) const
 {
     return AddXformOp(UsdGeomXformOp::TypeRotateYZX, precision, opSuffix,
                       isInverseOp);
+}
+
+UsdGeomXformOp 
+UsdGeomXformable::GetRotateYZXOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeRotateYZX, opSuffix, isInverseOp);
 }
 
 UsdGeomXformOp 
@@ -312,6 +453,12 @@ UsdGeomXformable::AddRotateZXYOp(UsdGeomXformOp::Precision const precision,
 }
 
 UsdGeomXformOp 
+UsdGeomXformable::GetRotateZXYOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeRotateZXY, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
 UsdGeomXformable::AddRotateZYXOp(UsdGeomXformOp::Precision const precision,
     TfToken const &opSuffix, bool isInverseOp) const
 {
@@ -320,10 +467,22 @@ UsdGeomXformable::AddRotateZYXOp(UsdGeomXformOp::Precision const precision,
 }
 
 UsdGeomXformOp 
+UsdGeomXformable::GetRotateZYXOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeRotateZYX, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
 UsdGeomXformable::AddOrientOp(UsdGeomXformOp::Precision const precision,
     TfToken const &opSuffix, bool isInverseOp) const
 {
     return AddXformOp(UsdGeomXformOp::TypeOrient, precision, opSuffix, isInverseOp);
+}
+
+UsdGeomXformOp 
+UsdGeomXformable::GetOrientOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeOrient, opSuffix, isInverseOp);
 }
     
 UsdGeomXformOp 
@@ -332,6 +491,12 @@ UsdGeomXformable::AddTransformOp(UsdGeomXformOp::Precision const precision,
 {
     return AddXformOp(UsdGeomXformOp::TypeTransform, precision, opSuffix, 
                       isInverseOp);
+}
+    
+UsdGeomXformOp 
+UsdGeomXformable::GetTransformOp(TfToken const &opSuffix, bool isInverseOp) const
+{
+    return GetXformOp(UsdGeomXformOp::TypeTransform, opSuffix, isInverseOp);
 }
 
 // Returns whether "!resetXformStack! exists in opOrderVec.
@@ -432,6 +597,12 @@ UsdGeomXformOp
 UsdGeomXformable::MakeMatrixXform() const
 {
     ClearXformOpOrder();
+    bool unused = false;
+    if (!GetOrderedXformOps(&unused).empty()) {
+        TF_WARN("Could not clear xformOpOrder for <%s>",
+            GetPrim().GetPath().GetText());
+        return UsdGeomXformOp();
+    }
     return AddTransformOp();
 }
 
@@ -467,8 +638,8 @@ UsdGeomXformable::_GetOrderedXformOps(bool *resetsXformStack,
     result.reserve(opOrderVec.size());
 
     UsdPrim thisPrim = GetPrim();
-    for (VtTokenArray::iterator it = opOrderVec.begin() ; 
-         it != opOrderVec.end(); ++it) {
+    for (VtTokenArray::const_iterator it = opOrderVec.cbegin() ; 
+         it != opOrderVec.cend(); ++it) {
 
         const TfToken &opName = *it;
 
@@ -540,9 +711,36 @@ UsdGeomXformable::XformQuery::GetLocalTransformation(
     return UsdGeomXformable::GetLocalTransformation(transform, _xformOps, time);
 }
 
-static
-bool 
-_TransformMightBeTimeVarying(vector<UsdGeomXformOp> const &xformOps)
+bool
+UsdGeomXformable::XformQuery::TransformMightHaveEffect() const
+{
+    // Resetting the stack has an effect.
+    if (_resetsXformStack) {
+        return true;
+    }
+    // Empty op list has no effect.
+    if (_xformOps.empty()) {
+        return false;
+    }
+    // An op followed by its inverse has no effect.  For example:
+    // ["xformOp:translate:pivot", "!invert!:xformOp:translate:pivot"]
+    if (_xformOps.size() == 2
+        && (_xformOps[0].GetOpType() == _xformOps[1].GetOpType())
+        && (_xformOps[0].IsInverseOp() != _xformOps[1].IsInverseOp())
+        && (_xformOps[0].GetName() == _xformOps[1].GetName())) {
+        return false;
+    }
+    return true;
+}
+
+bool
+UsdGeomXformable::XformQuery::HasNonEmptyXformOpOrder() const
+{
+    return !_xformOps.empty();
+}
+
+static inline bool 
+_OpsMightBeTimeVarying(vector<UsdGeomXformOp> const &xformOps)
 {
     // If any of the xform ops may vary, then the cumulative transform may vary.
     TF_FOR_ALL(it, xformOps) {
@@ -556,7 +754,7 @@ _TransformMightBeTimeVarying(vector<UsdGeomXformOp> const &xformOps)
 bool
 UsdGeomXformable::XformQuery::TransformMightBeTimeVarying() const
 {
-    return _TransformMightBeTimeVarying(_xformOps);
+    return TransformMightHaveEffect() && _OpsMightBeTimeVarying(_xformOps);
 }
 
 bool
@@ -569,9 +767,8 @@ UsdGeomXformable::TransformMightBeTimeVarying() const
     if (opOrderVec.size() == 0) {
         return false;
     }
-
-    for (VtTokenArray::reverse_iterator it = opOrderVec.rbegin() ; 
-         it != opOrderVec.rend(); ++it) {
+    for (VtTokenArray::const_reverse_iterator it = opOrderVec.crbegin() ; 
+         it != opOrderVec.crend(); ++it) {
 
         const TfToken &opName = *it;
 
@@ -601,7 +798,7 @@ UsdGeomXformable::TransformMightBeTimeVarying(
     const vector<UsdGeomXformOp> &ops) const
 {
     if (!ops.empty())
-        return _TransformMightBeTimeVarying(ops);
+        return _OpsMightBeTimeVarying(ops);
 
     // Assume unvarying if neither orderedXformOps nor transform attribute is 
     // authored.
@@ -676,7 +873,7 @@ UsdGeomXformable::XformQuery::GetTimeSamplesInInterval(
         // This should never throw and exception because XformQuery's constructor
         // initializes an attribute query for all its xformOps.
         const UsdAttributeQuery &attrQuery = 
-            boost::get<UsdAttributeQuery>(xformOp._attr);
+            std::get<UsdAttributeQuery>(xformOp._attr);
         xformOpAttrQueries.push_back(attrQuery);
     }
     
@@ -754,15 +951,14 @@ UsdGeomXformable::GetLocalTransformation(
     if (opOrderVec.size() == 0) {
         return true;
     }
-    
-    for (VtTokenArray::reverse_iterator it = opOrderVec.rbegin() ; 
-         it != opOrderVec.rend(); ++it) {
+    for (VtTokenArray::const_reverse_iterator it = opOrderVec.crbegin() ; 
+         it != opOrderVec.crend(); ++it) {
             
         const TfToken &opName = *it;
 
         // Skip the current xformOp and the next one if they're inverses of 
         // each other.
-        if ((it+1) != opOrderVec.rend()) {
+        if ((it+1) != opOrderVec.crend()) {
             const TfToken &nextOpName = *(it+1);
             if (_AreInverseXformOps(opName, nextOpName)) {
                 ++it;

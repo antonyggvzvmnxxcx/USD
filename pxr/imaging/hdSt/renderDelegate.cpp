@@ -1,30 +1,14 @@
 //
 // Copyright 2017 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 #include "pxr/imaging/hdSt/renderDelegate.h"
 
 #include "pxr/imaging/hdSt/basisCurves.h"
+#include "pxr/imaging/hdSt/drawItemsCache.h"
 #include "pxr/imaging/hdSt/drawTarget.h"
 #include "pxr/imaging/hdSt/extComputation.h"
 #include "pxr/imaging/hdSt/field.h"
@@ -39,21 +23,24 @@
 #include "pxr/imaging/hdSt/renderPass.h"
 #include "pxr/imaging/hdSt/renderPassState.h"
 #include "pxr/imaging/hdSt/renderParam.h"
-#include "pxr/imaging/hdSt/tokens.h"
 #include "pxr/imaging/hdSt/resourceRegistry.h"
+#include "pxr/imaging/hdSt/sphere.h"
+#include "pxr/imaging/hdSt/tokens.h"
 #include "pxr/imaging/hdSt/volume.h"
 
 #include "pxr/imaging/hd/aov.h"
 #include "pxr/imaging/hd/camera.h"
 #include "pxr/imaging/hd/driver.h"
 #include "pxr/imaging/hd/extComputation.h"
+#include "pxr/imaging/hd/imageShader.h"
 #include "pxr/imaging/hd/perfLog.h"
+#include "pxr/imaging/hd/renderDelegateInfo.h"
+#include "pxr/imaging/hd/rendererCreateArgsSchema.h"
 #include "pxr/imaging/hd/tokens.h"
 
 #include "pxr/imaging/hgi/hgi.h"
 #include "pxr/imaging/hgi/tokens.h"
 
-#include "pxr/imaging/glf/contextCaps.h"
 #include "pxr/imaging/glf/diagnostic.h"
 #include "pxr/imaging/hio/glslfx.h"
 
@@ -67,13 +54,38 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_DEFINE_ENV_SETTING(HD_ENABLE_GPU_TINY_PRIM_CULLING, false,
                       "Enable tiny prim culling");
 
-const TfTokenVector HdStRenderDelegate::SUPPORTED_RPRIM_TYPES =
+TF_DEFINE_ENV_SETTING(HDST_MAX_LIGHTS, 16,
+                      "Maximum number of lights to render with");
+
+TF_DEFINE_ENV_SETTING(HDST_DOME_LIGHT_CUBEMAP_TARGET_MEMORY_MB, 0,
+                      "Maximum memory target in MB for the cubemap computed "
+                      "from the latlong texture for the dome light.");
+
+TF_DEFINE_ENV_SETTING(HDST_ENABLE_NATIVE_SPHERES, false,
+    "Enable native rendering of sphere primitives in Storm instead of "
+    "converting them to meshes via the implicit surface scene index.");
+
+namespace {
+const TfTokenVector _SupportedRprimTypes()
 {
-    HdPrimTypeTokens->mesh,
-    HdPrimTypeTokens->basisCurves,
-    HdPrimTypeTokens->points,
-    HdPrimTypeTokens->volume
-};
+    TfTokenVector supportedTypes = {
+        HdPrimTypeTokens->mesh,
+        HdPrimTypeTokens->basisCurves,
+        HdPrimTypeTokens->points,
+        HdPrimTypeTokens->volume
+    };
+
+    if (TfGetEnvSetting(HDST_ENABLE_NATIVE_SPHERES)) {
+        supportedTypes.emplace_back(HdPrimTypeTokens->sphere);
+    }
+
+    return supportedTypes;
+}
+}
+
+const TfTokenVector
+HdStRenderDelegate::SUPPORTED_RPRIM_TYPES = _SupportedRprimTypes();
+
 
 const TfTokenVector HdStRenderDelegate::SUPPORTED_SPRIM_TYPES =
 {
@@ -82,15 +94,21 @@ const TfTokenVector HdStRenderDelegate::SUPPORTED_SPRIM_TYPES =
     HdPrimTypeTokens->extComputation,
     HdPrimTypeTokens->material,
     HdPrimTypeTokens->domeLight,
+    HdPrimTypeTokens->cylinderLight,
+    HdPrimTypeTokens->diskLight,
+    HdPrimTypeTokens->distantLight,
     HdPrimTypeTokens->rectLight,
     HdPrimTypeTokens->simpleLight,
-    HdPrimTypeTokens->sphereLight
+    HdPrimTypeTokens->sphereLight,
+    HdPrimTypeTokens->imageShader
 };
 
+#ifdef PXR_MATERIALX_SUPPORT_ENABLED
 TF_DEFINE_PRIVATE_TOKENS(
     _tokens,
     (mtlx)
 );
+#endif
 
 using HdStResourceRegistryWeakPtr =  std::weak_ptr<HdStResourceRegistry>;
 
@@ -102,14 +120,15 @@ namespace {
 // An entry is kept alive until the last shared_ptr to a resource
 // registry is dropped.
 //
-class _HgiToResourceRegistryMap final
+class _HgiToResourceRegistryMap final :
+    public std::enable_shared_from_this<_HgiToResourceRegistryMap>
 {
 public:
     // Map is a singleton.
     static _HgiToResourceRegistryMap &GetInstance()
     {
-        static _HgiToResourceRegistryMap instance;
-        return instance;
+        static auto instance = std::make_shared<_HgiToResourceRegistryMap>();
+        return *instance;
     }
 
     // Look-up resource registry by Hgi instance, create resource
@@ -119,45 +138,54 @@ public:
         std::lock_guard<std::mutex> guard(_mutex);
 
         // Previous entry exists, use it.
-        auto it = _map.find(hgi);
-        if (it != _map.end()) {
-            HdStResourceRegistryWeakPtr const &registry = it->second;
-            return HdStResourceRegistrySharedPtr(registry);
+        HdStResourceRegistryWeakPtr &registry = _map[hgi];
+        if (HdStResourceRegistrySharedPtr const result = registry.lock()) {
+            return result;
         }
 
         // Create resource registry, custom deleter to remove corresponding
         // entry from map.
-        HdStResourceRegistrySharedPtr const result(
+        HdStResourceRegistrySharedPtr result{
             new HdStResourceRegistry(hgi),
-            [this](HdStResourceRegistry *registry) {
-                this->_Destroy(registry); });
+            [maybeSelf = weak_from_this()](
+                HdStResourceRegistry * const registry) {
+                // If a resource registry has a static lifetime object as its
+                // root owner, then we can encounter a static lifetime ordering
+                // issue, since this registry map also has a static lifetime.
+                // It's possible that due to the unspecified ordering of static
+                // destruction, this map is destroyed before a registry, in
+                // which case calling _Unregister() would be undefined
+                // behaviour. To prevent this we use a weak ownership, and skip
+                // the call when the map is dead because it no longer matters.
+                if (const auto self = maybeSelf.lock()) {
+                    self->_Unregister(registry);
+                }
+                delete registry;
+            }
+        };
 
         // Insert into map.
-        _map.insert({hgi, result});
+        registry = result;
 
         // Also register with HdPerfLog.
-        //
-        HdPerfLog::GetInstance().AddResourceRegistry(result.get());
+        HD_PERF_ADD_RESOURCE_REGISTRY(result.get());
 
         return result;
     }
 
 private:
-    void _Destroy(HdStResourceRegistry * const registry)
+    void _Unregister(HdStResourceRegistry * const registry)
     {
         TRACE_FUNCTION();
 
         std::lock_guard<std::mutex> guard(_mutex);
 
-        HdPerfLog::GetInstance().RemoveResourceRegistry(registry);
-        
+        HD_PERF_REMOVE_RESOURCE_REGISTRY(registry);
+
         _map.erase(registry->GetHgi());
-        delete registry;
     }
 
     using _Map = std::unordered_map<Hgi*, HdStResourceRegistryWeakPtr>;
-
-    _HgiToResourceRegistryMap() = default;
 
     std::mutex _mutex;
     _Map _map;
@@ -174,6 +202,7 @@ HdStRenderDelegate::HdStRenderDelegate(HdRenderSettingsMap const& settingsMap)
     : HdRenderDelegate(settingsMap)
     , _hgi(nullptr)
     , _renderParam(std::make_unique<HdStRenderParam>())
+    , _drawItemsCache(std::make_unique<HdSt_DrawItemsCache>())
 {
     // Initialize the settings and settings descriptors.
     _settingDescriptors = {
@@ -193,7 +222,25 @@ HdStRenderDelegate::HdStRenderDelegate(HdRenderSettingsMap const& settingsMap)
             "Maximum memory for a volume field texture in Mb "
             "(unless overridden by field prim)",
             HdStRenderSettingsTokens->volumeMaxTextureMemoryPerField,
-            VtValue(HdStVolume::defaultMaxTextureMemoryPerField) }
+            VtValue(HdStVolume::defaultMaxTextureMemoryPerField) },
+        HdRenderSettingDescriptor{
+            "Maximum number of lights",
+            HdStRenderSettingsTokens->maxLights,
+            VtValue(int(TfGetEnvSetting(HDST_MAX_LIGHTS))) },
+        HdRenderSettingDescriptor{
+            "Dome light camera visibility",
+            HdRenderSettingsTokens->domeLightCameraVisibility,
+            VtValue(true) },
+        HdRenderSettingDescriptor{
+            "Maximum memory target, in MB, of calculated cubemap texture for "
+            "dome light",
+            HdStRenderSettingsTokens->domeLightCubemapTargetMemory,
+            VtValue(static_cast<unsigned int>(
+                TfGetEnvSetting(HDST_DOME_LIGHT_CUBEMAP_TARGET_MEMORY_MB))) },
+        HdRenderSettingDescriptor{
+            "Enable exposure compensation",
+            HdRenderSettingsTokens->enableExposureCompensation,
+            VtValue(true) }
     };
 
     _PopulateDefaultSettings(_settingDescriptors);
@@ -225,6 +272,12 @@ HdStRenderDelegate::GetRenderStats() const
     return ra;
 }
 
+bool
+HdStRenderDelegate::RequiresStormTasks() const
+{
+    return true;
+}
+
 HdStRenderDelegate::~HdStRenderDelegate() = default;
 
 void
@@ -244,10 +297,10 @@ HdStRenderDelegate::SetDrivers(HdDriverVector const& drivers)
         }
     }
     
+    TF_VERIFY(_hgi, "HdSt requires Hgi HdDriver");
+
     _resourceRegistry =
         _HgiToResourceRegistryMap::GetInstance().GetOrCreateRegistry(_hgi);
-
-    TF_VERIFY(_hgi, "HdSt requires Hgi HdDriver");
 }
 
 const TfTokenVector &
@@ -295,16 +348,38 @@ HdStRenderDelegate::GetResourceRegistry() const
     return _resourceRegistry;
 }
 
+static
+bool
+_AovHasIdSemantic(TfToken const & name)
+{
+    return name == HdAovTokens->primId ||
+           name == HdAovTokens->instanceId ||
+           name == HdAovTokens->elementId ||
+           name == HdAovTokens->edgeId ||
+           name == HdAovTokens->pointId;
+}
+
 HdAovDescriptor
 HdStRenderDelegate::GetDefaultAovDescriptor(TfToken const& name) const
 {
     const bool colorDepthMSAA = true; // GL requires color/depth to be matching.
 
     if (name == HdAovTokens->color) {
-        HdFormat colorFormat = HdFormatFloat16Vec4;
-        return HdAovDescriptor(colorFormat,colorDepthMSAA, VtValue(GfVec4f(0)));
+        return HdAovDescriptor(
+                HdFormatFloat16Vec4, colorDepthMSAA, VtValue(GfVec4f(0)));
+    } else if (HdAovHasDepthStencilSemantic(name)) {
+        return HdAovDescriptor(
+            HdFormatFloat32UInt8, colorDepthMSAA,
+            VtValue(HdDepthStencilType(1.0f, 0)));
     } else if (HdAovHasDepthSemantic(name)) {
-        return HdAovDescriptor(HdFormatFloat32, colorDepthMSAA, VtValue(1.0f));
+        return HdAovDescriptor(
+                HdFormatFloat32, colorDepthMSAA, VtValue(1.0f));
+    } else if (_AovHasIdSemantic(name)) {
+        return HdAovDescriptor(
+                HdFormatInt32, colorDepthMSAA, VtValue(-1));
+    } else if (name == HdAovTokens->Neye) {
+        return HdAovDescriptor(
+                HdFormatUNorm8Vec4, colorDepthMSAA, VtValue(GfVec4f(0)));
     }
 
     return HdAovDescriptor();
@@ -314,7 +389,7 @@ HdRenderPassSharedPtr
 HdStRenderDelegate::CreateRenderPass(HdRenderIndex *index,
                         HdRprimCollection const& collection)
 {
-    return HdRenderPassSharedPtr(new HdSt_RenderPass(index, collection));
+    return std::make_shared<HdSt_RenderPass>(index, collection);
 }
 
 HdRenderPassStateSharedPtr
@@ -348,6 +423,8 @@ HdStRenderDelegate::CreateRprim(TfToken const& typeId,
         return new HdStPoints(rprimId);
     } else  if (typeId == HdPrimTypeTokens->volume) {
         return new HdStVolume(rprimId);
+    } else  if (typeId == HdPrimTypeTokens->sphere) {
+        return new HdStSphere(rprimId);
     } else {
         TF_CODING_ERROR("Unknown Rprim Type %s", typeId.GetText());
     }
@@ -376,8 +453,13 @@ HdStRenderDelegate::CreateSprim(TfToken const& typeId,
     } else if (typeId == HdPrimTypeTokens->domeLight ||
                 typeId == HdPrimTypeTokens->simpleLight ||
                 typeId == HdPrimTypeTokens->sphereLight ||
+                typeId == HdPrimTypeTokens->diskLight ||
+                typeId == HdPrimTypeTokens->distantLight ||
+                typeId == HdPrimTypeTokens->cylinderLight ||
                 typeId == HdPrimTypeTokens->rectLight) {
         return new HdStLight(sprimId, typeId);
+    } else if (typeId == HdPrimTypeTokens->imageShader) {
+        return new HdImageShader(sprimId);
     } else {
         TF_CODING_ERROR("Unknown Sprim Type %s", typeId.GetText());
     }
@@ -399,8 +481,13 @@ HdStRenderDelegate::CreateFallbackSprim(TfToken const& typeId)
     } else if (typeId == HdPrimTypeTokens->domeLight ||
                 typeId == HdPrimTypeTokens->simpleLight ||
                 typeId == HdPrimTypeTokens->sphereLight ||
+                typeId == HdPrimTypeTokens->diskLight ||
+                typeId == HdPrimTypeTokens->distantLight ||
+                typeId == HdPrimTypeTokens->cylinderLight ||
                 typeId == HdPrimTypeTokens->rectLight) {
         return new HdStLight(SdfPath::EmptyPath(), typeId);
+    } else if (typeId == HdPrimTypeTokens->imageShader) {
+        return new HdImageShader(SdfPath::EmptyPath());
     } else {
         TF_CODING_ERROR("Unknown Sprim Type %s", typeId.GetText());
     }
@@ -453,13 +540,14 @@ HdStRenderDelegate::DestroyBprim(HdBprim *bPrim)
 HdSprim *
 HdStRenderDelegate::_CreateFallbackMaterialPrim()
 {
-    HioGlslfxSharedPtr glslfx(
-        new HioGlslfx(HdStPackageFallbackSurfaceShader()));
+    HioGlslfxSharedPtr glslfx =
+        std::make_shared<HioGlslfx>(HdStPackageFallbackMaterialNetworkShader());
 
-    HdStSurfaceShaderSharedPtr fallbackShaderCode(new HdStGLSLFXShader(glslfx));
+    HdSt_MaterialNetworkShaderSharedPtr fallbackShaderCode =
+        std::make_shared<HdStGLSLFXShader>(glslfx);
 
     HdStMaterial *material = new HdStMaterial(SdfPath::EmptyPath());
-    material->SetSurfaceShader(fallbackShaderCode);
+    material->SetMaterialNetworkShader(fallbackShaderCode);
 
     return material;
 }
@@ -493,30 +581,96 @@ HdStRenderDelegate::CommitResources(HdChangeTracker *tracker)
     // see bug126621. currently dispatch buffers need to be released
     //                more frequently than we expect.
     _resourceRegistry->GarbageCollectDispatchBuffers();
+
+    _drawItemsCache->GarbageCollect();
+}
+
+static
+bool _GetGpuEnabled(const HdRendererCreateArgsSchema &args)
+{
+    HdBoolDataSourceHandle const ds = args.GetGpuEnabled();
+    if (!ds) {
+        return true;
+    }
+    return ds->GetTypedValue(0.0f);
+}
+
+static
+Hgi * _GetHgi(const HdRendererCreateArgsSchema &args)
+{
+    auto ds =
+        HdTypedSampledDataSource<Hgi*>::Cast(
+            args.GetDrivers().Get(HdRendererCreateArgsSchemaTokens->hgi));
+    if (!ds) {
+        return nullptr;
+    }
+    return ds->GetTypedValue(0.0f);
+}
+
+static
+const char * _NullOrReasonWhyNotSupported(
+    const HdRendererCreateArgsSchema &rendererCreateArgs)
+{
+    if (!_GetGpuEnabled(rendererCreateArgs)) {
+        return "GPU not enabled";
+    }
+    if (Hgi * const hgi = _GetHgi(rendererCreateArgs)) {
+        if (hgi->IsBackendSupported()) {
+            return nullptr;
+        } else {
+            return "Given Hgi backend not supported";
+        }
+    } else {
+        // If invalid Hgi instance is provided, check support for platform default
+        // Hgi.
+        if (Hgi::IsSupported()) {
+            return nullptr;
+        } else {
+            return "Platform default Hgi not supported";
+        }
+    }
 }
 
 bool
-HdStRenderDelegate::IsSupported()
+HdStRenderDelegate::IsSupported(
+    const HdRendererCreateArgsSchema &rendererCreateArgs,
+    std::string * const reasonWhyNot)
 {
-    return (GlfContextCaps::GetInstance().glVersion >= 400);
+    if (const char * const result =
+                _NullOrReasonWhyNotSupported(rendererCreateArgs)) {
+        TF_DEBUG(HD_RENDERER_PLUGIN).Msg(
+            "Storm renderer not supported: %s.\n", result);
+        if (reasonWhyNot) {
+            *reasonWhyNot = result;
+        }
+        return false;
+    } else {
+        return true;
+    }
 }
 
 TfTokenVector
 HdStRenderDelegate::GetShaderSourceTypes() const
 {
-    return {HioGlslfxTokens->glslfx, _tokens->mtlx};
+    return GetRenderDelegateInfo().shaderSourceTypes;
 }
 
 TfTokenVector
 HdStRenderDelegate::GetMaterialRenderContexts() const
 {
-    return {HioGlslfxTokens->glslfx, _tokens->mtlx};
+    return GetRenderDelegateInfo().materialRenderContexts;
 }
 
 bool
 HdStRenderDelegate::IsPrimvarFilteringNeeded() const
 {
-    return true;
+    return GetRenderDelegateInfo().isPrimvarFilteringNeeded;
+}
+
+HdStDrawItemsCachePtr
+HdStRenderDelegate::GetDrawItemsCache() const
+{
+    return _drawItemsCache.get();
 }
 
 Hgi*
@@ -535,7 +689,41 @@ HdStRenderDelegate::_ApplyTextureSettings()
                      HdStVolume::defaultMaxTextureMemoryPerField));
 
     _resourceRegistry->SetMemoryRequestForTextureType(
-        HdTextureType::Field, 1048576 * memInMb);
+        HdStTextureType::Field, 1048576 * memInMb);
+}
+
+static
+HdRenderDelegateInfo
+_RenderDelegateInfo()
+{
+    HdRenderDelegateInfo info;
+
+    info.materialBindingPurpose = HdTokens->preview;
+    info.materialRenderContexts = {
+        HioGlslfxTokens->glslfx
+#ifdef PXR_MATERIALX_SUPPORT_ENABLED
+        , _tokens->mtlx
+#endif
+    };
+
+    info.isPrimvarFilteringNeeded = true;
+    info.shaderSourceTypes = info.materialRenderContexts;
+    info.isCoordSysSupported = false;
+
+    return info;
+}
+
+const HdRenderDelegateInfo &
+HdStRenderDelegate::GetRenderDelegateInfo()
+{
+    static const HdRenderDelegateInfo info = _RenderDelegateInfo();
+    return info;
+}
+
+bool
+HdStRenderDelegate::IsEnabledNativeSphereRenderingSupport()
+{
+    return TfGetEnvSetting(HDST_ENABLE_NATIVE_SPHERES);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

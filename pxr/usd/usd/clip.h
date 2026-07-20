@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_USD_CLIP_H
 #define PXR_USD_USD_CLIP_H
@@ -31,6 +14,7 @@
 #include "pxr/usd/sdf/path.h"
 #include "pxr/usd/sdf/propertySpec.h"
 #include "pxr/base/tf/declarePtrs.h"
+#include "pxr/base/ts/spline.h"
 
 #include <iosfwd>
 #include <memory>
@@ -41,7 +25,8 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 TF_DECLARE_WEAK_PTRS(PcpLayerStack);
 
-class Usd_InterpolatorBase;
+class Usd_Interpolator;
+class UsdTimeCode;
 
 /// Returns true if the given scene description metadata \p fieldName is
 /// associated with value clip functionality.
@@ -53,8 +38,8 @@ std::vector<TfToken>
 UsdGetClipRelatedFields();
 
 /// Sentinel values authored on the edges of a clipTimes range.
-constexpr double Usd_ClipTimesEarliest = -std::numeric_limits<double>::max();
-constexpr double Usd_ClipTimesLatest = std::numeric_limits<double>::max();
+constexpr double Usd_ClipTimesEarliest = -std::numeric_limits<double>::infinity();
+constexpr double Usd_ClipTimesLatest = std::numeric_limits<double>::infinity();
 
 /// \class Usd_Clip
 ///
@@ -105,6 +90,32 @@ public:
 
     typedef std::vector<TimeMapping> TimeMappings;
 
+    /// Structure used to sort TimeMapping objects. Used by both Usd_Clip and
+    /// Usd_ClipSet.
+    struct Usd_SortByExternalTime
+    {
+        bool
+        operator()(const Usd_Clip::TimeMapping& x,
+                   const Usd_Clip::ExternalTime y) const
+        {
+            return x.externalTime < y;
+        }
+
+        bool
+        operator()(const Usd_Clip::TimeMapping& x,
+                   const Usd_Clip::TimeMapping& y) const
+        {
+            return x.externalTime < y.externalTime;
+        }
+
+        bool
+        operator()(const Usd_Clip::ExternalTime x,
+                   const Usd_Clip::TimeMapping& y) const
+        {
+            return x < y.externalTime;
+        }
+    };
+
     Usd_Clip();
     Usd_Clip(
         const PcpLayerStackPtr& clipSourceLayerStack,
@@ -115,7 +126,7 @@ public:
         ExternalTime clipAuthoredStartTime,
         ExternalTime clipStartTime,
         ExternalTime clipEndTime,
-        const TimeMappings& timeMapping);
+        const std::shared_ptr<TimeMappings> &timeMapping);
 
     bool HasField(const SdfPath& path, const TfToken& field) const;
 
@@ -147,8 +158,39 @@ public:
 
     template <class T>
     bool QueryTimeSample(
-        const SdfPath& path, ExternalTime time, 
-        Usd_InterpolatorBase* interpolator, T* value) const;
+        const SdfPath& path, UsdTimeCode time, 
+        Usd_Interpolator const &interpolator, T* value) const;
+
+    /// If there is a time sample for \p path at \p time, return its value's
+    /// typeid(), otherwise return typeid(void).
+    const std::type_info &QueryTimeSampleTypeid(
+        const SdfPath &path, UsdTimeCode time) const;
+
+    /// Evaluates the clip's spline at external time `time` and stores the
+    /// result in `value`.
+    ///
+    /// If there is no spline, or if the resulting value is value block,
+    /// returns false.
+    template <class T>
+    bool QuerySpline(
+        const SdfPath& path, UsdTimeCode time, T* value) const;
+
+    /// Output a spline representative of this clip for the given external
+    /// path.
+    ///
+    /// Returns false if no spline exists for this clip, true otherwise.
+    ///
+    /// If the clip has a spline that's empty, returns a spline with knots
+    /// at startTime and endTime if the boundaries are finite with
+    /// value block interpolation and value block extrapolation if not.
+    ///
+    /// If there are no clip times, writes a spline truncated to the clip's
+    /// startTime and endTime.
+    ///
+    /// If there are clip times, scales and transforms the underlying spline
+    /// for each timing section, and writes the result of concatenating
+    /// those splines.
+    bool BuildSpline(const SdfPath& path, TsSpline* result) const;
 
     /// Return true if this clip has authored time samples for the attribute
     /// corresponding to the given \p path. Clips may add time sample times
@@ -156,6 +198,11 @@ public:
     /// in the clip. This method ignores these time samples and returns
     /// whether there truly is a time sample value for the attribute.
     bool HasAuthoredTimeSamples(const SdfPath& path) const;
+
+    /// Return true if this clip has an authored spline for the attribute
+    /// corresponding to the given \p path. Analogous to
+    /// \ref HasAuthoredTimeSamples.
+    bool HasAuthoredSpline(const SdfPath& path) const;
 
     /// Return true if a value block is authored for the attribute
     /// corresponding to the given \p path at \p time.
@@ -173,11 +220,10 @@ public:
     /// open, it will generally be kept open for the life of the stage.
     SdfLayerHandle GetLayerIfOpen() const;
 
-    /// Layer stack, prim spec path, and index of layer where this clip
-    /// was introduced.
+    /// Layer stack, prim spec path, and layer where this clip was introduced.
     PcpLayerStackPtr sourceLayerStack;
     SdfPath sourcePrimPath;
-    size_t sourceLayerIndex;
+    SdfLayerHandle sourceLayer;
 
     /// Asset path for the clip and the path to the prim in the clip
     /// that provides data.
@@ -201,7 +247,7 @@ public:
     ExternalTime endTime;
 
     /// Mapping of external to internal times.
-    TimeMappings times;
+    std::shared_ptr<const TimeMappings> times;
 
 private:
     friend class UsdStage;
@@ -222,7 +268,7 @@ private:
 
     // Helpers to translate between internal and external time domains.
     InternalTime _TranslateTimeToInternal(
-        ExternalTime extTime) const;
+        UsdTimeCode extTime) const;
     ExternalTime _TranslateTimeToExternal(
         InternalTime clipTime, size_t i1, size_t i2) const;
 

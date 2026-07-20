@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hd/renderDelegate.h"
 #include "pxr/imaging/hd/renderPassState.h"
@@ -53,14 +36,40 @@ HdRenderParam::~HdRenderParam() = default;
 HdRenderDelegate::~HdRenderDelegate() = default;
 
 HdRenderDelegate::HdRenderDelegate()
-    : _settingsMap(), _settingsVersion(1)
+    : _settingsVersion(1)
 {
 }
 
-HdRenderDelegate::HdRenderDelegate(HdRenderSettingsMap const& settingsMap)
-    : _settingsMap(), _settingsVersion(1)
+bool
+HdRenderParam::SetArbitraryValue(const TfToken& key, const VtValue& value)
 {
-    _settingsMap = settingsMap;
+    // Default implementation does not allow setting any arbitrary values.
+    return false;
+}
+
+VtValue
+HdRenderParam::GetArbitraryValue(const TfToken& key) const
+{
+    // Default implementation does not provide any arbitrary values.
+    return VtValue();
+}
+
+bool
+HdRenderParam::HasArbitraryValue(const TfToken& key) const
+{
+    // Default implementation does not provide any arbitrary values.
+    return false;
+}
+
+bool
+HdRenderParam::IsValid() const
+{
+    return false;
+}
+
+HdRenderDelegate::HdRenderDelegate(HdRenderSettingsMap const& settingsMap)
+    : _settingsMap(settingsMap), _settingsVersion(1)
+{
     if (TfDebug::IsEnabled(HD_RENDER_SETTINGS)) {
         std::cout << "Initial Render Settings" << std::endl;
         for (auto const& pair : _settingsMap) {
@@ -88,6 +97,13 @@ HdRenderDelegate::GetMaterialBindingPurpose() const
 }
 
 TfTokenVector 
+HdRenderDelegate::GetShadingSystems() const
+{
+    return GetShaderSourceTypes();
+}
+
+
+TfTokenVector 
 HdRenderDelegate::GetShaderSourceTypes() const
 {
     return TfTokenVector();
@@ -107,6 +123,13 @@ HdRenderDelegate::GetMaterialRenderContexts() const
     // GetMaterialNetworkSelector()
     return {GetMaterialNetworkSelector()};
 }
+
+TfTokenVector
+HdRenderDelegate::GetRenderSettingsNamespaces() const
+{
+    return TfTokenVector();
+}
+
 
 bool
 HdRenderDelegate::IsPrimvarFilteringNeeded() const
@@ -164,10 +187,31 @@ HdRenderDelegate::GetRenderSettingsVersion() const
     return _settingsVersion;
 }
 
+HdCommandDescriptors 
+HdRenderDelegate::GetCommandDescriptors() const
+{
+    return HdCommandDescriptors();
+}
+
+bool 
+HdRenderDelegate::InvokeCommand(
+    const TfToken &command,
+    const HdCommandArgs &args)
+{
+    // Fail all commands that get here.
+    return false;
+}
+
 VtDictionary 
 HdRenderDelegate::GetRenderStats() const
 {
     return VtDictionary();
+}
+
+HdContainerDataSourceHandle
+HdRenderDelegate::GetCapabilities() const
+{
+    return nullptr;
 }
 
 void
@@ -195,7 +239,27 @@ HdRenderDelegate::IsPauseSupported() const
 }
 
 bool
+HdRenderDelegate::IsPaused() const
+{
+    return false;
+}
+
+bool
 HdRenderDelegate::Pause()
+{
+    return false;
+}
+
+bool HdRenderDelegate::IsParallelSyncEnabled(
+    const TfToken &primType) const
+{
+    if (primType == HdPrimTypeTokens->extComputation) {
+        return true;
+    }
+    return false;
+}
+
+bool HdRenderDelegate::RequiresStormTasks() const
 {
     return false;
 }
@@ -213,15 +277,38 @@ HdRenderDelegate::IsStopSupported() const
 }
 
 bool
-HdRenderDelegate::Stop()
+HdRenderDelegate::IsStopped() const
 {
-    return false;
+    return true;
+}
+
+bool
+HdRenderDelegate::Stop(bool blocking)
+{
+    return true;
 }
 
 bool
 HdRenderDelegate::Restart()
 {
     return false;
+}
+
+////////////////////////////////////////////////////////////////////////////
+///
+/// Hydra 2.0 API
+///
+////////////////////////////////////////////////////////////////////////////
+
+void
+HdRenderDelegate::SetTerminalSceneIndex(
+    const HdSceneIndexBaseRefPtr &terminalSceneIndex)
+{
+}
+
+void
+HdRenderDelegate::Update()
+{
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

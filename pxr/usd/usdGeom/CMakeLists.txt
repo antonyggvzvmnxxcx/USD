@@ -2,6 +2,8 @@ set(PXR_PREFIX pxr/usd)
 set(PXR_PACKAGE usdGeom)
 
 pxr_library(usdGeom
+    INCLUDE_SCHEMA_FILES
+
     LIBRARIES
         js
         tf
@@ -11,110 +13,50 @@ pxr_library(usdGeom
         trace
         usd
         work
-        ${Boost_PYTHON_LIBRARY}
-        ${TBB_tbb_LIBRARY}
-
-    INCLUDE_DIRS
-        ${Boost_INCLUDE_DIRS}
-        ${TBB_INCLUDE_DIRS}
+        TBB::tbb
 
     PUBLIC_CLASSES
         debugCodes
-        tokens
         bboxCache
         constraintTarget
         xformCache
-        basisCurves
-        boundable
         boundableComputeExtent
-        camera
-        capsule
-        cone
-        cube
-        curves
-        cylinder
-        hermiteCurves
-        imageable
-        gprim
-        mesh
         metrics
-        modelAPI
-        motionAPI
-        nurbsCurves
-        nurbsPatch
-        pointBased
-        pointInstancer
-        points
         primvar
-        primvarsAPI
-        scope
-        sphere
-        subset
-        xform
-        xformable
         xformOp
-        xformCommonAPI
-        
+
     PUBLIC_HEADERS
         api.h
 
-    PYTHON_CPPFILES
-        moduleDeps.cpp
 
     PRIVATE_CLASSES
         samplingUtils
 
     PYMODULE_CPPFILES
-        module.cpp
         wrapBBoxCache.cpp
-        wrapBasisCurves.cpp
-        wrapBoundable.cpp
-        wrapCamera.cpp
         wrapConstraintTarget.cpp
-        wrapCapsule.cpp
-        wrapCone.cpp
-        wrapCube.cpp
-        wrapCurves.cpp
-        wrapCylinder.cpp
-        wrapGprim.cpp
-        wrapHermiteCurves.cpp
-        wrapImageable.cpp
-        wrapMesh.cpp
         wrapMetrics.cpp
-        wrapModelAPI.cpp
-        wrapMotionAPI.cpp
-        wrapNurbsCurves.cpp
-        wrapNurbsPatch.cpp
-        wrapPointBased.cpp
-        wrapPointInstancer.cpp
-        wrapPoints.cpp
         wrapPrimvar.cpp
-        wrapPrimvarsAPI.cpp
-        wrapScope.cpp
-        wrapSphere.cpp
-        wrapSubset.cpp
-        wrapTokens.cpp
-        wrapXform.cpp
         wrapXformCache.cpp
-        wrapXformable.cpp
         wrapXformOp.cpp
-        wrapXformCommonAPI.cpp
 
     PYMODULE_FILES
         __init__.py
 
-    RESOURCE_FILES
-        plugInfo.json
-        generatedSchema.usda
-        schema.usda:usdGeom/schema.usda
-
     DOXYGEN_FILES
         overview.dox
         snippets.dox
+        images/USDCurveBasisMatrix.png
+        images/USDCurveHydra.png
+        images/USDCurvePrimvars.png
+        images/USDTetMeshRightHanded.svg
+        images/USDTetMeshLeftHanded.svg
+        examples_usdGeom.cpp
 )
 
 pxr_test_scripts(
     testenv/testUsdGeomBasisCurves.py
+    testenv/testUsdGeomBackPlateAPI.py
     testenv/testUsdGeomBBoxCache.py
     testenv/testUsdGeomCamera.py
     testenv/testUsdGeomComputeAtTime.py
@@ -134,6 +76,7 @@ pxr_test_scripts(
     testenv/testUsdGeomPurposeVisibility.py
     testenv/testUsdGeomSchemata.py
     testenv/testUsdGeomSubset.py
+    testenv/testUsdGeomTetMesh.py
     testenv/testUsdGeomXformable.py
     testenv/testUsdGeomXformCommonAPI.py
 )
@@ -171,67 +114,23 @@ pxr_build_test(testUsdGeomHasAPI
         testenv/testUsdGeomHasAPI.cpp
 )
 
-pxr_install_test_dir(
-    SRC testenv/testUsdGeomBasisCurves
-    DEST testUsdGeomBasisCurves
+pxr_register_test(testUsdGeomBackPlateAPI
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomBackPlateAPI"
+    EXPECTED_RETURN_CODE 0
 )
-
-pxr_install_test_dir(
-    SRC testenv/testUsdGeomBBoxCache
-    DEST testUsdGeomBBoxCache
-)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdGeomConsts
-    DEST testUsdGeomConsts
-)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdGeomPointInstancer
-    DEST testUsdGeomPointInstancer
-)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdGeomSubset
-    DEST testUsdGeomSubset)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdGeomBBoxCache
-    DEST testUsdGeomBBoxCache
-)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdGeomExtentFromPlugins
-    DEST testUsdGeomExtentFromPlugins
-)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdGeomExtentTransform
-    DEST testUsdGeomExtentTransform
-)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdGeomComputeAtTime
-    DEST testUsdGeomComputeAtTime
-)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdGeomImageable
-    DEST testUsdGeomImageable)
-
-pxr_install_test_dir(
-    SRC testenv/testUsdGeomMesh
-    DEST testUsdGeomMesh)
 
 pxr_register_test(testUsdGeomBasisCurves
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomBasisCurves"
+    TESTENV testenv/testUsdGeomBasisCurves
     EXPECTED_RETURN_CODE 0
 )
 
 pxr_register_test(testUsdGeomBBoxCache
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomBBoxCache"
+    TESTENV testenv/testUsdGeomBBoxCache
     EXPECTED_RETURN_CODE 0
     ENV 
         TF_DEBUG=USDGEOM_BBOX
@@ -241,6 +140,7 @@ pxr_register_test(testUsdGeomBBoxCache
 pxr_register_test(testUsdGeomCamera
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomCamera"
+    TESTENV testenv/testUsdGeomCamera
     EXPECTED_RETURN_CODE 0
 )
 
@@ -253,6 +153,7 @@ pxr_register_test(testUsdGeomConstraintTarget
 pxr_register_test(testUsdGeomConsts
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomConsts"
+    TESTENV testenv/testUsdGeomConsts
     EXPECTED_RETURN_CODE 0
 )
 
@@ -270,12 +171,28 @@ pxr_register_test(testUsdGeomCurves
 pxr_register_test(testUsdGeomMesh
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomMesh"
+    TESTENV testenv/testUsdGeomMesh
+    EXPECTED_RETURN_CODE 0
+)
+
+pxr_register_test(testUsdGeomTetMesh
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomTetMesh"
+    TESTENV testenv/testUsdGeomTetMesh
+    DIFF_COMPARE tetMeshRH.usda
+    DIFF_COMPARE tetMeshLH.usda
+)
+
+pxr_register_test(testUsdGeomMetrics
+    PYTHON
+    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomMetrics"
     EXPECTED_RETURN_CODE 0
 )
 
 pxr_register_test(testUsdGeomSubset
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomSubset"
+    TESTENV testenv/testUsdGeomSubset
     EXPECTED_RETURN_CODE 0
 )
 
@@ -308,6 +225,7 @@ pxr_register_test(testUsdGeomPrimvar
 pxr_register_test(testUsdGeomPointInstancer
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomPointInstancer"
+    TESTENV testenv/testUsdGeomPointInstancer
     EXPECTED_RETURN_CODE 0
 )
 
@@ -343,24 +261,28 @@ pxr_register_test(testUsdGeomXformCommonAPI
 pxr_register_test(testUsdGeomExtentFromPlugins
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomExtentFromPlugins"
+    TESTENV testenv/testUsdGeomExtentFromPlugins
     EXPECTED_RETURN_CODE 0
 )
 
 pxr_register_test(testUsdGeomExtentTransform
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomExtentTransform"
+    TESTENV testenv/testUsdGeomExtentTransform
     EXPECTED_RETURN_CODE 0
 )
 
 pxr_register_test(testUsdGeomComputeAtTime
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomComputeAtTime"
+    TESTENV testenv/testUsdGeomComputeAtTime
     EXPECTED_RETURN_CODE 0
 )
 
 pxr_register_test(testUsdGeomImageable
     PYTHON
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testUsdGeomImageable"
+    TESTENV testenv/testUsdGeomImageable
     EXPECTED_RETURN_CODE 0
 )
 

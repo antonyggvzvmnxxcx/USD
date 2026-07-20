@@ -1,36 +1,116 @@
 #
 # Copyright 2016 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 """
 Tf -- Tools Foundation
 """
 
+# Type to help handle DLL import paths on Windows with python interpreters v3.8
+# and newer. These interpreters don't search for DLLs in the path anymore, you
+# have to provide a path explicitly. This re-enables path searching for USD 
+# dependency libraries
+import platform, sys
+if sys.version_info >= (3, 8) and platform.system() == "Windows":
+    import contextlib
+
+    @contextlib.contextmanager
+    def WindowsImportWrapper():
+        import os
+        dirs = []
+        import_paths = os.getenv('PXR_USD_WINDOWS_DLL_PATH')
+        if import_paths is None:
+            import_paths = os.getenv('PATH', '')
+        # the underlying windows API call, AddDllDirectory, states that:
+        #
+        # > If AddDllDirectory is used to add more than one directory to the
+        # > process DLL search path, the order in which those directories are
+        # > searched is unspecified.
+        #
+        # https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-adddlldirectory
+        #
+        # However, in practice, it seems that the most-recently-added ones
+        # take precedence - so, reverse the order of entries in PATH to give
+        # it the same precedence
+        #
+        # Note that we have a test (testTfPyDllLink) to alert us if this
+        # undefined behavior changes.
+        for path in reversed(import_paths.split(os.pathsep)):
+            # Calling add_dll_directory raises an exception if paths don't
+            # exist, or if you pass in dot
+            if os.path.exists(path) and path != '.':
+                abs_path = os.path.abspath(path)
+                dirs.append(os.add_dll_directory(abs_path))
+        # This block guarantees we clear the dll directories if an exception
+        # is raised in the with block.
+        try:
+            yield
+        finally:
+            for dll_dir in dirs:
+                dll_dir.close()
+        del os
+    del contextlib
+else:
+    class WindowsImportWrapper(object):
+        def __enter__(self):
+            pass
+        def __exit__(self, exc_type, ex_val, exc_tb):
+            pass
+del platform, sys
+
+
+def PreparePythonModule(moduleName=None):
+    """Prepare an extension module at import time.  This will import the
+    Python module associated with the caller's module (e.g. '_tf' for 'pxr.Tf')
+    or the module with the specified moduleName and copy its contents into
+    the caller's local namespace.
+
+    Generally, this should only be called by the __init__.py script for a module
+    upon loading a boost python module (generally '_libName.so')."""
+    import importlib
+    import inspect
+    frame = inspect.currentframe().f_back
+    try:
+        f_locals = frame.f_locals
+
+        # If an explicit moduleName is not supplied, construct it from the
+        # caller's module name, like "pxr.Tf", and our naming conventions,
+        # which results in "_tf".
+        if moduleName is None:
+            moduleName = f_locals["__name__"].split(".")[-1]
+            moduleName = "_" + moduleName[0].lower() + moduleName[1:]
+
+        with WindowsImportWrapper():
+            module = importlib.import_module(
+                    "." + moduleName, f_locals["__name__"])
+
+        PrepareModule(module, f_locals)
+        try:
+            del f_locals[moduleName]
+        except KeyError:
+            pass
+
+        try:
+            module = importlib.import_module(".__DOC", f_locals["__name__"])
+            module.Execute(f_locals)
+            try:
+                del f_locals["__DOC"]
+            except KeyError:
+                pass
+        except Exception:
+            pass
+
+    finally:
+        del frame
+
 def PrepareModule(module, result):
     """PrepareModule(module, result) -- Prepare an extension module at import
     time.  Generally, this should only be called by the __init__.py script for a
-    module upon loading a boost python module (generally '_LibName.so')."""
+    module upon loading a boost python module (generally '_libName.so')."""
     # inject into result.
-    ignore = frozenset(['__name__', '__builtins__',
+    ignore = frozenset(['__name__', '__package__', '__builtins__',
                         '__doc__', '__file__', '__path__'])
     newModuleName = result.get('__name__')
 
@@ -75,17 +155,12 @@ def GetCodeLocation(framesUp):
     i.e. the function someCode()."""
     import sys
     f_back = sys._getframe(framesUp).f_back
-    return (f_back.f_globals['__name__'], f_back.f_code.co_name,
-            f_back.f_code.co_filename, f_back.f_lineno)
+    return (f_back.f_globals.get('__name__', '<unknown>'),
+            f_back.f_code.co_name,
+            f_back.f_code.co_filename,
+            f_back.f_lineno)
 
-# for some strange reason, this errors out when we try to reload it,
-# which is odd since _tf is a DSO and can't be reloaded anyway:
-import sys
-if "pxr.Tf._tf" not in sys.modules:
-    from . import _tf
-    PrepareModule(_tf, locals())
-    del _tf
-del sys
+PreparePythonModule()
 
 # Need to provide an exception type that tf errors will show up as.
 class ErrorException(RuntimeError):
@@ -96,13 +171,6 @@ class ErrorException(RuntimeError):
     def __str__(self):
         return '\n\t' + '\n\t'.join([str(e) for e in self.args])
 __SetErrorExceptionClass(ErrorException)
-
-try:
-    from . import __DOC
-    __DOC.Execute(locals())
-    del __DOC
-except Exception:
-    pass
 
 def Warn(msg, template=""):
     """Issue a warning via the TfDiagnostic system.
@@ -122,7 +190,7 @@ def Status(msg, verbose=True):
         codeInfo = GetCodeLocation(framesUp=1)
         _Status(msg, codeInfo[0], codeInfo[1], codeInfo[2], codeInfo[3])
     else:
-        _Status(msg, "", "", "", 0)
+        _Status(msg)
 
 def RaiseCodingError(msg):
     """Raise a coding error to the Tf Diagnostic system."""
@@ -176,3 +244,60 @@ class NamedTemporaryFile(object):
     def name(self):
         """The path for the temporary file created.""" 
         return self._name
+
+# Extend Tf.ScopeDescription using ContextDecorator so that it can also be
+# used to decorate functions/methods.
+import contextlib
+
+class ScopeDescription(_ScopeDescription, contextlib.ContextDecorator):
+    """This class lets us expose TfScopeDescription to python for use as a
+    "context manager" object, for use with the 'with'-statement. For example:
+
+        with Tf.ScopeDescription("Solving the halting problem"):
+            # Code that solves the halting problem.
+
+    It can also be used as a decorator for an entire function or method, for
+    convenience:
+
+        @Tf.ScopeDescription("Solving the halting problem");
+        def SolveHaltingProblem():
+            # Code that solves the halting problem.
+
+    Note that the description passed to the decorator is an expression that is
+    evaluated only once at declaration time. If a dynamic description is
+    needed, use the with-statement pattern instead.
+    """
+    pass
+
+class CatchAndRepostErrors(contextlib.ContextDecorator):
+    """This context manager & decorator can be used to catch Tf.ErrorException
+    and repost its held errors to the thread's Tf.Error list without raising a
+    Python exception, halting unwinding.  For example, the following will raise
+    a Tf.ErrorException containing the "test" Coding Error.  This will be
+    caught by the CatchAndRepostErrors object, and the "test" Error will be
+    re-posted to the thread's error list.  Then exception propagation will
+    cease and ordinary control flow will continue.
+
+        with Tf.CatchAndRepostErrors():
+            Tf.RaiseCodingError('test')
+
+    This can be useful to sidestep SIP's virtual function bindings from
+    blocking exceptions, retaining Tf.Errors so they can propagate to callers.
+    Here, the `paintGL()` virtual override can capture any Tf.ErrorExceptions
+    raised during its execution, and by reposting the errors to the Tf.Error
+    list, callers can observe them later.
+
+        @Tf.CatchAndRepostErrors():
+        def paintGL(self):
+            self._renderer.Render()
+    """
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, excType, excValue, tb):
+        return (RepostErrors(excValue)
+                if isinstance(excValue, ErrorException)
+                else False)
+
+del contextlib

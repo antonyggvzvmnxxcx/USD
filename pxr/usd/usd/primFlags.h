@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_USD_USD_PRIM_FLAGS_H
 #define PXR_USD_USD_PRIM_FLAGS_H
@@ -76,8 +59,7 @@
 #include "pxr/usd/usd/api.h"
 #include "pxr/base/arch/hints.h"
 #include "pxr/base/tf/bitUtils.h"
-
-#include <boost/functional/hash.hpp>
+#include "pxr/base/tf/hash.h"
 
 #include <bitset>
 
@@ -92,8 +74,10 @@ enum Usd_PrimFlags {
     Usd_PrimLoadedFlag,
     Usd_PrimModelFlag,
     Usd_PrimGroupFlag,
+    Usd_PrimComponentFlag,
     Usd_PrimAbstractFlag,
     Usd_PrimDefinedFlag,
+    Usd_PrimHasClassSpecifierFlag,
     Usd_PrimHasDefiningSpecifierFlag,
     Usd_PrimInstanceFlag,
 
@@ -275,10 +259,9 @@ private:
 
     // hash overload.
     friend size_t hash_value(const Usd_PrimFlagsPredicate &p) {
-        size_t hash = p._mask.to_ulong();
-        boost::hash_combine(hash, p._values.to_ulong());
-        boost::hash_combine(hash, p._negate);
-        return hash;
+        return TfHash::Combine(
+            p._mask.to_ulong(), p._values.to_ulong(), p._negate
+        );
     }
 
     // Whether or not to negate the predicate's result.
@@ -505,6 +488,8 @@ extern unspecified UsdPrimIsAbstract;
 extern unspecified UsdPrimIsDefined;
 /// Tests UsdPrim::IsInstance()
 extern unspecified UsdPrimIsInstance;
+/// Tests UsdPrim::HasClassSpecifier()
+extern unspecified UsdPrimHasClassSpecifier;
 /// Tests UsdPrim::HasDefiningSpecifier()
 extern unspecified UsdPrimHasDefiningSpecifier;
 
@@ -536,6 +521,8 @@ static const Usd_PrimFlags UsdPrimIsGroup = Usd_PrimGroupFlag;
 static const Usd_PrimFlags UsdPrimIsAbstract = Usd_PrimAbstractFlag;
 static const Usd_PrimFlags UsdPrimIsDefined = Usd_PrimDefinedFlag;
 static const Usd_PrimFlags UsdPrimIsInstance = Usd_PrimInstanceFlag;
+static const Usd_PrimFlags UsdPrimHasClassSpecifier 
+    = Usd_PrimHasClassSpecifierFlag;
 static const Usd_PrimFlags UsdPrimHasDefiningSpecifier 
     = Usd_PrimHasDefiningSpecifierFlag;
 

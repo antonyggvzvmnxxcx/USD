@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #ifndef PXR_BASE_ARCH_FILE_SYSTEM_H
 #define PXR_BASE_ARCH_FILE_SYSTEM_H
@@ -34,6 +17,7 @@
 #include "pxr/base/arch/inttypes.h"
 #include <memory>
 #include <cstdio>
+#include <cstdint>
 #include <string>
 #include <set>
 
@@ -41,7 +25,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#if defined(ARCH_OS_LINUX)
+#if defined(ARCH_OS_LINUX) || defined(ARCH_OS_WASM_VM)
 #include <unistd.h>
 #include <sys/statfs.h>
 #include <glob.h>
@@ -143,13 +127,22 @@ ArchOpenFile(char const* fileName, char const* mode);
 #   define ArchCloseFile(fd)            close(fd)
 #endif
 
-#if defined(ARCH_OS_WINDOWS)
-#   define ArchUnlinkFile(path)         _unlink(path)
-#else
-#   define ArchUnlinkFile(path)         unlink(path)
-#endif
+/// Touch \p fileName, updating access and modification time to 'now'.
+///
+/// A simple touch-like functionality. Simple in a sense that it does not
+/// offer as many options as the same-name unix touch command, but otherwise
+/// is identical to the default touch behavior. If \p create is true and 
+/// the file does not already exist, an empty file gets created, otherwise
+/// the touch call fails if the file does not already exist.
+ARCH_API bool ArchTouchFile(const std::string& fileName, bool create);
+
+/// Delete a file.
+///
+/// Returns 0 on success, or -1 otherwise.
+ARCH_API int ArchUnlinkFile(const char* path);
 
 #if defined(ARCH_OS_WINDOWS)
+    ARCH_API int ArchWindowsFileAccess(const char* path, uint32_t dwAccessMask);
     ARCH_API int ArchFileAccess(const char* path, int mode);
 #else
 #   define ArchFileAccess(path, mode)   access(path, mode)
@@ -173,6 +166,9 @@ ArchOpenFile(char const* fileName, char const* mode);
 #   define ArchFileIsaTTY(stream)       isatty(stream)
 #endif
 
+/// Delete an empty directory
+///
+/// Returns 0 on success, or -1 otherwise.
 #if defined(ARCH_OS_WINDOWS)
     ARCH_API int ArchRmDir(const char* path);
 #else
@@ -185,7 +181,10 @@ ArchOpenFile(char const* fileName, char const* mode);
 ARCH_API int64_t ArchGetFileLength(const char* fileName);
 ARCH_API int64_t ArchGetFileLength(FILE *file);
 
-/// Return a filename for this file, if one can be obtained.
+/// Return a filename for this file, if one can be obtained.  Note that there
+/// are many reasons why it may be impossible to obtain a filename, even for an
+/// opened FILE *.  Whenever possible avoid using this function and instead
+/// store the filename for future use.
 ARCH_API std::string ArchGetFileName(FILE *file);
 
 /// Returns true if the data in \c stat struct \p st indicates that the target
@@ -286,10 +285,10 @@ ARCH_API
 int ArchMakeTmpFile(const std::string& tmpdir,
                     const std::string& prefix, std::string* pathname = 0);
 
-/// Create a temporary sub-direcrory, in a given temporary directory.
+/// Create a temporary sub-directory, in a given temporary directory.
 ///
 /// The result returned has the form TMPDIR/prefix.XXXXXX/ where TMPDIR is the
-/// given temporary directory and XXXXXX is a unique suffix.  Returns the the
+/// given temporary directory and XXXXXX is a unique suffix.  Returns the
 /// full path to the subdir in pathname.  Returns empty string on failure and
 /// errno is set.
 ///
@@ -420,6 +419,16 @@ enum ArchFileAdvice {
 ARCH_API
 void ArchFileAdvise(FILE *file, int64_t offset, size_t count,
                     ArchFileAdvice adv);
+
+#if defined(ARCH_OS_WINDOWS)
+
+/// Converts UTF-16 windows string to regular std::string - Windows-only
+ARCH_API std::string ArchWindowsUtf16ToUtf8(const std::wstring &wstr);
+
+/// Converts regular std::string to UTF-16 windows string - Windows-only
+ARCH_API std::wstring ArchWindowsUtf8ToUtf16(const std::string &str);
+
+#endif
 
 ///@}
 

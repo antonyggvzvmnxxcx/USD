@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 
@@ -31,6 +14,7 @@
 #include "pxr/imaging/hdSt/points.h"
 #include "pxr/imaging/hdSt/pointsShaderKey.h"
 #include "pxr/imaging/hdSt/primUtils.h"
+#include "pxr/imaging/hdSt/renderParam.h"
 #include "pxr/imaging/hdSt/resourceRegistry.h"
 #include "pxr/imaging/hdSt/tokens.h"
 
@@ -49,7 +33,9 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 HdStPoints::HdStPoints(SdfPath const& id)
   : HdPoints(id)
-  , _displayOpacity(false)
+  , _displayOpacityFromInstancer(false)
+  , _displayOpacityFromPrimvars(false)
+  , _displayInOverlay(false)
 {
     /*NOTHING*/
 }
@@ -57,25 +43,40 @@ HdStPoints::HdStPoints(SdfPath const& id)
 HdStPoints::~HdStPoints() = default;
 
 void
+HdStPoints::UpdateRenderTag(HdSceneDelegate *delegate,
+                            HdRenderParam *renderParam)
+{
+    HdStUpdateRenderTag(delegate, renderParam, this);
+}
+
+
+void
 HdStPoints::Sync(HdSceneDelegate *delegate,
                  HdRenderParam   *renderParam,
                  HdDirtyBits     *dirtyBits,
                  TfToken const   &reprToken)
 {
-    bool updateMaterialTag = false;
+    _UpdateVisibility(delegate, dirtyBits);
+
+    bool updateMaterialTags = false;
     if (*dirtyBits & HdChangeTracker::DirtyMaterialId) {
         HdStSetMaterialId(delegate, renderParam, this);
-        updateMaterialTag = true;
+        updateMaterialTags = true;
+    }
+    if (*dirtyBits & (HdChangeTracker::DirtyDisplayStyle|
+                      HdChangeTracker::NewRepr)) {
+        updateMaterialTags = true;
     }
 
-    bool displayOpacity = _displayOpacity;
+    bool displayOpacity =
+        (_displayOpacityFromInstancer || _displayOpacityFromPrimvars);
     _UpdateRepr(delegate, renderParam, reprToken, dirtyBits);
 
-    if (updateMaterialTag || 
-        (GetMaterialId().IsEmpty() && displayOpacity != _displayOpacity)) {
-
-        HdStSetMaterialTag(delegate, renderParam, this, _displayOpacity,
-                           /*occludedSelectionShowsThrough = */false);
+    if (updateMaterialTags || 
+        (GetMaterialId().IsEmpty() &&
+         (displayOpacity !=
+          (_displayOpacityFromInstancer || _displayOpacityFromPrimvars)))) {
+        _UpdateMaterialTagsForAllReprs(delegate, renderParam);
     }
 
     // This clears all the non-custom dirty bits. This ensures that the rprim
@@ -90,6 +91,28 @@ void
 HdStPoints::Finalize(HdRenderParam *renderParam)
 {
     HdStMarkGarbageCollectionNeeded(renderParam);
+
+    HdStRenderParam * const stRenderParam =
+        static_cast<HdStRenderParam*>(renderParam);
+
+    // Decrement material tag counts for each draw item material tag
+    if (!_reprs.empty()) {
+        const std::pair<TfToken, HdReprSharedPtr> &reprPair = _reprs.front();
+        const TfToken &reprToken = reprPair.first;
+        _PointsReprConfig::DescArray const &descs = _GetReprDesc(reprToken);
+        HdReprSharedPtr repr = reprPair.second;
+        int drawItemIndex = 0;
+        for (size_t descIdx = 0; descIdx < descs.size(); ++descIdx) {
+            if (descs[descIdx].geomStyle == HdPointsGeomStyleInvalid) {
+                continue;
+            }
+            HdStDrawItem *drawItem = static_cast<HdStDrawItem*>(
+                _smoothHullRepr->GetDrawItem(drawItemIndex++));
+            stRenderParam->DecreaseMaterialTagCount(drawItem->GetMaterialTag());
+        }
+    }
+
+    stRenderParam->DecreaseRenderTagCount(GetRenderTag());
 }
 
 void
@@ -103,53 +126,66 @@ HdStPoints::_UpdateDrawItem(HdSceneDelegate *sceneDelegate,
 
     SdfPath const& id = GetId();
 
-    /* VISIBILITY */
-    _UpdateVisibility(sceneDelegate, dirtyBits);
-
     /* MATERIAL SHADER (may affect subsequent primvar population) */
-    drawItem->SetMaterialShader(HdStGetMaterialShader(this, sceneDelegate));
+    drawItem->SetMaterialNetworkShader(
+        HdStGetMaterialNetworkShader(this, sceneDelegate));
+
+    if (*dirtyBits & HdChangeTracker::DirtyDisplayStyle) {
+        HdDisplayStyle ds = GetDisplayStyle(sceneDelegate);
+        _displayInOverlay = ds.displayInOverlay;
+    }
 
     // Reset value of _displayOpacity
-    if (HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, id)) {
-        _displayOpacity = false;
+    if (*dirtyBits & HdChangeTracker::DirtyPrimvar) {
+        _displayOpacityFromPrimvars = false;
     }
 
     /* INSTANCE PRIMVARS */
     _UpdateInstancer(sceneDelegate, dirtyBits);
+    {
+        // The data members are part of a bitfield, so we can't pass pointers
+        // to them directly. HdStUpdateInstancerData doesn't write to output
+        // params if DirtyInstancer is not set, so we initialize the locals
+        // to current member values to preserve existing state in that case.
+        bool displayOpacityFromInstancer = _displayOpacityFromInstancer;
         HdStUpdateInstancerData(sceneDelegate->GetRenderIndex(),
                                 renderParam,
                                 this,
                                 drawItem,
                                 &_sharedData,
-                                *dirtyBits);
-
-    _displayOpacity = _displayOpacity ||
-            HdStIsInstancePrimvarExistentAndValid(
-            sceneDelegate->GetRenderIndex(), this, HdTokens->displayOpacity);
+                                *dirtyBits,
+                                &displayOpacityFromInstancer);
+        _displayOpacityFromInstancer = displayOpacityFromInstancer;
+    }
 
     /* CONSTANT PRIMVARS, TRANSFORM, EXTENT AND PRIMID */
     if (HdStShouldPopulateConstantPrimvars(dirtyBits, id)) {
-        HdPrimvarDescriptorVector constantPrimvars =
-            HdStGetPrimvarDescriptors(this, drawItem, sceneDelegate,
-                                    HdInterpolationConstant);
 
+        bool hasDisplayOpacity = false;
         HdStPopulateConstantPrimvars(this,
                                      &_sharedData,
                                      sceneDelegate,
                                      renderParam,
                                      drawItem,
                                      dirtyBits,
-                                     constantPrimvars);
-        
-        _displayOpacity = _displayOpacity ||
-            HdStIsPrimvarExistentAndValid(this, sceneDelegate, 
-            constantPrimvars, HdTokens->displayOpacity);
+                                     nullptr, HdMeshGeomStyleInvalid, 0, 0,
+                                     nullptr, // hasMirroredTransform
+                                     &hasDisplayOpacity);
+
+        if (hasDisplayOpacity) {
+            _displayOpacityFromPrimvars = true;
+        }
     }
 
-    HdSt_PointsShaderKey shaderKey;
     HdStResourceRegistrySharedPtr resourceRegistry =
         std::static_pointer_cast<HdStResourceRegistry>(
             sceneDelegate->GetRenderIndex().GetResourceRegistry());
+
+    bool const nativeRoundPoints =
+        resourceRegistry->GetHgi()->GetCapabilities()->
+            IsSet(HgiDeviceCapabilitiesBitsRoundPoints);
+
+    HdSt_PointsShaderKey shaderKey{nativeRoundPoints};
     drawItem->SetGeometricShader(
         HdSt_GeometricShader::Create(shaderKey, resourceRegistry));
 
@@ -235,7 +271,7 @@ HdStPoints::_PopulateVertexPrimvars(HdSceneDelegate *sceneDelegate,
     HdBufferSourceSharedPtrVector sources;
     HdBufferSourceSharedPtrVector reserveOnlySources;
     HdBufferSourceSharedPtrVector separateComputationSources;
-    HdStComputationSharedPtrVector computations;
+    HdStComputationComputeQueuePairVector computations;
     sources.reserve(primvars.size());
 
     HdSt_GetExtComputationPrimvarsComputations(
@@ -254,15 +290,16 @@ HdStPoints::_PopulateVertexPrimvars(HdSceneDelegate *sceneDelegate,
         }
 
         VtValue value = GetPrimvar(sceneDelegate, primvar.name);
+        if (!HdStIsPrimvarValidForDrawItem(drawItem, primvar.name, value)) {
+            continue;
+        }
 
-        if (!value.IsEmpty()) {
-            HdBufferSourceSharedPtr source(
-                new HdVtBufferSource(primvar.name, value));
-            sources.push_back(source);
+        HdBufferSourceSharedPtr source =
+            std::make_shared<HdVtBufferSource>(primvar.name, value);
+        sources.push_back(source);
 
-            if (primvar.name == HdTokens->displayOpacity) {
-                _displayOpacity = true;
-            }
+        if (primvar.name == HdTokens->displayOpacity) {
+            _displayOpacityFromPrimvars = true;
         }
     }
 
@@ -274,7 +311,11 @@ HdStPoints::_PopulateVertexPrimvars(HdSceneDelegate *sceneDelegate,
     }
 
     // XXX: This should be based off the DirtyPrimvarDesc bit.
-    bool hasDirtyPrimvarDesc = (*dirtyBits & HdChangeTracker::DirtyPrimvar);
+    bool hasDirtyPrimvarDesc =
+        (*dirtyBits & HdChangeTracker::DirtyPrimvar) ||
+        (*dirtyBits & HdChangeTracker::DirtyNormals) ||
+        (*dirtyBits & HdChangeTracker::DirtyWidths);
+
     HdBufferSpecVector removedSpecs;
     if (hasDirtyPrimvarDesc) {
         TfTokenVector internallyGeneratedPrimvars; // none
@@ -287,10 +328,14 @@ HdStPoints::_PopulateVertexPrimvars(HdSceneDelegate *sceneDelegate,
     HdBufferSpec::GetBufferSpecs(reserveOnlySources, &bufferSpecs);
     HdStGetBufferSpecsFromCompuations(computations, &bufferSpecs);
     
+    HdBufferArrayUsageHint usageHint =
+        HdBufferArrayUsageHintBitsVertex;
+    if (!computations.empty()) {
+        usageHint |= HdBufferArrayUsageHintBitsStorage;
+    }
     HdBufferArrayRangeSharedPtr range =
         resourceRegistry->UpdateNonUniformBufferArrayRange(
-            HdTokens->primvar, bar, bufferSpecs, removedSpecs,
-            HdBufferArrayUsageHint());
+            HdTokens->primvar, bar, bufferSpecs, removedSpecs, usageHint);
 
     HdStUpdateDrawItemBAR(
         range,
@@ -314,7 +359,7 @@ HdStPoints::_PopulateVertexPrimvars(HdSceneDelegate *sceneDelegate,
     }
     // add gpu computations to queue.
     for (auto const& compQueuePair : computations) {
-        HdComputationSharedPtr const& comp = compQueuePair.first;
+        HdStComputationSharedPtr const& comp = compQueuePair.first;
         HdStComputeQueue queue = compQueuePair.second;
         resourceRegistry->AddComputation(
             drawItem->GetVertexPrimvarRange(), comp, queue);
@@ -323,6 +368,36 @@ HdStPoints::_PopulateVertexPrimvars(HdSceneDelegate *sceneDelegate,
         for(HdBufferSourceSharedPtr const& compSrc : 
                 separateComputationSources) {
             resourceRegistry->AddSource(compSrc);
+        }
+    }
+}
+
+void
+HdStPoints::_UpdateMaterialTagsForAllReprs(HdSceneDelegate *sceneDelegate,
+                                           HdRenderParam *renderParam)
+{
+    TF_DEBUG(HD_RPRIM_UPDATED). Msg(
+        "(%s) - Updating material tags for draw items of all reprs.\n", 
+        GetId().GetText());
+
+    // All reprs in _reprs point to same repr for now.
+    if (!_reprs.empty()) {
+        const std::pair<TfToken, HdReprSharedPtr> &reprPair = _reprs.front();
+        const TfToken &reprToken = reprPair.first;
+        _PointsReprConfig::DescArray const &descs = _GetReprDesc(reprToken);
+        HdReprSharedPtr repr = reprPair.second;
+        int drawItemIndex = 0;
+        for (size_t descIdx = 0; descIdx < descs.size(); ++descIdx) {
+            if (descs[descIdx].geomStyle == HdPointsGeomStyleInvalid) {
+                continue;
+            }
+            HdStDrawItem *drawItem = static_cast<HdStDrawItem*>(
+                _smoothHullRepr->GetDrawItem(drawItemIndex++));
+            HdStSetMaterialTag(sceneDelegate, renderParam, drawItem, 
+                this->GetMaterialId(),
+                _displayOpacityFromPrimvars || _displayOpacityFromInstancer, 
+                _displayInOverlay,
+                /*occludedSelectionShowsThrough = */false);
         }
     }
 }
@@ -336,6 +411,7 @@ HdStPoints::GetInitialDirtyBitsMask() const
         | HdChangeTracker::DirtyPoints
         | HdChangeTracker::DirtyPrimID
         | HdChangeTracker::DirtyPrimvar
+        | HdChangeTracker::DirtyDisplayStyle
         | HdChangeTracker::DirtyRepr
         | HdChangeTracker::DirtyMaterialId
         | HdChangeTracker::DirtyTransform
@@ -359,7 +435,7 @@ HdStPoints::_InitRepr(TfToken const &reprToken, HdDirtyBits *dirtyBits)
     // We only support smoothHull for now, everything else points to it.
     // TODO: Handle other styles
     if (!_smoothHullRepr) {
-        _smoothHullRepr = HdReprSharedPtr(new HdRepr());
+        _smoothHullRepr = std::make_shared<HdRepr>();
         *dirtyBits |= HdChangeTracker::NewRepr;
 
         _PointsReprConfig::DescArray const &descs = _GetReprDesc(reprToken);

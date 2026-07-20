@@ -1,30 +1,15 @@
 //
 // Copyright 2019 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/pxr.h"
 #include "pxr/base/tf/smallVector.h"
 #include "pxr/base/tf/iterator.h"
 #include "pxr/base/tf/regTest.h"
+
+#include "pxr/base/arch/defines.h"
 
 #include <algorithm>
 #include <array>
@@ -332,6 +317,33 @@ testNoLocalStorage()
     v.clear();
     TF_AXIOM(v.size() == 0);
     TF_AXIOM(v.capacity() == 4);
+}
+
+static void
+testEmptyMoveNoLocalStorage()
+{
+    TfSmallVector<int, 0> empty{};
+    {
+        // Empty move construction
+        TfSmallVector<int, 0> v{std::move(empty)};
+        TF_AXIOM(v.size() == 0);
+        TF_AXIOM(v.capacity() == 0);
+
+        v.push_back(1414);
+        TF_AXIOM(v.size() == 1);
+        TF_AXIOM(v.capacity() == 1);
+        TF_AXIOM(v.front() == 1414);
+        TF_AXIOM(v.back() == 1414);
+
+        v.push_back(1515);
+        TF_AXIOM(v.size() == 2);
+        TF_AXIOM(v.capacity() == 2);
+        TF_AXIOM(v.front() == 1414);
+        TF_AXIOM(v.back() == 1515);
+    }
+
+    TF_AXIOM(empty.size() == 0);
+    TF_AXIOM(empty.capacity() == 0);
 }
 
 static void
@@ -676,6 +688,10 @@ testInsertNoMoveConstructor()
             return *this;
         }
 
+        bool operator==(_Foo const &other) const {
+            return i == other.i;
+        }
+
         // 32-bit size.
         int i;
 
@@ -694,15 +710,22 @@ testInsertNoMoveConstructor()
     su.push_back(f);
 
     // Grow via insertion.
-    TfSmallVector<_Foo, 1> v;
+    TfSmallVector<_Foo, 2> v;
+    TF_AXIOM(v.size() == 0);
     v.insert(v.begin(), f);
+    TF_AXIOM(v.size() == 1);
     v.insert(v.begin(), f);
+    TF_AXIOM(v.size() == 2);
     v.insert(v.begin(), f);
+    TF_AXIOM(v.size() == 3);
 
     std::vector<_Foo> sv;
     sv.insert(sv.begin(), f);
     sv.insert(sv.begin(), f);
     sv.insert(sv.begin(), f);
+
+    TF_AXIOM(v.size() == sv.size());
+    TF_AXIOM(std::equal(v.begin(), v.end(), sv.begin()));
 
     // Attempt to move between local storage by swapping.
     TfSmallVector<_Foo, 1> x;
@@ -984,7 +1007,7 @@ testInsertionTrivial()
             if (a.capacity() > 4*numInsertedElems*(i+1)) {
                 TF_FATAL_ERROR(
                     "Capacity too large; after %d insertions of %zu elements, "
-                    "vector has size %u and capacity %u",
+                    "vector has size %zu and capacity %zu",
                     i+1, numInsertedElems, a.size(), a.capacity());
             }
         }
@@ -1476,12 +1499,17 @@ testResize()
     // grow where T is trivial
     {
         TfSmallVector<int, 10> v;
-        v.insert(v.end(), sourceA.begin(), sourceA.end());
 
+        v.insert(v.end(), sourceA.begin(), sourceA.end());
         TF_AXIOM(v.size() == 100);
 
-        v.resize(150, 17);
+        // Shrink first -- this magically sidesteps a GCC bug (possibly this
+        // one, but there are other candidates too:
+        // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=89689)
+        v.resize(5, 17);
+        TF_AXIOM(v.size() == 5);
 
+        v.resize(150, 17);
         TF_AXIOM(v.size() == 150);
     }
 }
@@ -1587,6 +1615,8 @@ Test_TfSmallVector()
     testConstructors();
     std::cout << "testNoLocalStorage" << std::endl;
     testNoLocalStorage();
+    std::cout << "testEmptyMoveNoLocalStorage" << std::endl;
+    testEmptyMoveNoLocalStorage();
     std::cout << "testGrowth" << std::endl;
     testGrowth();
     std::cout << "testIteration" << std::endl;

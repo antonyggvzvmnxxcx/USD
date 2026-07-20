@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hd/debugCodes.h"
 
@@ -73,6 +56,9 @@ TF_REGISTRY_FUNCTION(TfDebug)
     TF_DEBUG_ENVIRONMENT_SYMBOL(HD_FREEZE_CULL_FRUSTUM,
         "Freeze the frustum used for culling at it's current value");
 
+    TF_DEBUG_ENVIRONMENT_SYMBOL(HD_INSTANCE_PROXY_VIEW_SCENE_INDEX,
+        "Log tracking and query operations for the instance proxy view scene index.");
+
     TF_DEBUG_ENVIRONMENT_SYMBOL(HD_INSTANCER_ADDED,
         "Report when instancers are added");
     TF_DEBUG_ENVIRONMENT_SYMBOL(HD_INSTANCER_CLEANED,
@@ -82,11 +68,11 @@ TF_REGISTRY_FUNCTION(TfDebug)
     TF_DEBUG_ENVIRONMENT_SYMBOL(HD_INSTANCER_UPDATED,
         "Report when instancers are updated");
 
-    TF_DEBUG_ENVIRONMENT_SYMBOL(HD_MDI,
-        "Report info related to multi-draw-indirect batches");
-
     TF_DEBUG_ENVIRONMENT_SYMBOL(HD_RENDER_SETTINGS,
         "Report render settings changes");
+
+    TF_DEBUG_ENVIRONMENT_SYMBOL(HD_RENDERER_PLUGIN,
+        "Report debug info on renderer plugins");
 
     TF_DEBUG_ENVIRONMENT_SYMBOL(HD_RPRIM_ADDED,
         "Report when rprims are added");
@@ -100,6 +86,13 @@ TF_REGISTRY_FUNCTION(TfDebug)
     TF_DEBUG_ENVIRONMENT_SYMBOL(HD_SAFE_MODE,
         "Enable additional security checks");
 
+    TF_DEBUG_ENVIRONMENT_SYMBOL(HD_SCENE_INDEX_PLUGIN_ORDERING,
+        "Report debug info on scene index plugin ordering such as cycle "
+        "detection and topological sorting");
+
+    TF_DEBUG_ENVIRONMENT_SYMBOL(HD_SCENE_INDEX_PLUGIN_REGISTRY,
+        "Report debug info on scene index plugin registry");
+
     TF_DEBUG_ENVIRONMENT_SYMBOL(HD_SELECTION_UPDATE,
         "Report when selection is updated");
 
@@ -110,6 +103,9 @@ TF_REGISTRY_FUNCTION(TfDebug)
         "Report when sprims are added");
     TF_DEBUG_ENVIRONMENT_SYMBOL(HD_SPRIM_REMOVED,
         "Report when sprims are removed");
+
+    TF_DEBUG_ENVIRONMENT_SYMBOL(HD_SYNC_ALL,
+        "Report debugging info for the sync all algorithm.");
 
     TF_DEBUG_ENVIRONMENT_SYMBOL(HD_TASK_ADDED,
         "Report when tasks are added");

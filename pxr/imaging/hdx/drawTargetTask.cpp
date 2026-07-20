@@ -1,34 +1,19 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/garch/glApi.h"
 
 #include "pxr/imaging/cameraUtil/conformWindow.h"
+#include "pxr/imaging/glf/diagnostic.h"
 #include "pxr/imaging/hd/camera.h"
 #include "pxr/imaging/hdx/drawTargetTask.h"
 #include "pxr/imaging/hdx/tokens.h"
 #include "pxr/imaging/hdx/debugCodes.h"
 #include "pxr/imaging/hdSt/drawTarget.h"
+#include "pxr/imaging/hdSt/renderParam.h"
 #include "pxr/imaging/hdSt/renderPass.h"
 #include "pxr/imaging/hdSt/renderPassState.h"
 #include "pxr/imaging/hdSt/simpleLightingShader.h"
@@ -338,12 +323,12 @@ HdxDrawTargetTask::_ComputeCameraInfo(
         GfVec3d(1.0, -1.0, 1.0));
 
     const GfMatrix4d projectionMatrix =
-        CameraUtilConformedWindow(camera->GetProjectionMatrix(), 
+        CameraUtilConformedWindow(camera->ComputeProjectionMatrix(), 
                                   camera->GetWindowPolicy(),
                                   aspect)
         * yflip;
     
-    return { camera->GetViewMatrix(),
+    return { camera->GetTransform().GetInverse(),
              projectionMatrix,
              viewport,
              camera->GetClipPlanes() };
@@ -457,23 +442,38 @@ HdxDrawTargetTask::Sync(HdSceneDelegate* delegate,
     }
 
     HdRenderIndex &renderIndex = delegate->GetRenderIndex();
-    const HdChangeTracker& changeTracker = renderIndex.GetChangeTracker();
 
-    const unsigned drawTargetVersion
-        = changeTracker.GetStateVersion(HdStDrawTargetTokens->drawTargetSet);
+    const HdStRenderParam * const renderParam =
+        static_cast<const HdStRenderParam*>(
+            renderIndex.GetRenderDelegate()->GetRenderParam());
+    const unsigned int drawTargetSetVersion =
+        renderParam->GetActiveDrawTargetSetVersion();
 
-    if (_currentDrawTargetSetVersion != drawTargetVersion) {
+    if (_currentDrawTargetSetVersion != drawTargetSetVersion) {
         _renderPassesInfo = _ComputeRenderPassInfos(&renderIndex);
-        _currentDrawTargetSetVersion = drawTargetVersion;
+        _currentDrawTargetSetVersion = drawTargetSetVersion;
     }
 
     ///----------------------
 
-    // lighting context
+    // lighting context and lighting shader
     GlfSimpleLightingContextRefPtr srcLightingContext;
     _GetTaskContextData(ctx, HdxTokens->lightingContext, &srcLightingContext);
 
+    HdStSimpleLightingShaderSharedPtr srcSimpleLightingShader;
+    VtValue lightingShader = (*ctx)[HdxTokens->lightingShader];
+    if (lightingShader.IsHolding<HdStLightingShaderSharedPtr>()) {
+        if (HdStSimpleLightingShaderSharedPtr simpleLightingShader =
+            std::dynamic_pointer_cast<HdStSimpleLightingShader>(
+                lightingShader.UncheckedGet<HdStLightingShaderSharedPtr>())) {
+            srcSimpleLightingShader = simpleLightingShader;
+        }
+    }
+
     for (_RenderPassInfo &renderPassInfo : _renderPassesInfo) {
+        if (srcSimpleLightingShader) {
+            renderPassInfo.simpleLightingShader = srcSimpleLightingShader;
+        }
 
         const _CameraInfo cameraInfo = _ComputeCameraInfo(
             renderIndex,
@@ -502,8 +502,6 @@ void
 HdxDrawTargetTask::Prepare(HdTaskContext* ctx,
                            HdRenderIndex* renderIndex)
 {
-    // Not calling HdSt_RenderPass::Prepare(...) here since
-    // HdxDrawTargetRenderPass::Prepare didn't do so.
 }
 
 void
@@ -511,6 +509,7 @@ HdxDrawTargetTask::Execute(HdTaskContext* ctx)
 {
     HD_TRACE_FUNCTION();
     HF_MALLOC_TAG_FUNCTION();
+    GLF_GROUP_FUNCTION();
 
     // Apply polygon offset to whole pass.
     // XXX TODO: Move to an appropriate home

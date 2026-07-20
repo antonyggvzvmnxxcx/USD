@@ -1,25 +1,8 @@
 //
 // Copyright 2016 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 #include "pxr/imaging/hd/instancer.h"
 #include "pxr/imaging/hd/renderDelegate.h"
@@ -53,7 +36,7 @@ HdInstancer::GetInstancerNumLevels(HdRenderIndex& index,
     while (!parent.IsEmpty()) {
         instancerLevels++;
         instancer = index.GetInstancer(parent);
-        TF_VERIFY(instancer);
+        TF_VERIFY(instancer, "Expected instancer for path: %s.", parent.GetText());
         parent = instancer ? instancer->GetParentId()
             : SdfPath::EmptyPath();
     }
@@ -65,10 +48,10 @@ TfTokenVector const &
 HdInstancer::GetBuiltinPrimvarNames()
 {
     static const TfTokenVector primvarNames = {
-        HdInstancerTokens->instanceTransform,
-        HdInstancerTokens->rotate,
-        HdInstancerTokens->scale,
-        HdInstancerTokens->translate
+        HdInstancerTokens->instanceTransforms,
+        HdInstancerTokens->instanceRotations,
+        HdInstancerTokens->instanceScales,
+        HdInstancerTokens->instanceTranslations
     };
     return primvarNames;
 }
@@ -91,24 +74,22 @@ HdInstancer::_SyncInstancerAndParents(HdRenderIndex &renderIndex,
 {
     HdRenderParam *renderParam =
         renderIndex.GetRenderDelegate()->GetRenderParam();
+    HdChangeTracker& tracker = renderIndex.GetChangeTracker();
     SdfPath id = instancerId;
     while (!id.IsEmpty()) {
         HdInstancer *instancer = renderIndex.GetInstancer(id);
-        if (!TF_VERIFY(instancer)) {
+        if (!TF_VERIFY(instancer, 
+                       "Expected instancer for path: %s.", id.GetText())) {
             return;
         }
 
-        HdDirtyBits dirtyBits =
-            renderIndex.GetChangeTracker().GetInstancerDirtyBits(id);
-
+        std::lock_guard<std::mutex> lock(instancer->_instanceLock);
+        HdDirtyBits dirtyBits = tracker.GetInstancerDirtyBits(id);
         if (dirtyBits != HdChangeTracker::Clean) {
-            std::lock_guard<std::mutex> lock(instancer->_instanceLock);
-            dirtyBits =
-                renderIndex.GetChangeTracker().GetInstancerDirtyBits(id);
             instancer->Sync(instancer->GetDelegate(), renderParam, &dirtyBits);
-            renderIndex.GetChangeTracker().MarkInstancerClean(id);
+            tracker.MarkInstancerClean(id);
         }
-
+        
         id = instancer->GetParentId();
     }
 }
@@ -143,7 +124,8 @@ HdInstancer::GetInitialDirtyBitsMask() const
     return HdChangeTracker::DirtyTransform |
            HdChangeTracker::DirtyPrimvar |
            HdChangeTracker::DirtyInstanceIndex |
-           HdChangeTracker::DirtyInstancer;
+           HdChangeTracker::DirtyInstancer |
+           HdChangeTracker::DirtyVisibility;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

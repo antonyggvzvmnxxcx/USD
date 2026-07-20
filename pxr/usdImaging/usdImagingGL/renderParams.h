@@ -1,25 +1,8 @@
 //
 // Copyright 2018 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
 /// \file usdImagingGL/renderParams.h
@@ -32,6 +15,7 @@
 
 #include "pxr/usd/usd/timeCode.h"
 
+#include "pxr/base/gf/bbox3d.h"
 #include "pxr/base/gf/vec2i.h"
 #include "pxr/base/gf/vec4d.h"
 #include "pxr/base/gf/vec4f.h"
@@ -73,7 +57,8 @@ class UsdImagingGLRenderParams
 {
 public:
 
-    typedef std::vector<GfVec4d> ClipPlanesVector;
+    using ClipPlanesVector = std::vector<GfVec4d>;
+    using BBoxVector = std::vector<GfBBox3d>;
 
     UsdTimeCode frame;
     float complexity;
@@ -84,7 +69,6 @@ public:
     bool forceRefresh;
     bool flipFrontFacing;
     UsdImagingGLCullStyle cullStyle;
-    bool enableIdRender;
     bool enableLighting;
     bool enableSampleAlphaToCoverage;
     bool applyRenderState;
@@ -100,7 +84,16 @@ public:
     bool enableUsdDrawModes;
     GfVec4f clearColor;
     TfToken colorCorrectionMode;
+    // Optional OCIO color setings, only valid when colorCorrectionMode==HdxColorCorrectionTokens->openColorIO
     int lut3dSizeOCIO;
+    TfToken ocioDisplay;
+    TfToken ocioView;
+    TfToken ocioColorSpace;
+    TfToken ocioLook;
+    // BBox settings
+    BBoxVector bboxes;
+    GfVec4f bboxLineColor;
+    float bboxLineDashSize;
 
     inline UsdImagingGLRenderParams();
 
@@ -122,7 +115,6 @@ UsdImagingGLRenderParams::UsdImagingGLRenderParams() :
     forceRefresh(false),
     flipFrontFacing(false),
     cullStyle(UsdImagingGLCullStyle::CULL_STYLE_NOTHING),
-    enableIdRender(false),
     enableLighting(true),
     enableSampleAlphaToCoverage(false),
     applyRenderState(true),
@@ -136,7 +128,9 @@ UsdImagingGLRenderParams::UsdImagingGLRenderParams() :
     enableSceneLights(true),
     enableUsdDrawModes(true),
     clearColor(0,0,0,1),
-    lut3dSizeOCIO(65)
+    lut3dSizeOCIO(65),
+    bboxLineColor(1),
+    bboxLineDashSize(3)
 {
 }
 
@@ -153,7 +147,6 @@ UsdImagingGLRenderParams::operator==(const UsdImagingGLRenderParams &other)
         && forceRefresh                == other.forceRefresh
         && flipFrontFacing             == other.flipFrontFacing
         && cullStyle                   == other.cullStyle
-        && enableIdRender              == other.enableIdRender
         && enableLighting              == other.enableLighting
         && enableSampleAlphaToCoverage == other.enableSampleAlphaToCoverage
         && applyRenderState            == other.applyRenderState
@@ -168,7 +161,14 @@ UsdImagingGLRenderParams::operator==(const UsdImagingGLRenderParams &other)
         && enableUsdDrawModes          == other.enableUsdDrawModes
         && clearColor                  == other.clearColor
         && colorCorrectionMode         == other.colorCorrectionMode
-        && lut3dSizeOCIO               == other.lut3dSizeOCIO;
+        && ocioDisplay                 == other.ocioDisplay
+        && ocioView                    == other.ocioView
+        && ocioColorSpace              == other.ocioColorSpace
+        && ocioLook                    == other.ocioLook
+        && lut3dSizeOCIO               == other.lut3dSizeOCIO
+        && bboxes                      == other.bboxes
+        && bboxLineColor               == other.bboxLineColor
+        && bboxLineDashSize            == other.bboxLineDashSize;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

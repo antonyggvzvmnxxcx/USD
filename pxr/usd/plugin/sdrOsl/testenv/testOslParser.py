@@ -2,35 +2,25 @@
 #
 # Copyright 2018 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 
+# Disable automatic parser plugin discovery. We'll install our own parser
+# plugin later to ensure its the only one used during the test.
 import os
+os.environ['PXR_SDR_SKIP_PARSER_PLUGIN_DISCOVERY'] = "1"
+
 import unittest
-from pxr import Ndr
-from pxr import SdrOsl
+from pxr import Plug, Sdr
 from pxr.Sdr import shaderParserTestUtils as utils
 
 class TestShaderNode(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        parser = Plug.Registry().FindTypeByName("SdrOslParserPlugin")
+        assert parser
+        Sdr.Registry().SetExtraParserPlugins([parser])
+
         cls.uri = "TestNodeOSL.oso"
         cls.resolvedUri = os.path.abspath(cls.uri)
 
@@ -39,13 +29,13 @@ class TestShaderNode(unittest.TestCase):
                       "primvars":"a|b|c"}
         cls.blindData = "unused blind data"
 
-        discoveryResult = Ndr.NodeDiscoveryResult(
+        discoveryResult = Sdr.NodeDiscoveryResult(
             "TestNodeOSL",   # Identifier
-            Ndr.Version(),   # Version
+            Sdr.Version(),   # Version
             "TestNodeOSL",   # Name
-            "",              # Family
+            "",              # Function
             "oso",           # Discovery type (extension)
-            "OSL",           # Source type
+            "OSL",           # Shading system
             cls.uri,         # URI
             cls.resolvedUri, # Resolved URI
             sourceCode=cls.sourceCode,
@@ -54,12 +44,13 @@ class TestShaderNode(unittest.TestCase):
             subIdentifier=""
         )
 
-        cls.node = SdrOsl.OslParser().Parse(discoveryResult)
+        Sdr.Registry().AddDiscoveryResult(discoveryResult)
+        cls.node = Sdr.Registry().GetShaderNodeByIdentifier('TestNodeOSL')
         assert cls.node is not None
 
     def test_Basic(self):
         """
-        Tests all node and property methods that originate from Ndr and are not
+        Tests all node and property methods that originate from Sdr and are not
         shading-specific, but still need to be tested to ensure the parser did
         its job correctly.
         """
@@ -98,13 +89,13 @@ class TestShaderNode(unittest.TestCase):
         blindData = ""
         subIdentifier = ""
 
-        discoveryResult = Ndr.NodeDiscoveryResult(
+        discoveryResult = Sdr.NodeDiscoveryResult(
             "TestShaderPropertiesNodeOSL",  # Identifier
-            Ndr.Version(),                  # Version
+            Sdr.Version(),                  # Version
             "TestShaderPropertiesNodeOSL",  # Name
-            "",                             # Family
+            "",                             # Function
             "oso",                          # Discovery type (extension)
-            "OSL",                          # Source type
+            "OSL",                          # Shading system
             uri,                            # URI
             resolvedUri,                    # Resolved URI
             sourceCode,                     # sourceCode
@@ -112,7 +103,10 @@ class TestShaderNode(unittest.TestCase):
             blindData,                      # blindData
             subIdentifier                   # subIdentifier
         )
-        node = SdrOsl.OslParser().Parse(discoveryResult)
+
+        Sdr.Registry().AddDiscoveryResult(discoveryResult)
+        node = Sdr.Registry().GetShaderNodeByIdentifier(
+            'TestShaderPropertiesNodeOSL')
         assert node is not None
 
         utils.TestShaderPropertiesNode(node)

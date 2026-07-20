@@ -1,30 +1,43 @@
 //
 // Copyright 2017 Pixar
 //
-// Licensed under the Apache License, Version 2.0 (the "Apache License")
-// with the following modification; you may not use this file except in
-// compliance with the Apache License and the following modification to it:
-// Section 6. Trademarks. is deleted and replaced with:
-//
-// 6. Trademarks. This License does not grant permission to use the trade
-//    names, trademarks, service marks, or product names of the Licensor
-//    and its affiliates, except as required to comply with Section 4(c) of
-//    the License and to reproduce the content of the NOTICE file.
-//
-// You may obtain a copy of the Apache License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the Apache License with the above modification is
-// distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied. See the Apache License for the specific
-// language governing permissions and limitations under the Apache License.
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
 //
 
+#include "pxr/base/ts/valueTypeDispatch.h"
 #include "pxr/usd/usd/valueUtils.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+namespace {
+
+template <typename S>
+struct _EvalSplineFunctor
+{
+    template <typename T>
+    void operator()(const TsSpline& spline, UsdTimeCode localTime,
+                    const SdfLayerOffset& layerToStageOffset, T* result,
+                    bool* successOut)
+    {
+        S val;
+        auto evalFunc = !localTime.IsPreTime() ?
+                            &TsSpline::Eval<S> : &TsSpline::EvalPreValue<S>;
+        if (!(spline.*evalFunc)(localTime.GetValue(), &val)) {
+            return;
+        }
+        if (spline.IsTimeValued()) {
+            if constexpr (std::is_same_v<S, double> ||
+                          std::is_same_v<S, GfTimeCode>)
+            {
+                val = layerToStageOffset * val;
+            }
+        }
+        *successOut = Usd_SetValue(result, val);
+    }
+};
+
+} // anonymous namespace
 
 void
 Usd_MergeTimeSamples(std::vector<double> * const timeSamples, 
@@ -64,10 +77,45 @@ void
 Usd_ApplyLayerOffsetToValue(VtValue *value, const SdfLayerOffset &offset)
 {
     // Try applying the offset for each of our supported value types.
-    _TryApplyLayerOffsetToValue<SdfTimeCode>(value, offset) ||
-    _TryApplyLayerOffsetToValue<VtArray<SdfTimeCode>>(value, offset) ||
+    _TryApplyLayerOffsetToValue<GfTimeCode>(value, offset) ||
+    _TryApplyLayerOffsetToValue<VtArray<GfTimeCode>>(value, offset) ||
     _TryApplyLayerOffsetToValue<VtDictionary>(value, offset) ||
     _TryApplyLayerOffsetToValue<SdfTimeSampleMap>(value, offset);
 }
+
+template <class T>
+bool
+Usd_QuerySpline(
+    const TsSpline& spline,
+    UsdTimeCode timeCode,
+    const SdfLayerOffset& layerToStageOffset,
+    T* result)
+{
+    bool success = false;
+    // Use the spline's value type to dispatch to the appropriate evaluator.
+    TsDispatchToValueTypeTemplate<_EvalSplineFunctor>(
+        spline.GetValueType(), spline, timeCode,
+        layerToStageOffset, result, &success);
+
+    return success;
+}
+
+#define _INSTANTIATE_QUERY_SPLINE(unused, elem)                 \
+    template bool Usd_QuerySpline(                              \
+        const TsSpline&, UsdTimeCode,                           \
+        const SdfLayerOffset&,                                  \
+        TS_SPLINE_VALUE_CPP_TYPE(elem)*);
+
+TF_PP_SEQ_FOR_EACH(_INSTANTIATE_QUERY_SPLINE, ~, TS_SPLINE_SUPPORTED_VALUE_TYPES)
+#undef _INSTANTIATE_QUERY_SPLINE
+
+template bool Usd_QuerySpline(
+    const TsSpline&, UsdTimeCode,
+    const SdfLayerOffset&,
+    SdfAbstractDataValue*);
+template bool Usd_QuerySpline(
+    const TsSpline&, UsdTimeCode,
+    const SdfLayerOffset&,
+    VtValue*);
 
 PXR_NAMESPACE_CLOSE_SCOPE

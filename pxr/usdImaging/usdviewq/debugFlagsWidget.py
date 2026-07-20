@@ -1,25 +1,8 @@
 #
 # Copyright 2019 Pixar
 #
-# Licensed under the Apache License, Version 2.0 (the "Apache License")
-# with the following modification; you may not use this file except in
-# compliance with the Apache License and the following modification to it:
-# Section 6. Trademarks. is deleted and replaced with:
-#
-# 6. Trademarks. This License does not grant permission to use the trade
-#    names, trademarks, service marks, or product names of the Licensor
-#    and its affiliates, except as required to comply with Section 4(c) of
-#    the License and to reproduce the content of the NOTICE file.
-#
-# You may obtain a copy of the Apache License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the Apache License with the above modification is
-# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the Apache License for the specific
-# language governing permissions and limitations under the Apache License.
+# Licensed under the terms set forth in the LICENSE.txt file available at
+# https://openusd.org/license.
 #
 from .qt import QtCore, QtGui, QtWidgets
 
@@ -50,7 +33,7 @@ class DebugFlagsWidget(QtWidgets.QWidget):
 
         # Configure and populate the left list view
         self._listView.setEditTriggers(
-            QtWidgets.QAbstractItemView.NoEditTriggers)
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
 
         self._populateDebugFlagsListView(self._listView)
 
@@ -88,17 +71,17 @@ class DebugFlagsWidget(QtWidgets.QWidget):
         row = 0
         for f in debugFlags:
             item = QtWidgets.QTableWidgetItem()
-            item.setFlags(QtCore.Qt.ItemIsUserCheckable | 
-                          QtCore.Qt.ItemIsEnabled)
+            item.setFlags(QtCore.Qt.ItemFlag.ItemIsUserCheckable | 
+                          QtCore.Qt.ItemFlag.ItemIsEnabled)
             if Tf.Debug.IsDebugSymbolNameEnabled(f):
-                item.setCheckState(QtCore.Qt.Checked)
+                item.setCheckState(QtCore.Qt.CheckState.Checked)
             else:
-                item.setCheckState(QtCore.Qt.Unchecked)
+                item.setCheckState(QtCore.Qt.CheckState.Unchecked)
             item.setText(f)
             self._tableWidget.setItem(row, 0, item)
 
             item = QtWidgets.QTableWidgetItem()
-            item.setFlags(item.flags() ^ QtCore.Qt.ItemIsEditable)
+            item.setFlags(item.flags() ^ QtCore.Qt.ItemFlag.ItemIsEditable)
             item.setText(Tf.Debug.GetDebugSymbolDescription(f))
             self._tableWidget.setItem(row, 1, item)
 
@@ -110,5 +93,5 @@ class DebugFlagsWidget(QtWidgets.QWidget):
                 selected.indexes()[0].row()])
 
     def _onDebugFlagChecked(self, item):
-        value = (item.checkState() == QtCore.Qt.Checked)
+        value = (item.checkState() == QtCore.Qt.CheckState.Checked)
         Tf.Debug.SetDebugSymbolsByName(item.text(), value)
